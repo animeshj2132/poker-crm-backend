@@ -8,6 +8,7 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
+    "postinstall": "npm rebuild bcrypt --build-from-source || true",
     "lint": "eslint '{src,test}/**/*.{ts,tsx}' --max-warnings=0",
     "format": "prettier --write .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
