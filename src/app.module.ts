@@ -29,17 +29,42 @@ import { PlayerVipModule } from './player-vip/player-vip.module';
 import { PlayerFeedbackModule } from './player-feedback/player-feedback.module';
 import { PlayerTournamentsModule } from './player-tournaments/player-tournaments.module';
 import { PlayerPlaytimeModule } from './player-playtime/player-playtime.module';
+import * as dns from 'dns';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRootAsync({
-      useFactory: () => ({
-        type: 'postgres',
-        url: process.env.DATABASE_URL,
-        autoLoadEntities: true,
-        synchronize: false
-      })
+      useFactory: async () => {
+        // Force IPv4 DNS resolution to avoid IPv6 connection issues on Render
+        dns.setDefaultResultOrder('ipv4first');
+        
+        const dbUrl = process.env.DATABASE_URL;
+        if (!dbUrl) {
+          throw new Error('DATABASE_URL environment variable is not set');
+        }
+        const url = new URL(dbUrl);
+        
+        return {
+          type: 'postgres',
+          host: url.hostname,
+          port: parseInt(url.port) || 5432,
+          username: url.username,
+          password: url.password,
+          database: url.pathname.slice(1), // Remove leading '/'
+          autoLoadEntities: true,
+          synchronize: false,
+          ssl: {
+            rejectUnauthorized: false // Required for Supabase
+          },
+          extra: {
+            connectionTimeoutMillis: 10000,
+            // Additional connection pool settings
+            max: 20, // Maximum pool size
+            idleTimeoutMillis: 30000,
+          }
+        };
+      }
     }),
     TypeOrmModule.forFeature([
       User,
@@ -75,4 +100,3 @@ import { PlayerPlaytimeModule } from './player-playtime/player-playtime.module';
   ]
 })
 export class AppModule {}
-

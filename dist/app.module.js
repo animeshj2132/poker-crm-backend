@@ -38,6 +38,7 @@ const player_vip_module_1 = require("./player-vip/player-vip.module");
 const player_feedback_module_1 = require("./player-feedback/player-feedback.module");
 const player_tournaments_module_1 = require("./player-tournaments/player-tournaments.module");
 const player_playtime_module_1 = require("./player-playtime/player-playtime.module");
+const dns = require("dns");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -46,12 +47,32 @@ exports.AppModule = AppModule = __decorate([
         imports: [
             config_1.ConfigModule.forRoot({ isGlobal: true }),
             typeorm_1.TypeOrmModule.forRootAsync({
-                useFactory: () => ({
-                    type: 'postgres',
-                    url: process.env.DATABASE_URL,
-                    autoLoadEntities: true,
-                    synchronize: false
-                })
+                useFactory: async () => {
+                    dns.setDefaultResultOrder('ipv4first');
+                    const dbUrl = process.env.DATABASE_URL;
+                    if (!dbUrl) {
+                        throw new Error('DATABASE_URL environment variable is not set');
+                    }
+                    const url = new URL(dbUrl);
+                    return {
+                        type: 'postgres',
+                        host: url.hostname,
+                        port: parseInt(url.port) || 5432,
+                        username: url.username,
+                        password: url.password,
+                        database: url.pathname.slice(1),
+                        autoLoadEntities: true,
+                        synchronize: false,
+                        ssl: {
+                            rejectUnauthorized: false
+                        },
+                        extra: {
+                            connectionTimeoutMillis: 10000,
+                            max: 20,
+                            idleTimeoutMillis: 30000,
+                        }
+                    };
+                }
             }),
             typeorm_1.TypeOrmModule.forFeature([
                 user_entity_1.User,
