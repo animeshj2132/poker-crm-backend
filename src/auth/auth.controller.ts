@@ -443,6 +443,40 @@ export class AuthController {
       clubId.trim(),
     );
   }
+
+  /**
+   * Request profile field change
+   * POST /api/auth/player/profile-change-request
+   */
+  @Post('player/profile-change-request')
+  async requestProfileChange(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+    @Body()
+    body?: {
+      fieldName?: string;
+      currentValue?: string | null;
+      requestedValue?: string;
+    },
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!body) {
+      throw new BadRequestException('Request body is required');
+    }
+
+    return this.authService.requestProfileFieldChange(
+      playerId.trim(),
+      clubId.trim(),
+      body.fieldName || '',
+      body.currentValue ?? null,
+      body.requestedValue || '',
+    );
+  }
 }
 
 

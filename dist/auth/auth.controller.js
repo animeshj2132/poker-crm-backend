@@ -239,6 +239,19 @@ let AuthController = class AuthController {
         }
         return this.authService.getPlayerFeedbackHistory(playerId.trim(), clubId.trim());
     }
+    async requestProfileChange(playerId, clubId, body) {
+        var _a;
+        if (!playerId || !playerId.trim()) {
+            throw new common_1.BadRequestException('x-player-id header is required');
+        }
+        if (!clubId || !clubId.trim()) {
+            throw new common_1.BadRequestException('x-club-id header is required');
+        }
+        if (!body) {
+            throw new common_1.BadRequestException('Request body is required');
+        }
+        return this.authService.requestProfileFieldChange(playerId.trim(), clubId.trim(), body.fieldName || '', (_a = body.currentValue) !== null && _a !== void 0 ? _a : null, body.requestedValue || '');
+    }
 };
 exports.AuthController = AuthController;
 __decorate([
@@ -426,6 +439,15 @@ __decorate([
     __metadata("design:paramtypes", [String, String]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "getPlayerFeedbackHistory", null);
+__decorate([
+    (0, common_1.Post)('player/profile-change-request'),
+    __param(0, (0, common_1.Headers)('x-player-id')),
+    __param(1, (0, common_1.Headers)('x-club-id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "requestProfileChange", null);
 exports.AuthController = AuthController = __decorate([
     (0, common_1.Controller)('auth'),
     __metadata("design:paramtypes", [auth_service_1.AuthService,
