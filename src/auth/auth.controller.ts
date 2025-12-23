@@ -364,6 +364,21 @@ export class AuthController {
   }
 
   /**
+   * Get F&B Menu for Players
+   * GET /api/auth/player/fnb/menu
+   */
+  @Get('player/fnb/menu')
+  async getPlayerFnbMenu(
+    @Headers('x-club-id') clubId?: string,
+    @Query('category') category?: string,
+  ) {
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    return this.authService.getPlayerFnbMenu(clubId.trim(), category);
+  }
+
+  /**
    * Place FNB Order
    * POST /api/auth/player/fnb/order
    */
@@ -383,6 +398,50 @@ export class AuthController {
       throw new BadRequestException('Order data is required');
     }
     return this.authService.placeFnbOrder(playerId.trim(), clubId.trim(), body);
+  }
+
+  /**
+   * Submit Player Feedback
+   * POST /api/auth/player/feedback
+   */
+  @Post('player/feedback')
+  async submitPlayerFeedback(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+    @Body() body?: any
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!body || !body.message) {
+      throw new BadRequestException('Feedback message is required');
+    }
+    return this.authService.submitPlayerFeedback(playerId.trim(), clubId.trim(), body.message, body.rating);
+  }
+
+  /**
+   * Get Player Feedback History
+   * GET /api/auth/player/feedback/history
+   */
+  @Get('player/feedback/history')
+  async getPlayerFeedbackHistory(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+
+    return this.authService.getPlayerFeedbackHistory(
+      playerId.trim(),
+      clubId.trim(),
+    );
   }
 }
 

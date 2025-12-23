@@ -702,6 +702,67 @@ let AuthService = class AuthService {
             throw new common_1.BadRequestException('Failed to get player profile');
         }
     }
+    async submitPanCard(playerId, clubId, panCard) {
+        try {
+            if (!playerId || !playerId.trim()) {
+                throw new common_1.BadRequestException('Player ID is required');
+            }
+            if (!clubId || !clubId.trim()) {
+                throw new common_1.BadRequestException('Club ID is required');
+            }
+            if (!panCard || !panCard.trim()) {
+                throw new common_1.BadRequestException('PAN card number is required');
+            }
+            const trimmedPlayerId = playerId.trim();
+            const trimmedClubId = clubId.trim();
+            const trimmedPanCard = panCard.trim().toUpperCase();
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(trimmedPlayerId)) {
+                throw new common_1.BadRequestException('Invalid player ID format');
+            }
+            if (!uuidRegex.test(trimmedClubId)) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+            if (!panRegex.test(trimmedPanCard)) {
+                throw new common_1.BadRequestException('Invalid PAN card format. Expected: ABCDE1234F');
+            }
+            const club = await this.clubsService.findById(trimmedClubId);
+            if (!club) {
+                throw new common_1.NotFoundException('Club not found');
+            }
+            const player = await this.playersRepo.findOne({
+                where: { id: trimmedPlayerId, club: { id: trimmedClubId } },
+                relations: ['club']
+            });
+            if (!player) {
+                throw new common_1.NotFoundException('Player not found');
+            }
+            const existingPlayer = await this.playersRepo.findOne({
+                where: {
+                    club: { id: trimmedClubId },
+                    panCard: trimmedPanCard
+                }
+            });
+            if (existingPlayer && existingPlayer.id !== trimmedPlayerId) {
+                throw new common_1.ConflictException('This PAN card is already registered with another player in your club');
+            }
+            player.panCard = trimmedPanCard;
+            await this.playersRepo.save(player);
+            return {
+                success: true,
+                message: 'PAN card submitted successfully',
+                panCard: trimmedPanCard
+            };
+        }
+        catch (err) {
+            console.error('Submit PAN card error:', err);
+            if (err instanceof common_1.BadRequestException || err instanceof common_1.NotFoundException || err instanceof common_1.ConflictException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to submit PAN card');
+        }
+    }
     async updatePlayerProfile(playerId, clubId, firstName, lastName, phoneNumber, nickname) {
         try {
             if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
@@ -998,13 +1059,11 @@ let AuthService = class AuthService {
                 throw new common_1.NotFoundException('Club not found');
             }
             const player = await this.playersRepo.findOne({
-                where: { id: playerId.trim(), club: { id: clubId.trim() } }
+                where: { id: playerId.trim(), club: { id: clubId.trim() } },
+                relations: ['club']
             });
             if (!player) {
                 throw new common_1.NotFoundException('Player not found');
-            }
-            if (!player.club || player.club.id !== clubId.trim()) {
-                throw new common_1.ForbiddenException('Player does not belong to this club');
             }
             if (player.status && player.status.toLowerCase() === 'suspended') {
                 throw new common_1.ForbiddenException('Account is suspended. Cannot access transactions.');
@@ -1265,13 +1324,11 @@ let AuthService = class AuthService {
                 throw new common_1.NotFoundException('Club not found');
             }
             const player = await this.playersRepo.findOne({
-                where: { id: playerId.trim(), club: { id: clubId.trim() } }
+                where: { id: playerId.trim(), club: { id: clubId.trim() } },
+                relations: ['club']
             });
             if (!player) {
                 throw new common_1.NotFoundException('Player not found');
-            }
-            if (!player.club || player.club.id !== clubId.trim()) {
-                throw new common_1.ForbiddenException('Player does not belong to this club');
             }
             if (player.status && player.status.toLowerCase() === 'suspended') {
                 throw new common_1.ForbiddenException('Account is suspended. Cannot access waitlist status.');
@@ -1281,7 +1338,8 @@ let AuthService = class AuthService {
                 entry = await this.waitlistRepo.findOne({
                     where: {
                         club: { id: clubId.trim() },
-                        email: player.email.trim().toLowerCase()
+                        playerId: playerId.trim(),
+                        status: waitlist_entry_entity_1.WaitlistStatus.PENDING
                     },
                     order: { createdAt: 'DESC' }
                 });
@@ -1400,13 +1458,11 @@ let AuthService = class AuthService {
                 throw new common_1.NotFoundException('Club not found');
             }
             const player = await this.playersRepo.findOne({
-                where: { id: playerId.trim(), club: { id: clubId.trim() } }
+                where: { id: playerId.trim(), club: { id: clubId.trim() } },
+                relations: ['club']
             });
             if (!player) {
                 throw new common_1.NotFoundException('Player not found');
-            }
-            if (!player.club || player.club.id !== clubId.trim()) {
-                throw new common_1.ForbiddenException('Player does not belong to this club');
             }
             if (player.status && player.status.toLowerCase() === 'suspended') {
                 throw new common_1.ForbiddenException('Account is suspended. Cannot cancel waitlist.');
@@ -1800,13 +1856,11 @@ let AuthService = class AuthService {
                 throw new common_1.NotFoundException('Club not found');
             }
             const player = await this.playersRepo.findOne({
-                where: { id: playerId.trim(), club: { id: clubId.trim() } }
+                where: { id: playerId.trim(), club: { id: clubId.trim() } },
+                relations: ['club']
             });
             if (!player) {
                 throw new common_1.NotFoundException('Player not found');
-            }
-            if (!player.club || player.club.id !== clubId.trim()) {
-                throw new common_1.ForbiddenException('Player does not belong to this club');
             }
             if (player.status && player.status.toLowerCase() === 'suspended') {
                 throw new common_1.ForbiddenException('Account is suspended. Cannot access stats.');
@@ -1869,6 +1923,130 @@ let AuthService = class AuthService {
                 throw err;
             }
             throw new common_1.BadRequestException('Failed to get player stats');
+        }
+    }
+    async getPlayerFnbMenu(clubId, category) {
+        try {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(clubId)) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            const club = await this.clubsService.findById(clubId);
+            if (!club) {
+                throw new common_1.NotFoundException('Club not found');
+            }
+            let query = `
+        SELECT 
+          id, 
+          name, 
+          description,
+          category,
+          price,
+          is_available as "isAvailable",
+          image_url as "imageUrl"
+        FROM fnb_menu 
+        WHERE club_id = $1 AND is_available = true
+      `;
+            const params = [clubId];
+            if (category) {
+                query += ` AND LOWER(category) = LOWER($2)`;
+                params.push(category);
+            }
+            query += ` ORDER BY category ASC, name ASC`;
+            const menuItems = await this.playersRepo.query(query, params);
+            return {
+                menuItems: menuItems.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    description: item.description,
+                    category: item.category,
+                    price: parseFloat(item.price),
+                    isAvailable: item.isAvailable,
+                    imageUrl: item.imageUrl,
+                })),
+                total: menuItems.length,
+            };
+        }
+        catch (err) {
+            console.error('Get player F&B menu error:', err);
+            if (err instanceof common_1.BadRequestException ||
+                err instanceof common_1.NotFoundException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to get menu');
+        }
+    }
+    async submitPlayerFeedback(playerId, clubId, message, rating) {
+        try {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(playerId)) {
+                throw new common_1.BadRequestException('Invalid player ID format');
+            }
+            if (!uuidRegex.test(clubId)) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            const player = await this.playersRepo.findOne({
+                where: { id: playerId, club: { id: clubId } },
+                relations: ['club'],
+            });
+            if (!player) {
+                throw new common_1.NotFoundException('Player not found');
+            }
+            await this.playersRepo.query(`
+        INSERT INTO player_feedback (player_id, club_id, message, rating, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT DO NOTHING
+      `, [playerId, clubId, message, rating || null]);
+            return {
+                success: true,
+                message: 'Feedback submitted successfully',
+                submittedAt: new Date().toISOString(),
+            };
+        }
+        catch (err) {
+            console.error('Submit feedback error:', err);
+            if (err instanceof common_1.BadRequestException ||
+                err instanceof common_1.NotFoundException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to submit feedback');
+        }
+    }
+    async getPlayerFeedbackHistory(playerId, clubId) {
+        try {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(playerId)) {
+                throw new common_1.BadRequestException('Invalid player ID format');
+            }
+            if (!uuidRegex.test(clubId)) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            const player = await this.playersRepo.findOne({
+                where: { id: playerId, club: { id: clubId } },
+                relations: ['club'],
+            });
+            if (!player) {
+                throw new common_1.NotFoundException('Player not found');
+            }
+            const rows = await this.playersRepo.query(`
+        SELECT id, message, rating, created_at
+        FROM player_feedback
+        WHERE player_id = $1 AND club_id = $2
+        ORDER BY created_at DESC
+        LIMIT 50
+      `, [playerId, clubId]);
+            return {
+                success: true,
+                feedback: rows,
+            };
+        }
+        catch (err) {
+            console.error('Get feedback history error:', err);
+            if (err instanceof common_1.BadRequestException ||
+                err instanceof common_1.NotFoundException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to fetch feedback history');
         }
     }
 };

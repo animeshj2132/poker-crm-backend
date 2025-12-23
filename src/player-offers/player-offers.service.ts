@@ -5,9 +5,11 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 
 @Injectable()
 export class PlayerOffersService {
@@ -15,10 +17,12 @@ export class PlayerOffersService {
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
     private readonly clubsService: ClubsService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
-   * Get active offers (from Supabase staff_offers table)
+   * Get active offers from staff_offers table
    */
   async getActiveOffers(clubId: string, playerId?: string) {
     try {
@@ -33,12 +37,37 @@ export class PlayerOffersService {
         throw new NotFoundException('Club not found');
       }
 
-      // Return empty array - offers are managed via Supabase staff_offers table
-      // Frontend subscribes to real-time updates
+      // Query staff_offers table directly from database
+      const query = `
+        SELECT 
+          id,
+          club_id,
+          title,
+          description,
+          offer_type,
+          value,
+          validity_start,
+          validity_end,
+          is_active,
+          created_at,
+          updated_at,
+          image_url,
+          terms,
+          target_audience,
+          created_by
+        FROM staff_offers
+        WHERE club_id = $1
+          AND is_active = true
+          AND validity_start <= NOW()
+          AND validity_end > NOW()
+        ORDER BY created_at DESC
+      `;
+
+      const offers = await this.dataSource.query(query, [clubId]);
+
       return {
-        offers: [],
-        total: 0,
-        note: 'Offers are managed via Supabase staff_offers table with real-time updates',
+        offers: offers || [],
+        total: offers?.length || 0,
       };
     } catch (err) {
       console.error('Get active offers error:', err);

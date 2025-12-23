@@ -43,6 +43,10 @@ __decorate([
     __metadata("design:type", Object)
 ], Player.prototype, "phoneNumber", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'varchar', length: 10, nullable: true, name: 'pan_card' }),
+    __metadata("design:type", Object)
+], Player.prototype, "panCard", void 0);
+__decorate([
     (0, typeorm_1.Column)({ type: 'varchar', length: 100, nullable: true, name: 'player_id' }),
     __metadata("design:type", Object)
 ], Player.prototype, "playerId", void 0);
@@ -113,6 +117,7 @@ __decorate([
 exports.Player = Player = __decorate([
     (0, typeorm_1.Entity)({ name: 'players' }),
     (0, typeorm_1.Index)(['club', 'email'], { unique: true }),
+    (0, typeorm_1.Index)(['club', 'panCard'], { unique: true, where: 'pan_card IS NOT NULL' }),
     (0, typeorm_1.Index)(['affiliate'])
 ], Player);
 //# sourceMappingURL=player.entity.js.map

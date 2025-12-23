@@ -64,6 +64,23 @@ let AuthController = class AuthController {
     async playerSignup(dto) {
         return this.authService.playerSignup(dto.clubCode, dto.firstName, dto.lastName, dto.email, dto.password, dto.phoneNumber, dto.nickname, dto.referralCode);
     }
+    async submitPanCard(body) {
+        if (!body.playerId || !body.playerId.trim()) {
+            throw new common_1.BadRequestException('Player ID is required');
+        }
+        if (!body.clubId || !body.clubId.trim()) {
+            throw new common_1.BadRequestException('Club ID is required');
+        }
+        if (!body.panCard || !body.panCard.trim()) {
+            throw new common_1.BadRequestException('PAN card number is required');
+        }
+        const panCard = body.panCard.trim().toUpperCase();
+        const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+        if (!panRegex.test(panCard)) {
+            throw new common_1.BadRequestException('Invalid PAN card format. Expected: ABCDE1234F');
+        }
+        return this.authService.submitPanCard(body.playerId.trim(), body.clubId.trim(), panCard);
+    }
     async getPlayerProfile(playerId, clubId) {
         if (!playerId || !playerId.trim()) {
             throw new common_1.BadRequestException('x-player-id header is required');
@@ -183,6 +200,12 @@ let AuthController = class AuthController {
         }
         return this.authService.getPlayerStats(playerId.trim(), clubId.trim());
     }
+    async getPlayerFnbMenu(clubId, category) {
+        if (!clubId || !clubId.trim()) {
+            throw new common_1.BadRequestException('x-club-id header is required');
+        }
+        return this.authService.getPlayerFnbMenu(clubId.trim(), category);
+    }
     async placeFnbOrder(playerId, clubId, body) {
         if (!playerId || !playerId.trim()) {
             throw new common_1.BadRequestException('x-player-id header is required');
@@ -194,6 +217,27 @@ let AuthController = class AuthController {
             throw new common_1.BadRequestException('Order data is required');
         }
         return this.authService.placeFnbOrder(playerId.trim(), clubId.trim(), body);
+    }
+    async submitPlayerFeedback(playerId, clubId, body) {
+        if (!playerId || !playerId.trim()) {
+            throw new common_1.BadRequestException('x-player-id header is required');
+        }
+        if (!clubId || !clubId.trim()) {
+            throw new common_1.BadRequestException('x-club-id header is required');
+        }
+        if (!body || !body.message) {
+            throw new common_1.BadRequestException('Feedback message is required');
+        }
+        return this.authService.submitPlayerFeedback(playerId.trim(), clubId.trim(), body.message, body.rating);
+    }
+    async getPlayerFeedbackHistory(playerId, clubId) {
+        if (!playerId || !playerId.trim()) {
+            throw new common_1.BadRequestException('x-player-id header is required');
+        }
+        if (!clubId || !clubId.trim()) {
+            throw new common_1.BadRequestException('x-club-id header is required');
+        }
+        return this.authService.getPlayerFeedbackHistory(playerId.trim(), clubId.trim());
     }
 };
 exports.AuthController = AuthController;
@@ -236,6 +280,14 @@ __decorate([
     __metadata("design:paramtypes", [player_signup_dto_1.PlayerSignupDto]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "playerSignup", null);
+__decorate([
+    (0, common_1.Post)('player/submit-pan'),
+    (0, common_1.UsePipes)(new common_1.ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "submitPanCard", null);
 __decorate([
     (0, common_1.Get)('player/me'),
     __param(0, (0, common_1.Headers)('x-player-id')),
@@ -341,6 +393,14 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "getPlayerStats", null);
 __decorate([
+    (0, common_1.Get)('player/fnb/menu'),
+    __param(0, (0, common_1.Headers)('x-club-id')),
+    __param(1, (0, common_1.Query)('category')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "getPlayerFnbMenu", null);
+__decorate([
     (0, common_1.Post)('player/fnb/order'),
     __param(0, (0, common_1.Headers)('x-player-id')),
     __param(1, (0, common_1.Headers)('x-club-id')),
@@ -349,6 +409,23 @@ __decorate([
     __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "placeFnbOrder", null);
+__decorate([
+    (0, common_1.Post)('player/feedback'),
+    __param(0, (0, common_1.Headers)('x-player-id')),
+    __param(1, (0, common_1.Headers)('x-club-id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "submitPlayerFeedback", null);
+__decorate([
+    (0, common_1.Get)('player/feedback/history'),
+    __param(0, (0, common_1.Headers)('x-player-id')),
+    __param(1, (0, common_1.Headers)('x-club-id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "getPlayerFeedbackHistory", null);
 exports.AuthController = AuthController = __decorate([
     (0, common_1.Controller)('auth'),
     __metadata("design:paramtypes", [auth_service_1.AuthService,

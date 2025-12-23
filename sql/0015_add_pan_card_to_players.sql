@@ -13,3 +13,4 @@ WHERE pan_card IS NOT NULL;
 -- Add comment to explain the column
 COMMENT ON COLUMN players.pan_card IS 'PAN card number (unique per club, format: ABCDE1234F)';
 
+
