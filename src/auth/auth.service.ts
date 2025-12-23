@@ -1780,10 +1780,12 @@ export class AuthService {
             club: { id: clubId.trim() },
             status: TableStatus.AVAILABLE
           },
+          relations: ['club'], // CRITICAL: Load club relation
           order: { tableNumber: 'ASC' }
         });
       } catch (dbError) {
         console.error('Database error fetching tables:', dbError);
+        console.error('Error details:', dbError);
         throw new BadRequestException('Unable to fetch tables. Please try again.');
       }
 
