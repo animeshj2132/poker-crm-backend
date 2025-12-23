@@ -5,9 +5,29 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+
+// Define Tournament interface
+interface Tournament {
+  id: string;
+  club_id: string;
+  name: string;
+  description: string | null;
+  tournament_type: string;
+  buy_in: number;
+  prize_pool: number;
+  max_players: number;
+  current_players: number;
+  start_time: Date;
+  end_time: Date | null;
+  status: string;
+  structure: string | null;
+  blind_levels: any;
+  created_at: Date;
+  updated_at: Date;
+}
 
 @Injectable()
 export class PlayerTournamentsService {
@@ -18,7 +38,7 @@ export class PlayerTournamentsService {
   ) {}
 
   /**
-   * Get upcoming tournaments
+   * Get upcoming tournaments from database
    */
   async getUpcomingTournaments(clubId: string, limit: number = 20) {
     try {
@@ -33,29 +53,39 @@ export class PlayerTournamentsService {
         throw new NotFoundException('Club not found');
       }
 
-      // Sample tournaments
-      const tournaments = [
-        {
-          id: 'tournament-1',
-          name: 'Friday Night Tournament',
-          startDate: new Date(Date.now() + 86400000 * 2).toISOString(),
-          buyIn: 500,
-          prizePool: 10000,
-          maxPlayers: 50,
-          registeredPlayers: 23,
-          status: 'upcoming',
-        },
-        {
-          id: 'tournament-2',
-          name: 'Weekend Championship',
-          startDate: new Date(Date.now() + 86400000 * 5).toISOString(),
-          buyIn: 1000,
-          prizePool: 25000,
-          maxPlayers: 100,
-          registeredPlayers: 45,
-          status: 'upcoming',
-        },
-      ];
+      // Query actual tournaments from database
+      const tournamentsData = await this.playersRepo.query(`
+        SELECT 
+          id, 
+          name, 
+          description,
+          buy_in, 
+          prize_pool, 
+          max_players, 
+          current_players as "registeredPlayers",
+          start_time as "startDate", 
+          status,
+          structure
+        FROM tournaments 
+        WHERE club_id = $1 
+          AND status IN ('upcoming', 'registration_open')
+          AND start_time > NOW()
+        ORDER BY start_time ASC
+        LIMIT $2
+      `, [clubId, limit]) as Tournament[];
+
+      const tournaments = tournamentsData.map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        startDate: t.startDate,
+        buyIn: parseFloat(t.buy_in),
+        prizePool: parseFloat(t.prize_pool),
+        maxPlayers: t.max_players,
+        registeredPlayers: t.registeredPlayers || 0,
+        status: t.status,
+        structure: t.structure,
+      }));
 
       return {
         tournaments,

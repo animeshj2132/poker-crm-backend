@@ -18,10 +18,13 @@ const typeorm_1 = require("@nestjs/typeorm");
 const typeorm_2 = require("typeorm");
 const player_entity_1 = require("../clubs/entities/player.entity");
 const clubs_service_1 = require("../clubs/clubs.service");
+const typeorm_3 = require("@nestjs/typeorm");
+const typeorm_4 = require("typeorm");
 let PlayerOffersService = class PlayerOffersService {
-    constructor(playersRepo, clubsService) {
+    constructor(playersRepo, clubsService, dataSource) {
         this.playersRepo = playersRepo;
         this.clubsService = clubsService;
+        this.dataSource = dataSource;
     }
     async getActiveOffers(clubId, playerId) {
         try {
@@ -33,10 +36,34 @@ let PlayerOffersService = class PlayerOffersService {
             if (!club) {
                 throw new common_1.NotFoundException('Club not found');
             }
+            const query = `
+        SELECT 
+          id,
+          club_id,
+          title,
+          description,
+          offer_type,
+          value,
+          validity_start,
+          validity_end,
+          is_active,
+          created_at,
+          updated_at,
+          image_url,
+          terms,
+          target_audience,
+          created_by
+        FROM staff_offers
+        WHERE club_id = $1
+          AND is_active = true
+          AND validity_start <= NOW()
+          AND validity_end > NOW()
+        ORDER BY created_at DESC
+      `;
+            const offers = await this.dataSource.query(query, [clubId]);
             return {
-                offers: [],
-                total: 0,
-                note: 'Offers are managed via Supabase staff_offers table with real-time updates',
+                offers: offers || [],
+                total: (offers === null || offers === void 0 ? void 0 : offers.length) || 0,
             };
         }
         catch (err) {
@@ -120,7 +147,9 @@ exports.PlayerOffersService = PlayerOffersService;
 exports.PlayerOffersService = PlayerOffersService = __decorate([
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(player_entity_1.Player)),
+    __param(2, (0, typeorm_3.InjectDataSource)()),
     __metadata("design:paramtypes", [typeorm_2.Repository,
-        clubs_service_1.ClubsService])
+        clubs_service_1.ClubsService,
+        typeorm_4.DataSource])
 ], PlayerOffersService);
 //# sourceMappingURL=player-offers.service.js.map

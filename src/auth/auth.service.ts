@@ -1274,16 +1274,12 @@ export class AuthService {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId.trim(), club: { id: clubId.trim() } }
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club']
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
-      }
-
-      // Edge case: Verify player belongs to club
-      if (!player.club || player.club.id !== clubId.trim()) {
-        throw new ForbiddenException('Player does not belong to this club');
       }
 
       // Edge case: Check player account status
@@ -1601,16 +1597,12 @@ export class AuthService {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId.trim(), club: { id: clubId.trim() } }
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club']
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
-      }
-
-      // Edge case: Verify player belongs to club
-      if (!player.club || player.club.id !== clubId.trim()) {
-        throw new ForbiddenException('Player does not belong to this club');
       }
 
       // Edge case: Check player account status
@@ -1624,7 +1616,8 @@ export class AuthService {
         entry = await this.waitlistRepo.findOne({
           where: {
             club: { id: clubId.trim() },
-            email: player.email.trim().toLowerCase()
+            playerId: playerId.trim(),
+            status: WaitlistStatus.PENDING
           },
           order: { createdAt: 'DESC' }
         });
@@ -1760,16 +1753,12 @@ export class AuthService {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId.trim(), club: { id: clubId.trim() } }
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club']
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
-      }
-
-      // Edge case: Verify player belongs to club
-      if (!player.club || player.club.id !== clubId.trim()) {
-        throw new ForbiddenException('Player does not belong to this club');
       }
 
       // Edge case: Check player account status
@@ -2277,16 +2266,12 @@ export class AuthService {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId.trim(), club: { id: clubId.trim() } }
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club']
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
-      }
-
-      // Edge case: Verify player belongs to club
-      if (!player.club || player.club.id !== clubId.trim()) {
-        throw new ForbiddenException('Player does not belong to this club');
       }
 
       // Edge case: Check player account status
@@ -2356,6 +2341,177 @@ export class AuthService {
         throw err;
       }
       throw new BadRequestException('Failed to get player stats');
+    }
+  }
+
+  /**
+   * Get F&B menu for players (no auth required)
+   */
+  async getPlayerFnbMenu(clubId: string, category?: string) {
+    try {
+      // Validate UUID
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Query F&B menu from database
+      let query = `
+        SELECT 
+          id, 
+          name, 
+          description,
+          category,
+          price,
+          is_available as "isAvailable",
+          image_url as "imageUrl"
+        FROM fnb_menu 
+        WHERE club_id = $1 AND is_available = true
+      `;
+      const params: any[] = [clubId];
+
+      if (category) {
+        query += ` AND LOWER(category) = LOWER($2)`;
+        params.push(category);
+      }
+
+      query += ` ORDER BY category ASC, name ASC`;
+
+      const menuItems = await this.playersRepo.query(query, params);
+
+      return {
+        menuItems: menuItems.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          category: item.category,
+          price: parseFloat(item.price),
+          isAvailable: item.isAvailable,
+          imageUrl: item.imageUrl,
+        })),
+        total: menuItems.length,
+      };
+    } catch (err) {
+      console.error('Get player F&B menu error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get menu');
+    }
+  }
+
+  /**
+   * Submit player feedback
+   */
+  async submitPlayerFeedback(
+    playerId: string,
+    clubId: string,
+    message: string,
+    rating?: number,
+  ) {
+    try {
+      // Validate UUIDs
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club'],
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Store feedback in database
+      await this.playersRepo.query(
+        `
+        INSERT INTO player_feedback (player_id, club_id, message, rating, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT DO NOTHING
+      `,
+        [playerId, clubId, message, rating || null],
+      );
+
+      return {
+        success: true,
+        message: 'Feedback submitted successfully',
+        submittedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      console.error('Submit feedback error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to submit feedback');
+    }
+  }
+
+  /**
+   * Get feedback history for a player within a club
+   */
+  async getPlayerFeedbackHistory(playerId: string, clubId: string) {
+    try {
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Ensure player belongs to the club before returning feedback
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club'],
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      const rows = await this.playersRepo.query(
+        `
+        SELECT id, message, rating, created_at
+        FROM player_feedback
+        WHERE player_id = $1 AND club_id = $2
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+        [playerId, clubId],
+      );
+
+      return {
+        success: true,
+        feedback: rows,
+      };
+    } catch (err) {
+      console.error('Get feedback history error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to fetch feedback history');
     }
   }
 }

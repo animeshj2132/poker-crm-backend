@@ -24,3 +24,4 @@ COMMENT ON COLUMN public.players.credit_enabled_at IS 'Timestamp when credit was
 
 -- Create index for querying players with credit enabled
 CREATE INDEX IF NOT EXISTS idx_players_credit_enabled ON public.players(credit_enabled) WHERE credit_enabled = true;
+

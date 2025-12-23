@@ -33,28 +33,37 @@ let PlayerTournamentsService = class PlayerTournamentsService {
             if (!club) {
                 throw new common_1.NotFoundException('Club not found');
             }
-            const tournaments = [
-                {
-                    id: 'tournament-1',
-                    name: 'Friday Night Tournament',
-                    startDate: new Date(Date.now() + 86400000 * 2).toISOString(),
-                    buyIn: 500,
-                    prizePool: 10000,
-                    maxPlayers: 50,
-                    registeredPlayers: 23,
-                    status: 'upcoming',
-                },
-                {
-                    id: 'tournament-2',
-                    name: 'Weekend Championship',
-                    startDate: new Date(Date.now() + 86400000 * 5).toISOString(),
-                    buyIn: 1000,
-                    prizePool: 25000,
-                    maxPlayers: 100,
-                    registeredPlayers: 45,
-                    status: 'upcoming',
-                },
-            ];
+            const tournamentsData = await this.playersRepo.query(`
+        SELECT 
+          id, 
+          name, 
+          description,
+          buy_in, 
+          prize_pool, 
+          max_players, 
+          current_players as "registeredPlayers",
+          start_time as "startDate", 
+          status,
+          structure
+        FROM tournaments 
+        WHERE club_id = $1 
+          AND status IN ('upcoming', 'registration_open')
+          AND start_time > NOW()
+        ORDER BY start_time ASC
+        LIMIT $2
+      `, [clubId, limit]);
+            const tournaments = tournamentsData.map((t) => ({
+                id: t.id,
+                name: t.name,
+                description: t.description,
+                startDate: t.startDate,
+                buyIn: parseFloat(t.buy_in),
+                prizePool: parseFloat(t.prize_pool),
+                maxPlayers: t.max_players,
+                registeredPlayers: t.registeredPlayers || 0,
+                status: t.status,
+                structure: t.structure,
+            }));
             return {
                 tournaments,
                 total: tournaments.length,
