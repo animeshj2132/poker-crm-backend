@@ -25,7 +25,7 @@ async function setupTestData() {
       INSERT INTO clubs (name, code, tenant_id)
       VALUES (
         'Poker Palace Test Club',
-        'PP2024',
+        '202024',
         (SELECT id FROM tenants LIMIT 1)
       )
       ON CONFLICT (code) DO UPDATE 

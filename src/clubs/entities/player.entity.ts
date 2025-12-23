@@ -13,6 +13,7 @@ import { Affiliate } from './affiliate.entity';
 
 @Entity({ name: 'players' })
 @Index(['club', 'email'], { unique: true })
+@Index(['club', 'panCard'], { unique: true, where: 'pan_card IS NOT NULL' }) // Unique PAN per club
 @Index(['affiliate'])
 export class Player {
   @PrimaryGeneratedColumn('uuid')
@@ -34,6 +35,9 @@ export class Player {
 
   @Column({ type: 'varchar', length: 20, nullable: true, name: 'phone_number' })
   phoneNumber!: string | null;
+
+  @Column({ type: 'varchar', length: 10, nullable: true, name: 'pan_card' })
+  panCard!: string | null; // PAN card number (unique per club)
 
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'player_id' })
   playerId!: string | null; // Internal player ID

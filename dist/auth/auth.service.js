@@ -1474,11 +1474,13 @@ let AuthService = class AuthService {
                         club: { id: clubId.trim() },
                         status: table_entity_1.TableStatus.AVAILABLE
                     },
+                    relations: ['club'],
                     order: { tableNumber: 'ASC' }
                 });
             }
             catch (dbError) {
                 console.error('Database error fetching tables:', dbError);
+                console.error('Error details:', dbError);
                 throw new common_1.BadRequestException('Unable to fetch tables. Please try again.');
             }
             if (tables.length === 0) {

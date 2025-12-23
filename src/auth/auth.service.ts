@@ -824,6 +824,87 @@ export class AuthService {
   }
 
   /**
+   * Submit PAN card (unique per club)
+   */
+  async submitPanCard(playerId: string, clubId: string, panCard: string) {
+    try {
+      // Validate inputs
+      if (!playerId || !playerId.trim()) {
+        throw new BadRequestException('Player ID is required');
+      }
+      if (!clubId || !clubId.trim()) {
+        throw new BadRequestException('Club ID is required');
+      }
+      if (!panCard || !panCard.trim()) {
+        throw new BadRequestException('PAN card number is required');
+      }
+
+      const trimmedPlayerId = playerId.trim();
+      const trimmedClubId = clubId.trim();
+      const trimmedPanCard = panCard.trim().toUpperCase();
+
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(trimmedPlayerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(trimmedClubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Validate PAN card format
+      const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+      if (!panRegex.test(trimmedPanCard)) {
+        throw new BadRequestException('Invalid PAN card format. Expected: ABCDE1234F');
+      }
+
+      // Check if club exists
+      const club = await this.clubsService.findById(trimmedClubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Check if player exists
+      const player = await this.playersRepo.findOne({
+        where: { id: trimmedPlayerId, club: { id: trimmedClubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Check if PAN card is already used by another player in the same club
+      const existingPlayer = await this.playersRepo.findOne({
+        where: {
+          club: { id: trimmedClubId },
+          panCard: trimmedPanCard
+        }
+      });
+
+      if (existingPlayer && existingPlayer.id !== trimmedPlayerId) {
+        throw new ConflictException('This PAN card is already registered with another player in your club');
+      }
+
+      // Update player with PAN card
+      player.panCard = trimmedPanCard;
+      await this.playersRepo.save(player);
+
+      return {
+        success: true,
+        message: 'PAN card submitted successfully',
+        panCard: trimmedPanCard
+      };
+    } catch (err) {
+      console.error('Submit PAN card error:', err);
+      if (err instanceof BadRequestException || err instanceof NotFoundException || err instanceof ConflictException) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to submit PAN card');
+    }
+  }
+
+  /**
    * Update player profile
    */
   async updatePlayerProfile(

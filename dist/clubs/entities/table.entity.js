@@ -36,22 +36,23 @@ __decorate([
 ], Table.prototype, "id", void 0);
 __decorate([
     (0, typeorm_1.ManyToOne)(() => club_entity_1.Club, { nullable: false }),
+    (0, typeorm_1.JoinColumn)({ name: 'club_id' }),
     __metadata("design:type", club_entity_1.Club)
 ], Table.prototype, "club", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'int' }),
+    (0, typeorm_1.Column)({ name: 'table_number', type: 'int' }),
     __metadata("design:type", Number)
 ], Table.prototype, "tableNumber", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'varchar' }),
+    (0, typeorm_1.Column)({ name: 'table_type', type: 'varchar' }),
     __metadata("design:type", String)
 ], Table.prototype, "tableType", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'int' }),
+    (0, typeorm_1.Column)({ name: 'max_seats', type: 'int' }),
     __metadata("design:type", Number)
 ], Table.prototype, "maxSeats", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'int', default: 0 }),
+    (0, typeorm_1.Column)({ name: 'current_seats', type: 'int', default: 0 }),
     __metadata("design:type", Number)
 ], Table.prototype, "currentSeats", void 0);
 __decorate([
@@ -59,11 +60,11 @@ __decorate([
     __metadata("design:type", String)
 ], Table.prototype, "status", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'decimal', precision: 10, scale: 2, nullable: true }),
+    (0, typeorm_1.Column)({ name: 'min_buy_in', type: 'decimal', precision: 10, scale: 2, nullable: true }),
     __metadata("design:type", Object)
 ], Table.prototype, "minBuyIn", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'decimal', precision: 10, scale: 2, nullable: true }),
+    (0, typeorm_1.Column)({ name: 'max_buy_in', type: 'decimal', precision: 10, scale: 2, nullable: true }),
     __metadata("design:type", Object)
 ], Table.prototype, "maxBuyIn", void 0);
 __decorate([
@@ -71,19 +72,19 @@ __decorate([
     __metadata("design:type", Object)
 ], Table.prototype, "notes", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'varchar', nullable: true }),
+    (0, typeorm_1.Column)({ name: 'reserved_for', type: 'varchar', nullable: true }),
     __metadata("design:type", Object)
 ], Table.prototype, "reservedFor", void 0);
 __decorate([
-    (0, typeorm_1.Column)({ type: 'timestamp', nullable: true }),
+    (0, typeorm_1.Column)({ name: 'reserved_until', type: 'timestamp', nullable: true }),
     __metadata("design:type", Object)
 ], Table.prototype, "reservedUntil", void 0);
 __decorate([
-    (0, typeorm_1.CreateDateColumn)(),
+    (0, typeorm_1.CreateDateColumn)({ name: 'created_at' }),
     __metadata("design:type", Date)
 ], Table.prototype, "createdAt", void 0);
 __decorate([
-    (0, typeorm_1.UpdateDateColumn)(),
+    (0, typeorm_1.UpdateDateColumn)({ name: 'updated_at' }),
     __metadata("design:type", Date)
 ], Table.prototype, "updatedAt", void 0);
 exports.Table = Table = __decorate([
