@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn
@@ -29,6 +30,7 @@ export class Table {
   id!: string;
 
   @ManyToOne(() => Club, { nullable: false })
+  @JoinColumn({ name: 'club_id' })
   club!: Club;
 
   @Column({ type: 'int' })
