@@ -84,6 +84,34 @@ export class AuthController {
   }
 
   /**
+   * Submit PAN card (unique per club)
+   * POST /api/auth/player/submit-pan
+   */
+  @Post('player/submit-pan')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async submitPanCard(@Body() body: { playerId: string; clubId: string; panCard: string }) {
+    if (!body.playerId || !body.playerId.trim()) {
+      throw new BadRequestException('Player ID is required');
+    }
+    if (!body.clubId || !body.clubId.trim()) {
+      throw new BadRequestException('Club ID is required');
+    }
+    if (!body.panCard || !body.panCard.trim()) {
+      throw new BadRequestException('PAN card number is required');
+    }
+
+    const panCard = body.panCard.trim().toUpperCase();
+    
+    // Validate PAN card format: 5 letters, 4 digits, 1 letter
+    const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+    if (!panRegex.test(panCard)) {
+      throw new BadRequestException('Invalid PAN card format. Expected: ABCDE1234F');
+    }
+
+    return this.authService.submitPanCard(body.playerId.trim(), body.clubId.trim(), panCard);
+  }
+
+  /**
    * Get player profile
    * GET /api/auth/player/me
    */

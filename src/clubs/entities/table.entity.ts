@@ -33,40 +33,40 @@ export class Table {
   @JoinColumn({ name: 'club_id' })
   club!: Club;
 
-  @Column({ type: 'int' })
+  @Column({ name: 'table_number', type: 'int' })
   tableNumber!: number;
 
-  @Column({ type: 'varchar' })
+  @Column({ name: 'table_type', type: 'varchar' })
   tableType!: TableType;
 
-  @Column({ type: 'int' })
+  @Column({ name: 'max_seats', type: 'int' })
   maxSeats!: number;
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ name: 'current_seats', type: 'int', default: 0 })
   currentSeats!: number;
 
   @Column({ type: 'varchar', default: TableStatus.AVAILABLE })
   status!: TableStatus;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ name: 'min_buy_in', type: 'decimal', precision: 10, scale: 2, nullable: true })
   minBuyIn!: number | null;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ name: 'max_buy_in', type: 'decimal', precision: 10, scale: 2, nullable: true })
   maxBuyIn!: number | null;
 
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ name: 'reserved_for', type: 'varchar', nullable: true })
   reservedFor!: string | null; // Player ID or name
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ name: 'reserved_until', type: 'timestamp', nullable: true })
   reservedUntil!: Date | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt!: Date;
 }
 
