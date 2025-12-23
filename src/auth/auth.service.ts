@@ -2514,6 +2514,67 @@ export class AuthService {
       throw new BadRequestException('Failed to fetch feedback history');
     }
   }
+
+  /**
+   * Create a per-field profile change request for staff review
+   */
+  async requestProfileFieldChange(
+    playerId: string,
+    clubId: string,
+    fieldName: string,
+    currentValue: string | null,
+    requestedValue: string,
+  ) {
+    try {
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!fieldName || !fieldName.trim()) {
+        throw new BadRequestException('Field name is required');
+      }
+      if (!requestedValue || !requestedValue.trim()) {
+        throw new BadRequestException('Requested value is required');
+      }
+
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club'],
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      await this.playersRepo.query(
+        `
+        INSERT INTO player_profile_change_requests
+          (player_id, club_id, field_name, current_value, requested_value, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
+      `,
+        [playerId, clubId, fieldName.trim(), currentValue, requestedValue],
+      );
+
+      return {
+        success: true,
+        message: 'Profile change request submitted',
+      };
+    } catch (err) {
+      console.error('Profile change request error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to submit profile change request');
+    }
+  }
 }
 
 

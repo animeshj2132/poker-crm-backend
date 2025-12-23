@@ -2049,6 +2049,47 @@ let AuthService = class AuthService {
             throw new common_1.BadRequestException('Failed to fetch feedback history');
         }
     }
+    async requestProfileFieldChange(playerId, clubId, fieldName, currentValue, requestedValue) {
+        try {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(playerId)) {
+                throw new common_1.BadRequestException('Invalid player ID format');
+            }
+            if (!uuidRegex.test(clubId)) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            if (!fieldName || !fieldName.trim()) {
+                throw new common_1.BadRequestException('Field name is required');
+            }
+            if (!requestedValue || !requestedValue.trim()) {
+                throw new common_1.BadRequestException('Requested value is required');
+            }
+            const player = await this.playersRepo.findOne({
+                where: { id: playerId, club: { id: clubId } },
+                relations: ['club'],
+            });
+            if (!player) {
+                throw new common_1.NotFoundException('Player not found');
+            }
+            await this.playersRepo.query(`
+        INSERT INTO player_profile_change_requests
+          (player_id, club_id, field_name, current_value, requested_value, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
+      `, [playerId, clubId, fieldName.trim(), currentValue, requestedValue]);
+            return {
+                success: true,
+                message: 'Profile change request submitted',
+            };
+        }
+        catch (err) {
+            console.error('Profile change request error:', err);
+            if (err instanceof common_1.BadRequestException ||
+                err instanceof common_1.NotFoundException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to submit profile change request');
+        }
+    }
 };
 exports.AuthService = AuthService;
 exports.AuthService = AuthService = __decorate([
