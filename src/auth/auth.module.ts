@@ -17,7 +17,14 @@ import { ApiKeyAuthGuard } from './api-key.guard';
   imports: [
     UsersModule,
     ClubsModule,
-    TypeOrmModule.forFeature([UserTenantRole, UserClubRole, Player, FinancialTransaction, WaitlistEntry, Table])
+    TypeOrmModule.forFeature([
+      UserTenantRole,
+      UserClubRole,
+      Player,
+      FinancialTransaction,
+      WaitlistEntry,
+      Table,
+    ]),
   ],
   providers: [AuthService, ApiKeyAuthGuard],
   controllers: [AuthController],

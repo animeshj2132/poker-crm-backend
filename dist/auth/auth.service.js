@@ -17,6 +17,7 @@ const common_1 = require("@nestjs/common");
 const roles_1 = require("../common/rbac/roles");
 const users_service_1 = require("../users/users.service");
 const clubs_service_1 = require("../clubs/clubs.service");
+const fnb_service_1 = require("../clubs/services/fnb.service");
 const user_tenant_role_entity_1 = require("../users/user-tenant-role.entity");
 const user_club_role_entity_1 = require("../users/user-club-role.entity");
 const player_entity_1 = require("../clubs/entities/player.entity");
@@ -32,9 +33,10 @@ const financial_transactions_service_1 = require("../clubs/services/financial-tr
 const waitlist_seating_service_1 = require("../clubs/services/waitlist-seating.service");
 const credit_requests_service_1 = require("../clubs/services/credit-requests.service");
 let AuthService = class AuthService {
-    constructor(usersService, clubsService, affiliatesService, financialTransactionsService, waitlistSeatingService, creditRequestsService, userTenantRoleRepo, userClubRoleRepo, playersRepo, transactionsRepo, waitlistRepo, tablesRepo) {
+    constructor(usersService, clubsService, fnbService, affiliatesService, financialTransactionsService, waitlistSeatingService, creditRequestsService, userTenantRoleRepo, userClubRoleRepo, playersRepo, transactionsRepo, waitlistRepo, tablesRepo) {
         this.usersService = usersService;
         this.clubsService = clubsService;
+        this.fnbService = fnbService;
         this.affiliatesService = affiliatesService;
         this.financialTransactionsService = financialTransactionsService;
         this.waitlistSeatingService = waitlistSeatingService;
@@ -1809,22 +1811,25 @@ let AuthService = class AuthService {
             if (!orderData.items || !Array.isArray(orderData.items) || orderData.items.length === 0) {
                 throw new common_1.BadRequestException('Order must contain at least one item');
             }
+            const fnbOrder = await this.fnbService.createOrder(clubId.trim(), {
+                playerName: orderData.playerName || player.name,
+                playerId: player.id,
+                tableNumber: orderData.tableNumber || 'N/A',
+                items: orderData.items.map((item) => ({
+                    name: item.name,
+                    quantity: item.quantity,
+                    price: parseFloat(item.price) || 0,
+                })),
+                totalAmount: parseFloat(orderData.totalAmount) || 0,
+                specialInstructions: orderData.notes || undefined,
+            }, player.name);
             return {
                 success: true,
                 message: 'Order received successfully',
-                orderId: `fnb-${Date.now()}`,
-                orderData: {
-                    playerId: player.id,
-                    playerName: player.name,
-                    clubId: club.id,
-                    clubName: club.name,
-                    items: orderData.items,
-                    totalAmount: orderData.totalAmount,
-                    notes: orderData.notes,
-                    tableNumber: orderData.tableNumber,
-                    status: 'pending',
-                    createdAt: new Date().toISOString()
-                }
+                orderId: fnbOrder.id,
+                orderNumber: fnbOrder.orderNumber,
+                status: fnbOrder.status,
+                createdAt: fnbOrder.createdAt,
             };
         }
         catch (err) {
@@ -1976,6 +1981,49 @@ let AuthService = class AuthService {
             throw new common_1.BadRequestException('Failed to get menu');
         }
     }
+    async getPlayerFnbOrders(playerId, clubId) {
+        try {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(playerId.trim())) {
+                throw new common_1.BadRequestException('Invalid player ID format');
+            }
+            if (!uuidRegex.test(clubId.trim())) {
+                throw new common_1.BadRequestException('Invalid club ID format');
+            }
+            const player = await this.playersRepo.findOne({
+                where: { id: playerId.trim(), club: { id: clubId.trim() } },
+                relations: ['club'],
+            });
+            if (!player) {
+                throw new common_1.NotFoundException('Player not found');
+            }
+            const orders = await this.fnbService.getOrders(clubId.trim(), {
+                playerId: playerId.trim(),
+            });
+            return {
+                success: true,
+                orders: orders.map((order) => ({
+                    id: order.id,
+                    orderNumber: order.orderNumber,
+                    tableNumber: order.tableNumber,
+                    items: order.items,
+                    totalAmount: order.totalAmount,
+                    status: order.status,
+                    createdAt: order.createdAt,
+                    updatedAt: order.updatedAt,
+                    statusHistory: order.statusHistory,
+                })),
+            };
+        }
+        catch (err) {
+            console.error('Get player FNB orders error:', err);
+            if (err instanceof common_1.BadRequestException ||
+                err instanceof common_1.NotFoundException) {
+                throw err;
+            }
+            throw new common_1.BadRequestException('Failed to get orders');
+        }
+    }
     async submitPlayerFeedback(playerId, clubId, message, rating) {
         try {
             const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -2094,14 +2142,15 @@ let AuthService = class AuthService {
 exports.AuthService = AuthService;
 exports.AuthService = AuthService = __decorate([
     (0, common_1.Injectable)(),
-    __param(6, (0, typeorm_1.InjectRepository)(user_tenant_role_entity_1.UserTenantRole)),
-    __param(7, (0, typeorm_1.InjectRepository)(user_club_role_entity_1.UserClubRole)),
-    __param(8, (0, typeorm_1.InjectRepository)(player_entity_1.Player)),
-    __param(9, (0, typeorm_1.InjectRepository)(financial_transaction_entity_1.FinancialTransaction)),
-    __param(10, (0, typeorm_1.InjectRepository)(waitlist_entry_entity_1.WaitlistEntry)),
-    __param(11, (0, typeorm_1.InjectRepository)(table_entity_1.Table)),
+    __param(7, (0, typeorm_1.InjectRepository)(user_tenant_role_entity_1.UserTenantRole)),
+    __param(8, (0, typeorm_1.InjectRepository)(user_club_role_entity_1.UserClubRole)),
+    __param(9, (0, typeorm_1.InjectRepository)(player_entity_1.Player)),
+    __param(10, (0, typeorm_1.InjectRepository)(financial_transaction_entity_1.FinancialTransaction)),
+    __param(11, (0, typeorm_1.InjectRepository)(waitlist_entry_entity_1.WaitlistEntry)),
+    __param(12, (0, typeorm_1.InjectRepository)(table_entity_1.Table)),
     __metadata("design:paramtypes", [users_service_1.UsersService,
         clubs_service_1.ClubsService,
+        fnb_service_1.FnbService,
         affiliates_service_1.AffiliatesService,
         financial_transactions_service_1.FinancialTransactionsService,
         waitlist_seating_service_1.WaitlistSeatingService,

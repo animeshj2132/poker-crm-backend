@@ -28,7 +28,14 @@ exports.AuthModule = AuthModule = __decorate([
         imports: [
             users_module_1.UsersModule,
             clubs_module_1.ClubsModule,
-            typeorm_1.TypeOrmModule.forFeature([user_tenant_role_entity_1.UserTenantRole, user_club_role_entity_1.UserClubRole, player_entity_1.Player, financial_transaction_entity_1.FinancialTransaction, waitlist_entry_entity_1.WaitlistEntry, table_entity_1.Table])
+            typeorm_1.TypeOrmModule.forFeature([
+                user_tenant_role_entity_1.UserTenantRole,
+                user_club_role_entity_1.UserClubRole,
+                player_entity_1.Player,
+                financial_transaction_entity_1.FinancialTransaction,
+                waitlist_entry_entity_1.WaitlistEntry,
+                table_entity_1.Table,
+            ]),
         ],
         providers: [auth_service_1.AuthService, api_key_guard_1.ApiKeyAuthGuard],
         controllers: [auth_controller_1.AuthController],

@@ -218,6 +218,15 @@ let AuthController = class AuthController {
         }
         return this.authService.placeFnbOrder(playerId.trim(), clubId.trim(), body);
     }
+    async getPlayerFnbOrders(playerId, clubId) {
+        if (!playerId || !playerId.trim()) {
+            throw new common_1.BadRequestException('x-player-id header is required');
+        }
+        if (!clubId || !clubId.trim()) {
+            throw new common_1.BadRequestException('x-club-id header is required');
+        }
+        return this.authService.getPlayerFnbOrders(playerId.trim(), clubId.trim());
+    }
     async submitPlayerFeedback(playerId, clubId, body) {
         if (!playerId || !playerId.trim()) {
             throw new common_1.BadRequestException('x-player-id header is required');
@@ -422,6 +431,14 @@ __decorate([
     __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "placeFnbOrder", null);
+__decorate([
+    (0, common_1.Get)('player/fnb/orders'),
+    __param(0, (0, common_1.Headers)('x-player-id')),
+    __param(1, (0, common_1.Headers)('x-club-id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "getPlayerFnbOrders", null);
 __decorate([
     (0, common_1.Post)('player/feedback'),
     __param(0, (0, common_1.Headers)('x-player-id')),
