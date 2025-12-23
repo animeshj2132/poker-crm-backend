@@ -34,7 +34,8 @@ const migrations = [
   '0012_add_credit_system_to_players.sql',
   '0015_add_pan_card_to_players.sql',
   'fnb-tables.sql',
-  '0016_staff_offers.sql'
+  '0016_staff_offers.sql',
+  '0019_tournament_registrations.sql'
 ];
 
 async function runMigrations() {

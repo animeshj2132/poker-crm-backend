@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { GlobalRole } from '../common/rbac/roles';
 import { UsersService } from '../users/users.service';
 import { ClubsService } from '../clubs/clubs.service';
+import { FnbService } from '../clubs/services/fnb.service';
 import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
@@ -22,6 +23,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly clubsService: ClubsService,
+    private readonly fnbService: FnbService,
     private readonly affiliatesService: AffiliatesService,
     private readonly financialTransactionsService: FinancialTransactionsService,
     private readonly waitlistSeatingService: WaitlistSeatingService,
@@ -2208,24 +2210,31 @@ export class AuthService {
         throw new BadRequestException('Order must contain at least one item');
       }
 
-      // For now, return success - full FNB implementation will come later
-      // This allows players to place orders after KYC approval
+      // Persist order in FNB system so staff can see and update status
+      const fnbOrder = await this.fnbService.createOrder(
+        clubId.trim(),
+        {
+          playerName: orderData.playerName || player.name,
+          playerId: player.id,
+          tableNumber: orderData.tableNumber || 'N/A',
+          items: orderData.items.map((item: any) => ({
+            name: item.name,
+            quantity: item.quantity,
+            price: parseFloat(item.price) || 0,
+          })),
+          totalAmount: parseFloat(orderData.totalAmount) || 0,
+          specialInstructions: orderData.notes || undefined,
+        },
+        player.name,
+      );
+
       return {
         success: true,
         message: 'Order received successfully',
-        orderId: `fnb-${Date.now()}`,
-        orderData: {
-          playerId: player.id,
-          playerName: player.name,
-          clubId: club.id,
-          clubName: club.name,
-          items: orderData.items,
-          totalAmount: orderData.totalAmount,
-          notes: orderData.notes,
-          tableNumber: orderData.tableNumber,
-          status: 'pending',
-          createdAt: new Date().toISOString()
-        }
+        orderId: fnbOrder.id,
+        orderNumber: fnbOrder.orderNumber,
+        status: fnbOrder.status,
+        createdAt: fnbOrder.createdAt,
       };
     } catch (err) {
       console.error('Place FNB order error:', err);
@@ -2405,6 +2414,61 @@ export class AuthService {
         throw err;
       }
       throw new BadRequestException('Failed to get menu');
+    }
+  }
+
+  /**
+   * Get FNB orders for a player in a club
+   */
+  async getPlayerFnbOrders(playerId: string, clubId: string) {
+    try {
+      // Validate UUID format
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(playerId.trim())) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId.trim())) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Ensure player belongs to club
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club'],
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      const orders = await this.fnbService.getOrders(clubId.trim(), {
+        playerId: playerId.trim(),
+      });
+
+      return {
+        success: true,
+        orders: orders.map((order) => ({
+          id: order.id,
+          orderNumber: order.orderNumber,
+          tableNumber: order.tableNumber,
+          items: order.items,
+          totalAmount: order.totalAmount,
+          status: order.status,
+          createdAt: order.createdAt,
+          updatedAt: order.updatedAt,
+          statusHistory: order.statusHistory,
+        })),
+      };
+    } catch (err) {
+      console.error('Get player FNB orders error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get orders');
     }
   }
 

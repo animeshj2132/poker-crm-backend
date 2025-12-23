@@ -401,6 +401,28 @@ export class AuthController {
   }
 
   /**
+   * Get FNB orders for current player
+   * GET /api/auth/player/fnb/orders
+   */
+  @Get('player/fnb/orders')
+  async getPlayerFnbOrders(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+
+    return this.authService.getPlayerFnbOrders(
+      playerId.trim(),
+      clubId.trim(),
+    );
+  }
+
+  /**
    * Submit Player Feedback
    * POST /api/auth/player/feedback
    */
