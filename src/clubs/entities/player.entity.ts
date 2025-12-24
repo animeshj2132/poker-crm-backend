@@ -69,6 +69,9 @@ export class Player {
   @Column({ type: 'text', nullable: true, name: 'password_hash' })
   passwordHash!: string | null; // For player authentication
 
+  @Column({ type: 'boolean', default: true, name: 'must_reset_password' })
+  mustResetPassword!: boolean; // Force password reset on first login (when created by admin)
+
   @Column({ type: 'varchar', length: 100, nullable: true })
   nickname!: string | null; // Player's display nickname
 

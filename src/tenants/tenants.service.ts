@@ -41,6 +41,13 @@ export class TenantsService {
     return await this.tenantsRepo.findOne({ where: { id } });
   }
 
+  async findByName(name: string) {
+    if (!name || !name.trim()) {
+      return null;
+    }
+    return await this.tenantsRepo.findOne({ where: { name: name.trim() } });
+  }
+
   async updateBranding(
     tenantId: string,
     data: Partial<{

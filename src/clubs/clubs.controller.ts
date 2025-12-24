@@ -40,6 +40,10 @@ import { TableStatus, TableType } from './entities/table.entity';
 import { AffiliatesService } from './services/affiliates.service';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { CreatePlayerDto } from './dto/create-player.dto';
+import { ApprovePlayerDto } from './dto/approve-player.dto';
+import { SuspendPlayerDto } from './dto/suspend-player.dto';
+import { RejectPlayerDto } from './dto/reject-player.dto';
+import { ApproveFieldUpdateDto } from './dto/approve-field-update.dto';
 import { UpdatePlayerDto } from './dto/update-player.dto';
 import { VerifyClubCodeDto } from './dto/verify-club-code.dto';
 import { Player } from './entities/player.entity';
@@ -5443,6 +5447,7 @@ export class ClubsController {
         playerId: player.playerId,
         affiliateCode: player.affiliate?.code || null,
         status: player.status,
+        tempPassword: (player as any).tempPassword, // Temporary password for first login
         createdAt: player.createdAt
       };
     } catch (e) {
@@ -5918,6 +5923,560 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get player'));
+    }
+  }
+
+  /**
+   * Get players pending approval (KYC review)
+   * GET /api/clubs/:id/players/pending-approval
+   */
+  @Get(':id/players-pending-approval')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getPendingApprovalPlayers(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only view players for your assigned club');
+      }
+
+      // Get players with pending KYC status or pending account status
+      const players = await this.playersRepo.find({
+        where: [
+          { club: { id: clubId }, kycStatus: 'pending' },
+          { club: { id: clubId }, status: 'Pending' }
+        ],
+        relations: ['club', 'affiliate'],
+        order: { createdAt: 'DESC' }
+      });
+
+      return players.map(p => ({
+        id: p.id,
+        name: p.name,
+        email: p.email,
+        phoneNumber: p.phoneNumber,
+        playerId: p.playerId,
+        status: p.status,
+        kycStatus: p.kycStatus,
+        kycDocuments: (p as any).kycDocuments || [],
+        registrationDate: p.createdAt,
+        affiliateCode: p.affiliate ? (p.affiliate as any).code : null
+      }));
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get pending players'));
+    }
+  }
+
+  /**
+   * Approve player (account + KYC)
+   * POST /api/clubs/:id/players/:playerId/approve
+   */
+  @Post(':id/players/:playerId/approve')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async approvePlayer(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('playerId', ParseUUIDPipe) playerId: string,
+    @Body() dto: ApprovePlayerDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID formats
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only approve players for your assigned club');
+      }
+
+      // Get player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Edge case: Check if already approved
+      if (player.status === 'Active' && player.kycStatus === 'approved') {
+        throw new BadRequestException('Player is already approved');
+      }
+
+      // Update player status and KYC status
+      await this.playersRepo.update(
+        { id: playerId },
+        {
+          status: 'Active',
+          kycStatus: 'approved',
+          kycApprovedAt: new Date()
+        }
+      );
+
+      // TODO: Log action when audit service is updated
+
+      return {
+        success: true,
+        message: 'Player approved successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          email: player.email,
+          status: 'Active',
+          kycStatus: 'approved'
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to approve player'));
+    }
+  }
+
+  /**
+   * Reject player
+   * POST /api/clubs/:id/players/:playerId/reject
+   */
+  @Post(':id/players/:playerId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async rejectPlayer(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('playerId', ParseUUIDPipe) playerId: string,
+    @Body() dto: RejectPlayerDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID formats
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+
+      // Validate reason
+      if (!dto.reason || !dto.reason.trim()) {
+        throw new BadRequestException('Rejection reason is required');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only reject players for your assigned club');
+      }
+
+      // Get player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Update player status
+      await this.playersRepo.update(
+        { id: playerId },
+        {
+          status: 'Rejected',
+          kycStatus: 'rejected',
+          notes: dto.reason
+        }
+      );
+
+      // TODO: Log action when audit service is updated
+
+      return {
+        success: true,
+        message: 'Player rejected successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          email: player.email,
+          status: 'Rejected',
+          kycStatus: 'rejected',
+          reason: dto.reason
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to reject player'));
+    }
+  }
+
+  /**
+   * Suspend player
+   * POST /api/clubs/:id/players/:playerId/suspend
+   */
+  @Post(':id/players/:playerId/suspend')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async suspendPlayer(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('playerId', ParseUUIDPipe) playerId: string,
+    @Body() dto: SuspendPlayerDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID formats
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+
+      // Validate reason and type
+      if (!dto.reason || !dto.reason.trim()) {
+        throw new BadRequestException('Suspension reason is required');
+      }
+      if (!dto.type || !['temporary', 'permanent'].includes(dto.type)) {
+        throw new BadRequestException('Suspension type must be "temporary" or "permanent"');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only suspend players for your assigned club');
+      }
+
+      // Get player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Edge case: Check if already suspended
+      if (player.status === 'Suspended') {
+        throw new BadRequestException('Player is already suspended');
+      }
+
+      // Update player status
+      const suspensionInfo = {
+        type: dto.type,
+        reason: dto.reason,
+        duration: dto.duration || null,
+        suspendedAt: new Date().toISOString()
+      };
+
+      await this.playersRepo.update(
+        { id: playerId },
+        {
+          status: 'Suspended',
+          notes: JSON.stringify(suspensionInfo)
+        }
+      );
+
+      // TODO: Log action when audit service is updated
+
+      return {
+        success: true,
+        message: 'Player suspended successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          email: player.email,
+          status: 'Suspended',
+          suspensionType: dto.type,
+          reason: dto.reason,
+          duration: dto.duration
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to suspend player'));
+    }
+  }
+
+  /**
+   * Unsuspend player
+   * POST /api/clubs/:id/players/:playerId/unsuspend
+   */
+  @Post(':id/players/:playerId/unsuspend')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async unsuspendPlayer(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('playerId', ParseUUIDPipe) playerId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID formats
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only unsuspend players for your assigned club');
+      }
+
+      // Get player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Edge case: Check if player is suspended
+      if (player.status !== 'Suspended') {
+        throw new BadRequestException('Player is not suspended');
+      }
+
+      // Update player status
+      await this.playersRepo.update(
+        { id: playerId },
+        {
+          status: 'Active'
+        }
+      );
+
+      // TODO: Log action when audit service is updated
+
+      return {
+        success: true,
+        message: 'Player unsuspended successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          email: player.email,
+          status: 'Active'
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to unsuspend player'));
+    }
+  }
+
+  /**
+   * Get suspended players
+   * GET /api/clubs/:id/players-suspended
+   */
+  @Get(':id/players-suspended')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getSuspendedPlayers(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Edge case: Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Validate tenant if provided
+      if (tenantId && !uuidRegex.test(tenantId.trim())) {
+        throw new BadRequestException('Invalid tenant ID format');
+      }
+
+      // Validate club-id header if provided
+      if (headerClubId && !uuidRegex.test(headerClubId.trim())) {
+        throw new BadRequestException('Invalid club ID format in header');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only view players for your assigned club');
+      }
+
+      // Get suspended players
+      const players = await this.playersRepo.find({
+        where: { club: { id: clubId }, status: 'Suspended' },
+        relations: ['club', 'affiliate'],
+        order: { updatedAt: 'DESC' }
+      });
+
+      return players.map(p => {
+        let suspensionInfo: any = {};
+        try {
+          if (p.notes) {
+            suspensionInfo = JSON.parse(p.notes);
+          }
+        } catch (e) {
+          // If notes is not JSON, treat as plain text reason
+          suspensionInfo = { reason: p.notes };
+        }
+
+        return {
+          id: p.id,
+          name: p.name,
+          email: p.email,
+          phoneNumber: p.phoneNumber,
+          playerId: p.playerId,
+          status: p.status,
+          suspensionType: suspensionInfo.type || 'unknown',
+          reason: suspensionInfo.reason || 'No reason provided',
+          duration: suspensionInfo.duration || null,
+          suspendedAt: suspensionInfo.suspendedAt || p.updatedAt,
+          affiliateCode: p.affiliate ? (p.affiliate as any).code : null
+        };
+      });
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get suspended players'));
     }
   }
 
@@ -6572,115 +7131,6 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException((e instanceof Error ? e.message : 'Failed to create transaction'));
-    }
-  }
-
-  /**
-   * Suspend player
-   * POST /api/clubs/:id/players/:playerId/suspend
-   */
-  @Post(':id/players/:playerId/suspend')
-  @Roles(TenantRole.SUPER_ADMIN)
-  async suspendPlayer(
-    @Param('id', ParseUUIDPipe) clubId: string,
-    @Param('playerId', ParseUUIDPipe) playerId: string,
-    @Headers('x-tenant-id') tenantId?: string
-  ) {
-    try {
-      // Edge case: Validate tenant-id header if provided
-      if (tenantId !== undefined && tenantId !== null) {
-        if (typeof tenantId !== 'string' || !tenantId.trim()) {
-          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
-        }
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!uuidRegex.test(tenantId.trim())) {
-          throw new BadRequestException('Invalid tenant ID format');
-        }
-      }
-
-      // Edge case: Validate UUID format for playerId
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(playerId)) {
-        throw new BadRequestException('Invalid player ID format');
-      }
-
-      // Edge case: Validate club exists
-      const club = await this.clubsService.findById(clubId);
-      if (!club) {
-        throw new NotFoundException('Club not found');
-      }
-
-      // For Super Admin, validate tenant
-      if (tenantId) {
-        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
-      }
-
-      const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } }
-      });
-
-      if (!player) {
-        throw new NotFoundException('Player not found');
-      }
-
-      // Edge case: Verify player belongs to club
-      if (!player.club || player.club.id !== clubId) {
-        throw new ForbiddenException('Player does not belong to this club');
-      }
-
-      // Edge case: Check if already suspended
-      if (player.status === 'Suspended') {
-        throw new ConflictException('Player is already suspended');
-      }
-
-      // Edge case: Check if player has pending transactions
-      const pendingTransactions = await this.transactionsRepo.count({
-        where: {
-          club: { id: clubId },
-          playerId: player.id,
-          status: TransactionStatus.PENDING
-        }
-      });
-
-      if (pendingTransactions > 0) {
-        throw new ConflictException('Cannot suspend player with pending transactions. Please resolve all pending transactions first.');
-      }
-
-      // Edge case: Check if player is currently seated
-      const waitlistEntries = await this.waitlistSeatingService.getWaitlist(clubId);
-      const playerSeated = waitlistEntries.find(e => e.playerId === player.id && e.status === WaitlistStatus.SEATED);
-      if (playerSeated) {
-        throw new ConflictException('Cannot suspend player who is currently seated. Please unseat the player first.');
-      }
-
-      player.status = 'Suspended';
-      
-      // Edge case: Error handling for database save
-      let savedPlayer: Player;
-      try {
-        savedPlayer = await this.playersRepo.save(player);
-      } catch (saveError) {
-        console.error('Database error suspending player:', saveError);
-        throw new BadRequestException('Unable to suspend player. Please try again.');
-      }
-
-      // Edge case: Validate saved player
-      if (!savedPlayer || !savedPlayer.id) {
-        throw new BadRequestException('Player suspension failed. Please try again.');
-      }
-
-      return {
-        id: savedPlayer.id,
-        name: savedPlayer.name,
-        email: savedPlayer.email,
-        status: savedPlayer.status,
-        updatedAt: savedPlayer.updatedAt
-      };
-    } catch (e) {
-      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
-        throw e;
-      }
-      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to suspend player'));
     }
   }
 

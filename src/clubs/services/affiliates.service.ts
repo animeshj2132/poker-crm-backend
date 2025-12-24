@@ -7,6 +7,7 @@ import { User } from '../../users/user.entity';
 import { Club } from '../club.entity';
 import { UsersService } from '../../users/users.service';
 import { ClubRole } from '../../common/rbac/roles';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class AffiliatesService {
@@ -228,6 +229,29 @@ export class AffiliatesService {
   }
 
   /**
+   * Generate strong password for player
+   */
+  private generateStrongPassword(): string {
+    const uppercase = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const lowercase = 'abcdefghjklmnpqrstuvwxyz';
+    const numbers = '23456789';
+    const special = '!@#$%&*';
+    const all = uppercase + lowercase + numbers + special;
+
+    let password = '';
+    password += uppercase[Math.floor(Math.random() * uppercase.length)];
+    password += lowercase[Math.floor(Math.random() * lowercase.length)];
+    password += numbers[Math.floor(Math.random() * numbers.length)];
+    password += special[Math.floor(Math.random() * special.length)];
+
+    for (let i = 4; i < 12; i++) {
+      password += all[Math.floor(Math.random() * all.length)];
+    }
+
+    return password.split('').sort(() => Math.random() - 0.5).join('');
+  }
+
+  /**
    * Create a player with optional affiliate code
    */
   async createPlayer(
@@ -333,6 +357,11 @@ export class AffiliatesService {
       }
     }
 
+    // Generate temporary password for player
+    const tempPassword = this.generateStrongPassword();
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
+
     // Create player
     const player = this.playersRepo.create({
       club,
@@ -341,6 +370,8 @@ export class AffiliatesService {
       email: email.trim().toLowerCase(),
       phoneNumber: phoneNumber?.trim() || null,
       playerId: playerId?.trim() || null,
+      passwordHash,
+      mustResetPassword: true, // Force password reset on first login
       status: 'Active',
       notes: notes?.trim() || null
     });
@@ -352,6 +383,9 @@ export class AffiliatesService {
       affiliate.totalReferrals += 1;
       await this.affiliatesRepo.save(affiliate);
     }
+
+    // Add temp password to return object (ONLY time password is visible)
+    (savedPlayer as any).tempPassword = tempPassword;
 
     return savedPlayer;
   }

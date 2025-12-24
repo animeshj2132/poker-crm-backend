@@ -103,19 +103,23 @@ export class AuthService {
           id: user.id,
           email: user.email,
           displayName: user.displayName,
-          isMasterAdmin: user.isMasterAdmin || false
+          isMasterAdmin: user.isMasterAdmin || false,
+          mustResetPassword: user.mustResetPassword || false
         },
-        mustResetPassword: user.mustResetPassword || false,
-        tenants: tenantRoles.map(tr => ({
-          tenantId: tr.tenant?.id || '',
-          tenantName: (tr.tenant as any)?.name || ''
+        tenantRoles: tenantRoles.map(tr => ({
+          role: tr.role,
+          tenant: {
+            id: tr.tenant?.id || '',
+            name: (tr.tenant as any)?.name || ''
+          }
         })),
-        clubs: clubRoles.map(cr => ({
-          clubId: cr.club?.id || '',
-          clubName: (cr.club as any)?.name || '',
-          tenantId: (cr.club as any)?.tenant?.id || '',
-          tenantName: (cr.club as any)?.tenant?.name || '',
-          roles: [cr.role] // User can have multiple roles in the same club
+        clubRoles: clubRoles.map(cr => ({
+          role: cr.role,
+          club: {
+            id: cr.club?.id || '',
+            name: (cr.club as any)?.name || '',
+            tenantId: (cr.club as any)?.tenant?.id || ''
+          }
         }))
       };
     } catch (err) {
@@ -334,7 +338,8 @@ export class AuthService {
           nickname: player.playerId ? player.playerId.trim() : null,
           status: player.status || 'Active',
           kycStatus: (player as any).kycStatus || 'pending',
-          kycApproved: (player as any).kycStatus === 'approved' || (player as any).kycStatus === 'verified'
+          kycApproved: (player as any).kycStatus === 'approved' || (player as any).kycStatus === 'verified',
+          mustResetPassword: (player as any).mustResetPassword || false // For first-time login detection
         },
         club: {
           id: club.id,
