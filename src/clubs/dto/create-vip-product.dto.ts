@@ -1,4 +1,10 @@
-import { IsNotEmpty, IsString, IsNumber, IsOptional, MaxLength, Min, MinLength, IsUrl } from 'class-validator';
+import { IsNotEmpty, IsString, IsNumber, IsOptional, MaxLength, Min, MinLength, IsArray, IsBoolean, ValidateNested, ArrayMaxSize } from 'class-validator';
+import { Type } from 'class-transformer';
+
+class ImageDto {
+  @IsString()
+  url!: string;
+}
 
 export class CreateVipProductDto {
   @IsNotEmpty()
@@ -18,9 +24,18 @@ export class CreateVipProductDto {
   description?: string;
 
   @IsOptional()
-  @IsString()
-  @IsUrl({}, { message: 'Image URL must be a valid URL' })
-  @MaxLength(500)
-  imageUrl?: string;
-}
+  @IsArray()
+  @ArrayMaxSize(3)
+  @ValidateNested({ each: true })
+  @Type(() => ImageDto)
+  images?: ImageDto[];
 
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  stock?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
