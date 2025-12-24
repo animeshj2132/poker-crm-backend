@@ -78,6 +78,24 @@ export class StorageService {
     const { data } = this.client.storage.from(bucket).getPublicUrl(path);
     return data?.publicUrl ?? null;
   }
+
+  /**
+   * Create signed upload URL for VIP store images
+   */
+  async createVipStoreUploadUrl(clubId: string, filename: string) {
+    await this.ensureBucket('vip-store');
+    const path = `${clubId}/${Date.now()}-${filename}`;
+    return await this.createSignedUploadUrlForBucket('vip-store', path);
+  }
+
+  /**
+   * Create signed upload URL for specific bucket
+   */
+  private async createSignedUploadUrlForBucket(bucket: string, path: string) {
+    const { data, error } = await this.client.storage.from(bucket).createSignedUploadUrl(path);
+    if (error) throw error;
+    return { signedUrl: data.signedUrl, path, publicUrl: this.getPublicUrlForBucket(bucket, path) };
+  }
 }
 
 

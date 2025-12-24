@@ -1611,6 +1611,153 @@ export class ClubsController {
     }
   }
 
+  /**
+   * Enable credit feature for a player
+   * POST /api/clubs/:id/players/:playerId/enable-credit
+   */
+  @Post(':id/players/:playerId/enable-credit')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async enableCreditForPlayer(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('playerId', new ParseUUIDPipe()) playerId: string,
+    @Body() dto: { creditLimit: number }
+  ) {
+    try {
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      // Validate credit limit
+      if (!dto.creditLimit || dto.creditLimit <= 0) {
+        throw new BadRequestException('Credit limit must be a positive number');
+      }
+      if (dto.creditLimit > 10000000) {
+        throw new BadRequestException('Credit limit cannot exceed ₹10,000,000');
+      }
+
+      // Find player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Check KYC status
+      const kycStatus = (player as any).kycStatus || 'pending';
+      if (kycStatus !== 'approved' && kycStatus !== 'verified') {
+        throw new BadRequestException('Player must complete KYC verification before credit can be enabled');
+      }
+
+      // Enable credit
+      (player as any).creditEnabled = true;
+      (player as any).creditLimit = dto.creditLimit;
+      (player as any).creditEnabledBy = userId || null;
+      (player as any).creditEnabledAt = new Date();
+
+      await this.playersRepo.save(player);
+
+      return {
+        message: 'Credit feature enabled successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          creditEnabled: true,
+          creditLimit: dto.creditLimit
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to enable credit: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Update credit limit for a player
+   * PATCH /api/clubs/:id/players/:playerId/credit-limit
+   */
+  @Patch(':id/players/:playerId/credit-limit')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updatePlayerCreditLimit(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('playerId', new ParseUUIDPipe()) playerId: string,
+    @Body() dto: { creditLimit: number }
+  ) {
+    try {
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      // Validate credit limit
+      if (!dto.creditLimit || dto.creditLimit <= 0) {
+        throw new BadRequestException('Credit limit must be a positive number');
+      }
+      if (dto.creditLimit > 10000000) {
+        throw new BadRequestException('Credit limit cannot exceed ₹10,000,000');
+      }
+
+      // Find player
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Check if credit is enabled
+      if (!(player as any).creditEnabled) {
+        throw new BadRequestException('Credit feature is not enabled for this player');
+      }
+
+      // Update credit limit
+      (player as any).creditLimit = dto.creditLimit;
+      await this.playersRepo.save(player);
+
+      return {
+        message: 'Credit limit updated successfully',
+        player: {
+          id: player.id,
+          name: player.name,
+          creditLimit: dto.creditLimit
+        }
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to update credit limit: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   // ========== Financial Transactions ==========
   @Get(':id/transactions')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
@@ -1973,7 +2120,9 @@ export class ClubsController {
         title: dto.title.trim(),
         points: points,
         description: dto.description?.trim() || undefined,
-        imageUrl: dto.imageUrl?.trim() || undefined
+        images: dto.images || [],
+        stock: dto.stock || 0,
+        isActive: dto.isActive !== undefined ? dto.isActive : true,
       });
     } catch (e) {
       // Re-throw known exceptions
@@ -2016,6 +2165,45 @@ export class ClubsController {
       await this.vipProductsService.remove(productId, clubId);
     } catch (e) {
       throw e;
+    }
+  }
+
+  /**
+   * Create upload URL for VIP product image
+   * POST /api/clubs/:id/vip-products/upload-url
+   */
+  @Post(':id/vip-products/upload-url')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async createVipProductImageUploadUrl(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body?: { filename?: string }
+  ) {
+    try {
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      // For club-scoped users, validate they can only upload for their club
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only upload images for your assigned club');
+      }
+
+      const filename = body?.filename || `image-${Date.now()}.jpg`;
+      return await this.storageService.createVipStoreUploadUrl(clubId, filename);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create upload URL: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 

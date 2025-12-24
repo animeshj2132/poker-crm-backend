@@ -11,7 +11,14 @@ export class VipProductsService {
     @InjectRepository(Club) private readonly clubsRepo: Repository<Club>
   ) {}
 
-  async create(clubId: string, data: { title: string; points: number; description?: string; imageUrl?: string }) {
+  async create(clubId: string, data: { 
+    title: string; 
+    points: number; 
+    description?: string; 
+    images?: Array<{ url: string }>; 
+    stock?: number;
+    isActive?: boolean;
+  }) {
     // Validate inputs
     if (!data.title || !data.title.trim()) {
       throw new BadRequestException('Product title is required');
@@ -40,8 +47,11 @@ export class VipProductsService {
     if (data.description && data.description.trim().length > 1000) {
       throw new BadRequestException('Description cannot exceed 1000 characters');
     }
-    if (data.imageUrl && data.imageUrl.trim().length > 500) {
-      throw new BadRequestException('Image URL cannot exceed 500 characters');
+    if (data.images && data.images.length > 3) {
+      throw new BadRequestException('Maximum 3 images allowed per product');
+    }
+    if (data.stock !== undefined && (typeof data.stock !== 'number' || data.stock < 0)) {
+      throw new BadRequestException('Stock must be a non-negative number');
     }
 
     const club = await this.clubsRepo.findOne({ where: { id: clubId } });
@@ -59,7 +69,9 @@ export class VipProductsService {
       title: data.title.trim(),
       points: data.points,
       description: data.description?.trim() || null,
-      imageUrl: data.imageUrl?.trim() || null,
+      images: data.images || [],
+      stock: data.stock !== undefined ? data.stock : 0,
+      isActive: data.isActive !== undefined ? data.isActive : true,
       club
     });
 
@@ -81,7 +93,14 @@ export class VipProductsService {
     return product;
   }
 
-  async update(id: string, clubId: string, data: Partial<{ title: string; points: number; description: string; imageUrl: string }>) {
+  async update(id: string, clubId: string, data: Partial<{ 
+    title: string; 
+    points: number; 
+    description: string; 
+    images: Array<{ url: string }>; 
+    stock: number;
+    isActive: boolean;
+  }>) {
     const product = await this.findOne(id, clubId);
 
     // Validate title if provided
@@ -129,12 +148,18 @@ export class VipProductsService {
       data.description = (data.description?.trim() || undefined) as any;
     }
 
-    // Validate imageUrl if provided
-    if (data.imageUrl !== undefined) {
-      if (data.imageUrl && data.imageUrl.trim().length > 500) {
-        throw new BadRequestException('Image URL cannot exceed 500 characters');
+    // Validate images if provided
+    if (data.images !== undefined) {
+      if (data.images.length > 3) {
+        throw new BadRequestException('Maximum 3 images allowed per product');
       }
-      data.imageUrl = (data.imageUrl?.trim() || undefined) as any;
+    }
+
+    // Validate stock if provided
+    if (data.stock !== undefined) {
+      if (typeof data.stock !== 'number' || data.stock < 0) {
+        throw new BadRequestException('Stock must be a non-negative number');
+      }
     }
 
     Object.assign(product, data);

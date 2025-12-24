@@ -24,7 +24,16 @@ export class VipProduct {
   description!: string | null;
 
   @Column({ type: 'varchar', nullable: true, name: 'image_url' })
-  imageUrl!: string | null;
+  imageUrl!: string | null; // Legacy field, kept for backward compatibility
+
+  @Column({ type: 'jsonb', default: '[]', nullable: false })
+  images!: Array<{ url: string }>; // Up to 3 images
+
+  @Column({ type: 'integer', default: 0 })
+  stock!: number; // Available stock
+
+  @Column({ type: 'boolean', default: true, name: 'is_active' })
+  isActive!: boolean; // Whether product is available for redemption
 
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
