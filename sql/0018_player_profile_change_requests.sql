@@ -22,3 +22,6 @@ CREATE INDEX IF NOT EXISTS idx_profile_change_club_id ON player_profile_change_r
 CREATE INDEX IF NOT EXISTS idx_profile_change_status ON player_profile_change_requests(status);
 
 
+
+
+

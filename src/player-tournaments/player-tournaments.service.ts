@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { AuthService } from '../auth/auth.service';
 
 // Define Tournament interface
 interface Tournament {
@@ -35,6 +36,7 @@ export class PlayerTournamentsService {
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
     private readonly clubsService: ClubsService,
+    private readonly authService: AuthService,
   ) {}
 
   /**
@@ -214,7 +216,7 @@ export class PlayerTournamentsService {
 
       // Check if tournament exists and is available
       const tournament = await this.playersRepo.query(`
-        SELECT id, max_players, current_players, status, start_time
+        SELECT id, max_players, current_players, status, start_time, buy_in
         FROM tournaments
         WHERE id = $1 AND club_id = $2
       `, [tournamentId, clubId]);
@@ -230,6 +232,31 @@ export class PlayerTournamentsService {
 
       if (tourn.current_players >= tourn.max_players) {
         throw new BadRequestException('Tournament is full');
+      }
+
+      // CRITICAL: Check player balance against tournament buy-in requirement
+      const buyInRequired = parseFloat(tourn.buy_in) || 0;
+      if (buyInRequired > 0) {
+        try {
+          const playerBalance = await this.authService.getPlayerBalance(playerId, clubId);
+          const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
+
+          if (totalAvailableBalance < buyInRequired) {
+            throw new BadRequestException(
+              `Insufficient balance. Tournament buy-in required: ₹${buyInRequired.toLocaleString()}, ` +
+              `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
+              `Please add funds to your account before registering. Note: Balance will be deducted when the tournament starts.`
+            );
+          }
+        } catch (balanceError) {
+          // If it's a BadRequestException from balance check, re-throw it
+          if (balanceError instanceof BadRequestException) {
+            throw balanceError;
+          }
+          // If balance check fails for other reasons, log but don't block registration
+          // The actual deduction happens when tournament starts
+          console.error('Error checking player balance for tournament registration:', balanceError);
+        }
       }
 
       // Check if already registered (handle case where table might not exist)

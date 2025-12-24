@@ -1214,6 +1214,37 @@ let AuthService = class AuthService {
             if (tablesCount === 0) {
                 throw new common_1.BadRequestException('No tables are configured for this club. Please contact the club administrator.');
             }
+            let minBuyInRequired = 0;
+            try {
+                const whereClause = {
+                    club: { id: clubId.trim() }
+                };
+                if (tableType && tableType.trim()) {
+                    whereClause.tableType = tableType.trim();
+                }
+                const tables = await this.tablesRepo.find({
+                    where: whereClause
+                });
+                const buyIns = tables
+                    .map(t => t.minBuyIn)
+                    .filter(buyIn => buyIn !== null && buyIn !== undefined && buyIn > 0)
+                    .map(buyIn => parseFloat(String(buyIn)) || 0);
+                if (buyIns.length > 0) {
+                    minBuyInRequired = Math.min(...buyIns);
+                }
+            }
+            catch (dbError) {
+                console.error('Database error checking minimum buy-in:', dbError);
+            }
+            if (minBuyInRequired > 0) {
+                const playerBalance = await this.getPlayerBalance(playerId.trim(), clubId.trim());
+                const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
+                if (totalAvailableBalance < minBuyInRequired) {
+                    throw new common_1.BadRequestException(`Insufficient balance. Minimum buy-in required: ₹${minBuyInRequired.toLocaleString()}, ` +
+                        `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
+                        `Please add funds to your account before joining the waitlist.`);
+                }
+            }
             if (tableType && tableType.trim()) {
                 let availableTables = [];
                 try {

@@ -13,12 +13,13 @@ const player_tournaments_controller_1 = require("./player-tournaments.controller
 const player_tournaments_service_1 = require("./player-tournaments.service");
 const player_entity_1 = require("../clubs/entities/player.entity");
 const clubs_module_1 = require("../clubs/clubs.module");
+const auth_module_1 = require("../auth/auth.module");
 let PlayerTournamentsModule = class PlayerTournamentsModule {
 };
 exports.PlayerTournamentsModule = PlayerTournamentsModule;
 exports.PlayerTournamentsModule = PlayerTournamentsModule = __decorate([
     (0, common_1.Module)({
-        imports: [typeorm_1.TypeOrmModule.forFeature([player_entity_1.Player]), clubs_module_1.ClubsModule],
+        imports: [typeorm_1.TypeOrmModule.forFeature([player_entity_1.Player]), clubs_module_1.ClubsModule, auth_module_1.AuthModule],
         controllers: [player_tournaments_controller_1.PlayerTournamentsController],
         providers: [player_tournaments_service_1.PlayerTournamentsService],
         exports: [player_tournaments_service_1.PlayerTournamentsService],
