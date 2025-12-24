@@ -31,14 +31,5 @@ export class CreateClubWithBrandingDto {
   @IsString()
   @MaxLength(200)
   gradient?: string;
-
-  @IsEmail()
-  @IsNotEmpty()
-  superAdminEmail!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  superAdminDisplayName?: string;
 }
 

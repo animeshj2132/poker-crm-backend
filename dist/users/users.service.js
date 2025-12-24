@@ -199,6 +199,19 @@ let UsersService = class UsersService {
         }
         return password.split('').sort(() => Math.random() - 0.5).join('');
     }
+    async checkSuperAdminRole(userId) {
+        const role = await this.userTenantRoleRepo.findOne({
+            where: { user: { id: userId }, role: roles_1.TenantRole.SUPER_ADMIN }
+        });
+        return !!role;
+    }
+    async getSuperAdminForTenant(tenantId) {
+        const tenantRole = await this.userTenantRoleRepo.findOne({
+            where: { tenant: { id: tenantId }, role: roles_1.TenantRole.SUPER_ADMIN },
+            relations: ['user']
+        });
+        return (tenantRole === null || tenantRole === void 0 ? void 0 : tenantRole.user) || null;
+    }
     async createSuperAdmin(email, displayName, tenantId) {
         if (!email || !email.trim()) {
             throw new common_1.BadRequestException('Email is required');

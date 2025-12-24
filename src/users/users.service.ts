@@ -234,6 +234,27 @@ export class UsersService {
     return password.split('').sort(() => Math.random() - 0.5).join('');
   }
 
+  /**
+   * Check if a user has Super Admin role for any tenant
+   */
+  async checkSuperAdminRole(userId: string): Promise<boolean> {
+    const role = await this.userTenantRoleRepo.findOne({
+      where: { user: { id: userId }, role: TenantRole.SUPER_ADMIN }
+    });
+    return !!role;
+  }
+
+  /**
+   * Get Super Admin user for a tenant
+   */
+  async getSuperAdminForTenant(tenantId: string) {
+    const tenantRole = await this.userTenantRoleRepo.findOne({
+      where: { tenant: { id: tenantId }, role: TenantRole.SUPER_ADMIN },
+      relations: ['user']
+    });
+    return tenantRole?.user || null;
+  }
+
   async createSuperAdmin(
     email: string,
     displayName: string | null,

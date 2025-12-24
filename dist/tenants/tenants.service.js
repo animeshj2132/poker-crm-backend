@@ -46,6 +46,9 @@ let TenantsService = class TenantsService {
             throw err;
         }
     }
+    async findById(id) {
+        return await this.tenantsRepo.findOne({ where: { id } });
+    }
     async updateBranding(tenantId, data) {
         if (!tenantId) {
             throw new common_1.BadRequestException('Tenant ID is required');
