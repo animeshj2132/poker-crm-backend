@@ -58,6 +58,18 @@ let AuthController = class AuthController {
         }
         return this.usersService.resetPassword(dto.email.trim(), dto.currentPassword, dto.newPassword);
     }
+    async changeStaffPassword(body) {
+        if (!body.email || !body.email.trim()) {
+            throw new common_1.BadRequestException('Email is required');
+        }
+        if (!body.currentPassword || !body.currentPassword.trim()) {
+            throw new common_1.BadRequestException('Current password is required');
+        }
+        if (!body.newPassword || !body.newPassword.trim()) {
+            throw new common_1.BadRequestException('New password is required');
+        }
+        return this.usersService.resetPassword(body.email.trim(), body.currentPassword, body.newPassword);
+    }
     async playerLogin(dto) {
         return this.authService.playerLogin(dto.clubCode, dto.email, dto.password);
     }
@@ -286,6 +298,14 @@ __decorate([
     __metadata("design:paramtypes", [reset_password_dto_1.ResetPasswordDto]),
     __metadata("design:returntype", Promise)
 ], AuthController.prototype, "resetPassword", null);
+__decorate([
+    (0, common_1.Post)('change-password'),
+    (0, common_1.UsePipes)(new common_1.ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "changeStaffPassword", null);
 __decorate([
     (0, common_1.Post)('player/login'),
     (0, common_1.UsePipes)(new common_1.ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })),
