@@ -11,6 +11,7 @@ import { Staff } from './entities/staff.entity';
 import { CreditRequest } from './entities/credit-request.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { VipProduct } from './entities/vip-product.entity';
+import { PushNotification } from './entities/push-notification.entity';
 import { ClubSettings } from './entities/club-settings.entity';
 import { AuditLog } from './entities/audit-log.entity';
 import { WaitlistEntry } from './entities/waitlist-entry.entity';
@@ -23,6 +24,7 @@ import { AffiliatesService } from './services/affiliates.service';
 import { CreditRequestsService } from './services/credit-requests.service';
 import { FinancialTransactionsService } from './services/financial-transactions.service';
 import { VipProductsService } from './services/vip-products.service';
+import { PushNotificationsService } from './services/push-notifications.service';
 import { ClubSettingsService } from './services/club-settings.service';
 import { AuditLogsService } from './services/audit-logs.service';
 import { WaitlistSeatingService } from './services/waitlist-seating.service';
@@ -44,6 +46,7 @@ import { EventsModule } from '../events/events.module';
       CreditRequest,
       FinancialTransaction,
       VipProduct,
+      PushNotification,
       ClubSettings,
       AuditLog,
       WaitlistEntry,
@@ -66,6 +69,7 @@ import { EventsModule } from '../events/events.module';
     CreditRequestsService,
     FinancialTransactionsService,
     VipProductsService,
+    PushNotificationsService,
     ClubSettingsService,
     AuditLogsService,
     WaitlistSeatingService,
@@ -80,6 +84,7 @@ import { EventsModule } from '../events/events.module';
     CreditRequestsService,
     FinancialTransactionsService,
     VipProductsService,
+    PushNotificationsService,
     ClubSettingsService,
     AuditLogsService,
     WaitlistSeatingService,
