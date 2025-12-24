@@ -33,6 +33,20 @@ let UsersController = class UsersController {
             updatedAt: user.updatedAt
         }));
     }
+    async getUser(userId) {
+        const user = await this.usersService.findById(userId);
+        if (!user) {
+            return null;
+        }
+        return {
+            id: user.id,
+            email: user.email,
+            displayName: user.displayName,
+            isMasterAdmin: user.isMasterAdmin,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+        };
+    }
     async getSuperAdminTenants(userId) {
         return this.usersService.getSuperAdminTenants(userId);
     }
@@ -51,6 +65,14 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", Promise)
 ], UsersController.prototype, "listUsers", null);
+__decorate([
+    (0, common_1.Get)(':id'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN, roles_1.TenantRole.SUPER_ADMIN, roles_1.ClubRole.ADMIN, roles_1.ClubRole.MANAGER, roles_1.ClubRole.HR, roles_1.ClubRole.STAFF, roles_1.ClubRole.AFFILIATE, roles_1.ClubRole.CASHIER, roles_1.ClubRole.GRE, roles_1.ClubRole.FNB),
+    __param(0, (0, common_1.Param)('id', new common_1.ParseUUIDPipe())),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "getUser", null);
 __decorate([
     (0, common_1.Get)(':id/tenants'),
     (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN, roles_1.TenantRole.SUPER_ADMIN),

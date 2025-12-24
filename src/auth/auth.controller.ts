@@ -7,6 +7,7 @@ import { PlayerLoginDto } from './dto/player-login.dto';
 import { PlayerSignupDto } from './dto/player-signup.dto';
 import { UpdatePlayerProfileDto } from './dto/update-player-profile.dto';
 import { ChangePlayerPasswordDto } from './dto/change-player-password.dto';
+import { ChangeStaffPasswordDto } from './dto/change-staff-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -52,6 +53,28 @@ export class AuthController {
       throw new UnauthorizedException('New password is required');
     }
     return this.usersService.resetPassword(dto.email.trim(), dto.currentPassword, dto.newPassword);
+  }
+
+  /**
+   * Staff change password
+   * POST /api/auth/change-password
+   * Body: { email, currentPassword, newPassword }
+   */
+  @Post('change-password')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async changeStaffPassword(@Body() body: { email: string; currentPassword: string; newPassword: string }) {
+    if (!body.email || !body.email.trim()) {
+      throw new BadRequestException('Email is required');
+    }
+    if (!body.currentPassword || !body.currentPassword.trim()) {
+      throw new BadRequestException('Current password is required');
+    }
+    if (!body.newPassword || !body.newPassword.trim()) {
+      throw new BadRequestException('New password is required');
+    }
+
+    // Change password using the existing resetPassword method
+    return this.usersService.resetPassword(body.email.trim(), body.currentPassword, body.newPassword);
   }
 
   /**

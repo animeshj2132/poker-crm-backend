@@ -25,6 +25,24 @@ export class UsersController {
     }));
   }
 
+  @Get(':id')
+  @Roles(GlobalRole.MASTER_ADMIN, TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB)
+  async getUser(@Param('id', new ParseUUIDPipe()) userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user) {
+      return null;
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      isMasterAdmin: user.isMasterAdmin,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+      // passwordHash is NEVER included
+    };
+  }
+
   // Get all tenants a Super Admin has access to
   @Get(':id/tenants')
   @Roles(GlobalRole.MASTER_ADMIN, TenantRole.SUPER_ADMIN)
