@@ -15,15 +15,32 @@ export class StorageService {
     );
   }
 
-  async ensureBucket(): Promise<void> {
-    const { data: list } = await this.client.storage.listBuckets();
-    const exists = (list || []).some((b) => b.name === BUCKET);
-    if (!exists) {
-      const { error } = await this.client.storage.createBucket(BUCKET, {
-        public: true,
-        fileSizeLimit: '5242880' // 5MB default
-      });
-      if (error) this.logger.error('Failed to create bucket', error);
+  async ensureBucket(bucketName?: string): Promise<void> {
+    const bucket = bucketName || BUCKET;
+    try {
+      const { data: list, error: listError } = await this.client.storage.listBuckets();
+      if (listError) {
+        this.logger.error(`Failed to list buckets:`, listError);
+        throw listError;
+      }
+      const exists = (list || []).some((b) => b.name === bucket);
+      if (!exists) {
+        this.logger.log(`Creating bucket: ${bucket}`);
+        const { error } = await this.client.storage.createBucket(bucket, {
+          public: true,
+          fileSizeLimit: '5242880' // 5MB default
+        });
+        if (error) {
+          this.logger.error(`Failed to create bucket ${bucket}:`, error);
+          throw error;
+        }
+        this.logger.log(`Bucket ${bucket} created successfully`);
+      } else {
+        this.logger.log(`Bucket ${bucket} already exists`);
+      }
+    } catch (error) {
+      this.logger.error(`Error ensuring bucket ${bucket}:`, error);
+      throw error;
     }
   }
 
@@ -38,6 +55,28 @@ export class StorageService {
       .createSignedUploadUrl(path);
     if (error) throw error;
     return data; // { signedUrl, path, token }
+  }
+
+  /**
+   * Upload file directly to Supabase storage
+   */
+  async uploadFile(bucket: string, path: string, file: Buffer | Uint8Array, contentType?: string) {
+    const { data, error } = await this.client.storage
+      .from(bucket)
+      .upload(path, file, {
+        contentType: contentType || 'application/octet-stream',
+        upsert: true,
+      });
+    if (error) throw error;
+    return data;
+  }
+
+  /**
+   * Get public URL for a file in storage
+   */
+  getPublicUrlForBucket(bucket: string, path: string): string | null {
+    const { data } = this.client.storage.from(bucket).getPublicUrl(path);
+    return data?.publicUrl ?? null;
   }
 }
 

@@ -33,6 +33,7 @@ import { UpdateWaitlistEntryDto } from './dto/update-waitlist-entry.dto';
 import { CreateTableDto } from './dto/create-table.dto';
 import { UpdateTableDto } from './dto/update-table.dto';
 import { AssignSeatDto } from './dto/assign-seat.dto';
+import { UpdateSessionParamsDto } from './dto/update-session-params.dto';
 import { WaitlistSeatingService } from './services/waitlist-seating.service';
 import { AnalyticsService } from './services/analytics.service';
 import { WaitlistStatus } from './entities/waitlist-entry.entity';
@@ -3567,6 +3568,419 @@ export class ClubsController {
     }
   }
 
+  /**
+   * Pause table session
+   * POST /api/clubs/:id/tables/:tableId/pause-session
+   */
+  @Post(':id/tables/:tableId/pause-session')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  async pauseTableSession(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(tableId)) {
+        throw new BadRequestException('Invalid table ID format');
+      }
+
+      if (tenantId !== undefined && tenantId !== null) {
+        if (typeof tenantId !== 'string' || !tenantId.trim()) {
+          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(tenantId.trim())) {
+          throw new BadRequestException('Invalid tenant ID format');
+        }
+      }
+
+      if (headerClubId !== undefined && headerClubId !== null) {
+        if (typeof headerClubId !== 'string' || !headerClubId.trim()) {
+          throw new BadRequestException('x-club-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(headerClubId.trim())) {
+          throw new BadRequestException('Invalid club ID format in header');
+        }
+      }
+
+      if (!tenantId && !headerClubId) {
+        throw new BadRequestException('x-club-id header is required for club-scoped roles');
+      }
+
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException(`Club with ID ${clubId} not found`);
+      }
+
+      if (tenantId && club.tenant.id !== tenantId.trim()) {
+        throw new ForbiddenException('You do not have permission to access this club');
+      }
+
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('Club ID mismatch');
+      }
+
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Update table status to AVAILABLE (paused)
+      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.AVAILABLE);
+      
+      // Calculate and store elapsed time when pausing
+      const currentNotes = table.notes || '';
+      const sessionStartMatch = currentNotes.match(/Session Started: ([^|]+)/);
+      
+      if (sessionStartMatch) {
+        const sessionStartTime = new Date(sessionStartMatch[1]);
+        const now = new Date();
+        const elapsedSeconds = Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000);
+        
+        // Remove old session data and add paused elapsed time
+        let updatedNotes = currentNotes
+          .replace(/Session Started: [^|]+\|?/g, '')
+          .replace(/Paused Elapsed: \d+\|?/g, '')
+          .trim();
+        
+        if (updatedNotes && !updatedNotes.endsWith('|')) {
+          updatedNotes += ' | ';
+        }
+        updatedNotes += `Paused Elapsed: ${elapsedSeconds}`;
+        
+        await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+      }
+
+      return {
+        message: 'Table session paused successfully',
+        table: {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          status: TableStatus.AVAILABLE,
+        },
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error pausing table session:', e);
+      throw new BadRequestException(`Failed to pause table session: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Resume table session
+   * POST /api/clubs/:id/tables/:tableId/resume-session
+   */
+  @Post(':id/tables/:tableId/resume-session')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  async resumeTableSession(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(tableId)) {
+        throw new BadRequestException('Invalid table ID format');
+      }
+
+      if (tenantId !== undefined && tenantId !== null) {
+        if (typeof tenantId !== 'string' || !tenantId.trim()) {
+          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(tenantId.trim())) {
+          throw new BadRequestException('Invalid tenant ID format');
+        }
+      }
+
+      if (headerClubId !== undefined && headerClubId !== null) {
+        if (typeof headerClubId !== 'string' || !headerClubId.trim()) {
+          throw new BadRequestException('x-club-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(headerClubId.trim())) {
+          throw new BadRequestException('Invalid club ID format in header');
+        }
+      }
+
+      if (!tenantId && !headerClubId) {
+        throw new BadRequestException('x-club-id header is required for club-scoped roles');
+      }
+
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException(`Club with ID ${clubId} not found`);
+      }
+
+      if (tenantId && club.tenant.id !== tenantId.trim()) {
+        throw new ForbiddenException('You do not have permission to access this club');
+      }
+
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('Club ID mismatch');
+      }
+
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Update table status to OCCUPIED and add session start time
+      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.OCCUPIED);
+      
+      // Handle session start/resume with paused time tracking
+      const sessionStartTime = new Date().toISOString();
+      const currentNotes = table.notes || '';
+      
+      // Check if there's a paused elapsed time
+      const pausedElapsedMatch = currentNotes.match(/Paused Elapsed: (\d+)/);
+      const pausedElapsedSeconds = pausedElapsedMatch ? parseInt(pausedElapsedMatch[1], 10) : 0;
+      
+      // Remove old session data
+      let updatedNotes = currentNotes
+        .replace(/Session Started: [^|]+\|?/g, '')
+        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .trim();
+      
+      if (updatedNotes && !updatedNotes.endsWith('|')) {
+        updatedNotes += ' | ';
+      }
+      
+      // Add new session start time and paused elapsed time (if resuming)
+      updatedNotes += `Session Started: ${sessionStartTime}`;
+      if (pausedElapsedSeconds > 0) {
+        updatedNotes += ` | Paused Elapsed: ${pausedElapsedSeconds}`;
+      }
+      
+      await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      return {
+        message: 'Table session resumed successfully',
+        table: {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          status: TableStatus.OCCUPIED,
+          notes: updatedNotes,
+        },
+        sessionStartTime,
+        pausedElapsedSeconds,
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error resuming table session:', e);
+      throw new BadRequestException(`Failed to resume table session: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * End table session
+   * POST /api/clubs/:id/tables/:tableId/end-session
+   */
+  @Post(':id/tables/:tableId/end-session')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  async endTableSession(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(tableId)) {
+        throw new BadRequestException('Invalid table ID format');
+      }
+
+      if (tenantId !== undefined && tenantId !== null) {
+        if (typeof tenantId !== 'string' || !tenantId.trim()) {
+          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(tenantId.trim())) {
+          throw new BadRequestException('Invalid tenant ID format');
+        }
+      }
+
+      if (headerClubId !== undefined && headerClubId !== null) {
+        if (typeof headerClubId !== 'string' || !headerClubId.trim()) {
+          throw new BadRequestException('x-club-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(headerClubId.trim())) {
+          throw new BadRequestException('Invalid club ID format in header');
+        }
+      }
+
+      if (!tenantId && !headerClubId) {
+        throw new BadRequestException('x-club-id header is required for club-scoped roles');
+      }
+
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException(`Club with ID ${clubId} not found`);
+      }
+
+      if (tenantId && club.tenant.id !== tenantId.trim()) {
+        throw new ForbiddenException('You do not have permission to access this club');
+      }
+
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('Club ID mismatch');
+      }
+
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Update table status to CLOSED and reset current seats
+      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.CLOSED);
+      await this.waitlistSeatingService.resetTableSeats(clubId, tableId);
+      
+      // Clear all session data (reset timer to 0)
+      const currentNotes = table.notes || '';
+      let updatedNotes = currentNotes
+        .replace(/Session Started: [^|]+\|?/g, '')
+        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .trim();
+      
+      // Clean up any trailing pipes
+      updatedNotes = updatedNotes.replace(/\|\s*\|/g, '|').replace(/^\|\s*|\s*\|$/g, '').trim();
+      
+      await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      return {
+        message: 'Table session ended successfully',
+        table: {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          status: TableStatus.CLOSED,
+          currentSeats: 0,
+          notes: updatedNotes,
+        },
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error ending table session:', e);
+      throw new BadRequestException(`Failed to end table session: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Update table session parameters
+   * PATCH /api/clubs/:id/tables/:tableId/session-params
+   */
+  @Patch(':id/tables/:tableId/session-params')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateSessionParams(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Body() dto: UpdateSessionParamsDto
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(tableId)) {
+        throw new BadRequestException('Invalid table ID format');
+      }
+
+      if (tenantId !== undefined && tenantId !== null) {
+        if (typeof tenantId !== 'string' || !tenantId.trim()) {
+          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(tenantId.trim())) {
+          throw new BadRequestException('Invalid tenant ID format');
+        }
+      }
+
+      if (headerClubId !== undefined && headerClubId !== null) {
+        if (typeof headerClubId !== 'string' || !headerClubId.trim()) {
+          throw new BadRequestException('x-club-id header must be a non-empty string if provided');
+        }
+        if (!uuidRegex.test(headerClubId.trim())) {
+          throw new BadRequestException('Invalid club ID format in header');
+        }
+      }
+
+      if (!tenantId && !headerClubId) {
+        throw new BadRequestException('x-club-id header is required for club-scoped roles');
+      }
+
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException(`Club with ID ${clubId} not found`);
+      }
+
+      if (tenantId && club.tenant.id !== tenantId.trim()) {
+        throw new ForbiddenException('You do not have permission to access this club');
+      }
+
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('Club ID mismatch');
+      }
+
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Parse existing notes to preserve other data
+      const noteParts = table.notes ? table.notes.split('|').map(p => p.trim()) : [];
+      const tableName = noteParts[0] || `Table ${table.tableNumber}`;
+      const gameType = noteParts[1] || table.tableType;
+      const stakes = noteParts[2]?.replace('Stakes:', '').trim() || '';
+      
+      // Update session parameters
+      const minPlayTime = dto.minPlayTime !== undefined ? dto.minPlayTime : (noteParts[3]?.match(/\d+/)?.[0] || '30');
+      const callTime = dto.callTime !== undefined ? dto.callTime : (noteParts[4]?.match(/\d+/)?.[0] || '5');
+      const cashOutWindow = dto.cashOutWindow !== undefined ? dto.cashOutWindow : (noteParts[5]?.match(/\d+/)?.[0] || '10');
+      const sessionTimeout = dto.sessionTimeout !== undefined ? dto.sessionTimeout : (noteParts[6]?.match(/\d+/)?.[0] || '120');
+
+      // Rebuild notes with updated parameters
+      const updatedNotes = `${tableName} | ${gameType} | Stakes: ${stakes} | Min Play: ${minPlayTime}m | Call: ${callTime}m | Cash-out: ${cashOutWindow}m | Timeout: ${sessionTimeout}m`;
+
+      // Update table notes
+      await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      return {
+        message: 'Session parameters updated successfully',
+        sessionParams: {
+          minPlayTime: parseInt(minPlayTime.toString()),
+          callTime: parseInt(callTime.toString()),
+          cashOutWindow: parseInt(cashOutWindow.toString()),
+          sessionTimeout: parseInt(sessionTimeout.toString()),
+        },
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error updating session parameters:', e);
+      throw new BadRequestException(`Failed to update session parameters: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   // ========== Analytics & Reports APIs ==========
 
   @Get(':id/analytics/revenue')
@@ -5418,6 +5832,29 @@ export class ClubsController {
         }
       }
 
+      // Edge case: Validate PAN card if provided
+      if (dto.panCard !== undefined && dto.panCard !== null) {
+        if (typeof dto.panCard !== 'string') {
+          throw new BadRequestException('PAN card must be a string');
+        }
+        const trimmedPan = dto.panCard.trim().toUpperCase();
+        // PAN card format: 5 letters, 4 digits, 1 letter (e.g., ABCDE1234F)
+        const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+        if (!panRegex.test(trimmedPan)) {
+          throw new BadRequestException('PAN card must be in format: ABCDE1234F (5 letters, 4 digits, 1 letter)');
+        }
+      }
+
+      // Edge case: Validate initial balance if provided
+      if (dto.initialBalance !== undefined && dto.initialBalance !== null) {
+        if (typeof dto.initialBalance !== 'number' || isNaN(dto.initialBalance)) {
+          throw new BadRequestException('Initial balance must be a number');
+        }
+        if (dto.initialBalance < 0) {
+          throw new BadRequestException('Initial balance cannot be negative');
+        }
+      }
+
       // Edge case: Validate club exists
       const club = await this.clubsService.findById(clubId);
       if (!club) {
@@ -5429,14 +5866,18 @@ export class ClubsController {
         await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
       }
 
-      const player = await this.affiliatesService.createPlayer(
+      const { player, tempPassword } = await this.affiliatesService.createPlayer(
         clubId,
         trimmedName,
         trimmedEmail,
         dto.phoneNumber?.trim(),
         dto.playerId?.trim(),
         dto.affiliateCode?.trim().toUpperCase(),
-        dto.notes?.trim()
+        dto.notes?.trim(),
+        dto.panCard?.trim().toUpperCase(),
+        dto.documentType?.trim(),
+        dto.documentUrl?.trim(),
+        dto.initialBalance
       );
 
       return {
@@ -5445,9 +5886,10 @@ export class ClubsController {
         email: player.email,
         phoneNumber: player.phoneNumber,
         playerId: player.playerId,
+        panCard: player.panCard,
         affiliateCode: player.affiliate?.code || null,
         status: player.status,
-        tempPassword: (player as any).tempPassword, // Temporary password for first login
+        tempPassword: tempPassword, // Temporary password for first login
         createdAt: player.createdAt
       };
     } catch (e) {
@@ -5971,16 +6413,33 @@ export class ClubsController {
       }
 
       // Get players with pending KYC status or pending account status
+      // Only show players from player portal (not Super Admin-created)
+      // Super Admin-created players have kycStatus: 'approved' and status: 'Active'
+      // Exclude players that are already approved (Super Admin-created)
       const players = await this.playersRepo.find({
         where: [
-          { club: { id: clubId }, kycStatus: 'pending' },
-          { club: { id: clubId }, status: 'Pending' }
+          { 
+            club: { id: clubId }, 
+            kycStatus: 'pending', 
+            status: 'Active' // Player portal signups with pending KYC (not Super Admin-created)
+          },
+          { 
+            club: { id: clubId }, 
+            status: 'Pending' // Players with pending account status
+          }
         ],
         relations: ['club', 'affiliate'],
         order: { createdAt: 'DESC' }
       });
 
-      return players.map(p => ({
+      // Filter out any players that are already approved (shouldn't happen, but safety check)
+      // Super Admin-created players have kycStatus: 'approved', so exclude them
+      const pendingPlayers = players.filter(p => 
+        (p.kycStatus === 'pending' && p.status === 'Active') || 
+        (p.status === 'Pending')
+      );
+
+      return pendingPlayers.map(p => ({
         id: p.id,
         name: p.name,
         email: p.email,

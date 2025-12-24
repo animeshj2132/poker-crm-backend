@@ -4,9 +4,10 @@ import { PlayerDocumentsController } from './player-documents.controller';
 import { PlayerDocumentsService } from './player-documents.service';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsModule } from '../clubs/clubs.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Player]), ClubsModule],
+  imports: [TypeOrmModule.forFeature([Player]), ClubsModule, StorageModule],
   controllers: [PlayerDocumentsController],
   providers: [PlayerDocumentsService],
   exports: [PlayerDocumentsService],

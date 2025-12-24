@@ -33,8 +33,8 @@ export class CreatePlayerDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(200)
-  referredBy?: string; // Referrer name/agent
+  @MaxLength(10)
+  panCard?: string; // PAN card number (unique per club, format: ABCDE1234F)
 
   @IsOptional()
   @IsString()

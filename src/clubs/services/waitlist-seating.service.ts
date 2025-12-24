@@ -392,5 +392,28 @@ export class WaitlistSeatingService {
 
     await this.waitlistRepo.remove(entry);
   }
+
+  // ========== Table Session Management ==========
+
+  async updateTableStatus(clubId: string, tableId: string, status: TableStatus) {
+    const table = await this.getTable(clubId, tableId);
+    table.status = status;
+    await this.tableRepo.save(table);
+    return table;
+  }
+
+  async resetTableSeats(clubId: string, tableId: string) {
+    const table = await this.getTable(clubId, tableId);
+    table.currentSeats = 0;
+    await this.tableRepo.save(table);
+    return table;
+  }
+
+  async updateTableNotes(clubId: string, tableId: string, notes: string) {
+    const table = await this.getTable(clubId, tableId);
+    table.notes = notes;
+    await this.tableRepo.save(table);
+    return table;
+  }
 }
 

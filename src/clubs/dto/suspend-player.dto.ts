@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, MaxLength, IsEnum } from 'class-validator';
+import { IsNotEmpty, IsString, MaxLength, IsEnum, IsOptional, ValidateIf } from 'class-validator';
 
 export class SuspendPlayerDto {
   @IsString()
@@ -9,8 +9,10 @@ export class SuspendPlayerDto {
   @IsEnum(['temporary', 'permanent'])
   type!: 'temporary' | 'permanent';
 
+  @ValidateIf((o) => o.type === 'temporary')
+  @IsOptional()
   @IsString()
   @MaxLength(100)
-  duration?: string; // e.g. "7 days", "30 days"
+  duration?: string; // e.g. "7 days", "30 days" - only required for temporary suspensions
 }
 
