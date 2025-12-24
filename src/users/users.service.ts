@@ -514,7 +514,7 @@ export class UsersService {
     });
 
     // Get clubs for each tenant (using ClubsService would be better, but for now we'll query directly)
-    const clubs: Array<{ clubId: string; clubName: string; tenantId: string; tenantName: string; description?: string; logoUrl?: string }> = [];
+    const clubs: Array<{ clubId: string; clubName: string; tenantId: string; tenantName: string; description?: string; logoUrl?: string; code?: string }> = [];
     
     for (const role of tenantRoles) {
       const tenant = role.tenant as any;
@@ -531,7 +531,8 @@ export class UsersService {
           tenantId: tenant.id,
           tenantName: tenant.name,
           description: club.description || undefined,
-          logoUrl: club.logoUrl || undefined
+          logoUrl: club.logoUrl || undefined,
+          code: club.code || undefined // Include club code
         });
       }
     }
