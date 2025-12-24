@@ -2,8 +2,9 @@ services:
   - type: web
     name: poker-crm-backend
     env: node
-    buildCommand: npm install && npm run build
-    startCommand: npm run start:prod
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/main.js
     envVars:
       - key: NODE_ENV
         value: production
