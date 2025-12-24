@@ -12,6 +12,7 @@ import { StaffService } from './services/staff.service';
 import { CreditRequestsService } from './services/credit-requests.service';
 import { FinancialTransactionsService } from './services/financial-transactions.service';
 import { VipProductsService } from './services/vip-products.service';
+import { PushNotificationsService } from './services/push-notifications.service';
 import { ClubSettingsService } from './services/club-settings.service';
 import { AuditLogsService } from './services/audit-logs.service';
 import { StaffRole, StaffStatus } from './entities/staff.entity';
@@ -27,6 +28,8 @@ import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { CreateVipProductDto } from './dto/create-vip-product.dto';
 import { UpdateVipProductDto } from './dto/update-vip-product.dto';
+import { CreatePushNotificationDto } from './dto/create-push-notification.dto';
+import { UpdatePushNotificationDto } from './dto/update-push-notification.dto';
 import { SetClubSettingDto } from './dto/set-club-setting.dto';
 import { CreateWaitlistEntryDto } from './dto/create-waitlist-entry.dto';
 import { UpdateWaitlistEntryDto } from './dto/update-waitlist-entry.dto';
@@ -73,6 +76,7 @@ export class ClubsController {
     private readonly creditRequestsService: CreditRequestsService,
     private readonly financialTransactionsService: FinancialTransactionsService,
     private readonly vipProductsService: VipProductsService,
+    private readonly pushNotificationsService: PushNotificationsService,
     private readonly clubSettingsService: ClubSettingsService,
     private readonly auditLogsService: AuditLogsService,
     private readonly waitlistSeatingService: WaitlistSeatingService,
@@ -2199,6 +2203,166 @@ export class ClubsController {
 
       const filename = body?.filename || `image-${Date.now()}.jpg`;
       return await this.storageService.createVipStoreUploadUrl(clubId, filename);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create upload URL: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // ========== Push Notifications ==========
+  @Get(':id/push-notifications')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async listPushNotifications(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('notificationType') notificationType?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only access notifications from your assigned club');
+      }
+
+      return await this.pushNotificationsService.findAll(clubId, notificationType as any);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to list push notifications: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/push-notifications')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createPushNotification(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: CreatePushNotificationDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only create notifications for your assigned club');
+      }
+
+      return await this.pushNotificationsService.create(clubId, {
+        ...dto,
+        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        createdBy: userId || undefined,
+      });
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create push notification: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Put(':id/push-notifications/:notificationId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, skipMissingProperties: true }))
+  async updatePushNotification(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
+    @Body() dto: UpdatePushNotificationDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only update notifications for your assigned club');
+      }
+
+      return await this.pushNotificationsService.update(notificationId, clubId, {
+        ...dto,
+        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+      });
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to update push notification: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Delete(':id/push-notifications/:notificationId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removePushNotification(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only delete notifications for your assigned club');
+      }
+
+      await this.pushNotificationsService.remove(notificationId, clubId);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to delete push notification: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/push-notifications/upload-url')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async createPushNotificationUploadUrl(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body?: { filename?: string; isVideo?: boolean }
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only upload files for your assigned club');
+      }
+
+      const filename = body?.filename || `file-${Date.now()}.${body?.isVideo ? 'mp4' : 'jpg'}`;
+      return await this.storageService.createPushNotificationUploadUrl(clubId, filename, body?.isVideo || false);
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;

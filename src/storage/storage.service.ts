@@ -89,6 +89,16 @@ export class StorageService {
   }
 
   /**
+   * Create signed upload URL for push notification images/videos
+   */
+  async createPushNotificationUploadUrl(clubId: string, filename: string, isVideo: boolean = false) {
+    await this.ensureBucket('push-notifications');
+    const extension = isVideo ? 'mp4' : filename.split('.').pop() || 'jpg';
+    const path = `${clubId}/${Date.now()}-${filename}`;
+    return await this.createSignedUploadUrlForBucket('push-notifications', path);
+  }
+
+  /**
    * Create signed upload URL for specific bucket
    */
   private async createSignedUploadUrlForBucket(bucket: string, path: string) {
