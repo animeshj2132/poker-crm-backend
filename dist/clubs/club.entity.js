@@ -49,6 +49,30 @@ __decorate([
     __metadata("design:type", Object)
 ], Club.prototype, "code", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'varchar', length: 20, default: 'active' }),
+    __metadata("design:type", String)
+], Club.prototype, "status", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true, name: 'terms_and_conditions' }),
+    __metadata("design:type", Object)
+], Club.prototype, "termsAndConditions", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'decimal', precision: 10, scale: 2, default: 0, name: 'subscription_price' }),
+    __metadata("design:type", Number)
+], Club.prototype, "subscriptionPrice", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'varchar', length: 20, default: 'active', name: 'subscription_status' }),
+    __metadata("design:type", String)
+], Club.prototype, "subscriptionStatus", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'timestamp', nullable: true, name: 'last_payment_date' }),
+    __metadata("design:type", Object)
+], Club.prototype, "lastPaymentDate", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true, name: 'subscription_notes' }),
+    __metadata("design:type", Object)
+], Club.prototype, "subscriptionNotes", void 0);
+__decorate([
     (0, typeorm_1.ManyToOne)(() => tenant_entity_1.Tenant, (tenant) => tenant.clubs, { nullable: false }),
     (0, typeorm_1.JoinColumn)({ name: 'tenant_id' }),
     __metadata("design:type", tenant_entity_1.Tenant)

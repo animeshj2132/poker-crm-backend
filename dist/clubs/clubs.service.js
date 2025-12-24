@@ -187,6 +187,52 @@ let ClubsService = class ClubsService {
             tipHoldPercent: 0.15
         };
     }
+    async findAllWithTenants() {
+        return await this.clubsRepo.find({
+            relations: ['tenant'],
+            order: {
+                createdAt: 'DESC'
+            }
+        });
+    }
+    async updateClubStatus(clubId, status, reason) {
+        const club = await this.findById(clubId);
+        if (!club) {
+            throw new common_1.NotFoundException('Club not found');
+        }
+        club.status = status;
+        if (reason) {
+            club.subscriptionNotes = `Status changed to ${status}: ${reason}`;
+        }
+        return await this.clubsRepo.save(club);
+    }
+    async updateClubSubscription(clubId, data) {
+        const club = await this.findById(clubId);
+        if (!club) {
+            throw new common_1.NotFoundException('Club not found');
+        }
+        if (data.subscriptionPrice !== undefined) {
+            club.subscriptionPrice = data.subscriptionPrice;
+        }
+        if (data.subscriptionStatus) {
+            club.subscriptionStatus = data.subscriptionStatus;
+        }
+        if (data.lastPaymentDate) {
+            club.lastPaymentDate = new Date(data.lastPaymentDate);
+        }
+        if (data.subscriptionNotes) {
+            club.subscriptionNotes = data.subscriptionNotes;
+        }
+        return await this.clubsRepo.save(club);
+    }
+    async updateClubTerms(clubId, termsAndConditions) {
+        const club = await this.findById(clubId);
+        if (!club) {
+            throw new common_1.NotFoundException('Club not found');
+        }
+        club.termsAndConditions = termsAndConditions;
+        return await this.clubsRepo.save(club);
+    }
 };
 exports.ClubsService = ClubsService;
 exports.ClubsService = ClubsService = __decorate([

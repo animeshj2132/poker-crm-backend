@@ -164,6 +164,17 @@ let TenantsController = class TenantsController {
             throw new common_1.BadRequestException('Failed to create signed upload URL');
         }
     }
+    async getClubLogoUrl(tenantId, clubId) {
+        try {
+            await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+            const path = `tenants/${tenantId}/clubs/${clubId}/logo.png`;
+            const logoUrl = this.storageService.getPublicUrl(path);
+            return { logoUrl };
+        }
+        catch (e) {
+            throw new common_1.BadRequestException('Failed to get logo URL');
+        }
+    }
 };
 exports.TenantsController = TenantsController;
 __decorate([
@@ -243,6 +254,15 @@ __decorate([
     __metadata("design:paramtypes", [String, String]),
     __metadata("design:returntype", Promise)
 ], TenantsController.prototype, "createClubLogoUploadUrl", null);
+__decorate([
+    (0, common_1.Get)(':tenantId/clubs/:clubId/logo-url'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __param(0, (0, common_1.Param)('tenantId', new common_1.ParseUUIDPipe())),
+    __param(1, (0, common_1.Param)('clubId', new common_1.ParseUUIDPipe())),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], TenantsController.prototype, "getClubLogoUrl", null);
 exports.TenantsController = TenantsController = __decorate([
     (0, common_1.Controller)('tenants'),
     (0, common_1.UseGuards)(roles_guard_1.RolesGuard),
