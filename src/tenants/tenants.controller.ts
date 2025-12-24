@@ -63,12 +63,57 @@ export class TenantsController {
   @Roles(GlobalRole.MASTER_ADMIN)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-  create(@Body() dto: CreateTenantDto) {
+  async create(@Body() dto: CreateTenantDto) {
     try {
+      // Validate required fields
       if (!dto.name || !dto.name.trim()) {
         throw new BadRequestException('Tenant name is required');
       }
-      return this.tenantsService.create(dto.name);
+      if (!dto.superAdminName || !dto.superAdminName.trim()) {
+        throw new BadRequestException('Super Admin name is required');
+      }
+      if (!dto.superAdminEmail || !dto.superAdminEmail.trim()) {
+        throw new BadRequestException('Super Admin email is required');
+      }
+
+      // Check tenant name uniqueness
+      const existingTenant = await this.tenantsService.findByName(dto.name.trim());
+      if (existingTenant) {
+        throw new ConflictException('Tenant with this name already exists');
+      }
+
+      // Check if email is already used as Super Admin
+      const existingUser = await this.usersService.findByEmail(dto.superAdminEmail.trim());
+      if (existingUser) {
+        const existingSuperAdminRole = await this.usersService.checkSuperAdminRole(existingUser.id);
+        if (existingSuperAdminRole) {
+          throw new ConflictException('This email is already used as a Super Admin for another tenant');
+        }
+      }
+
+      // Create tenant
+      const tenant = await this.tenantsService.create(dto.name.trim());
+
+      // Create Super Admin for the tenant
+      const { user: superAdmin, tempPassword } = await this.usersService.createSuperAdmin(
+        dto.superAdminEmail.trim(),
+        dto.superAdminName.trim(),
+        tenant.id
+      );
+
+      return {
+        tenant: {
+          id: tenant.id,
+          name: tenant.name,
+          createdAt: tenant.createdAt,
+        },
+        superAdmin: {
+          id: superAdmin.id,
+          email: superAdmin.email,
+          displayName: superAdmin.displayName,
+          tempPassword: tempPassword, // Return temp password so Master Admin can share it
+        },
+      };
     } catch (e) {
       throw e;
     }

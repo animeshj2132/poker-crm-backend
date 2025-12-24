@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsOptional, IsEmail, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsString, IsOptional, IsEmail, MaxLength, IsNumber, Min } from 'class-validator';
 
 export class CreatePlayerDto {
   @IsNotEmpty()
@@ -30,7 +30,28 @@ export class CreatePlayerDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  referredBy?: string; // Referrer name/agent
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  documentType?: string; // Aadhaar, PAN, Passport, etc.
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  documentUrl?: string; // URL to KYC document
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  initialBalance?: number; // Initial balance for the player
 }
+
 
 
 
