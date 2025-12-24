@@ -7242,5 +7242,131 @@ export class ClubsController {
       dateTo
     );
   }
+
+  // =========================================================================
+  // MASTER ADMIN ENDPOINTS
+  // =========================================================================
+
+  /**
+   * Get all clubs with tenant info (Master Admin only)
+   * GET /api/clubs/master-admin/all
+   */
+  @Get('master-admin/all')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async getAllClubsForMasterAdmin() {
+    try {
+      const clubs = await this.clubsService.findAllWithTenants();
+      
+      return clubs.map(club => ({
+        id: club.id,
+        name: club.name,
+        description: club.description,
+        code: club.code,
+        status: club.status || 'active',
+        subscriptionPrice: club.subscriptionPrice || 0,
+        subscriptionStatus: club.subscriptionStatus || 'active',
+        lastPaymentDate: club.lastPaymentDate,
+        termsAndConditions: club.termsAndConditions,
+        logoUrl: club.logoUrl,
+        videoUrl: club.videoUrl,
+        skinColor: club.skinColor,
+        gradient: club.gradient,
+        tenant: {
+          id: club.tenant.id,
+          name: club.tenant.name
+        },
+        createdAt: club.createdAt,
+        updatedAt: club.updatedAt
+      }));
+    } catch (error) {
+      console.error('Error in getAllClubsForMasterAdmin:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update club status (active/suspended/killed)
+   * PUT /api/clubs/:id/status
+   */
+  @Put(':id/status')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async updateClubStatus(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { status: string; reason?: string }
+  ) {
+    try {
+      const club = await this.clubsService.updateClubStatus(clubId, body.status, body.reason);
+      
+      return {
+        success: true,
+        club: {
+          id: club.id,
+          name: club.name,
+          status: club.status,
+          code: club.code
+        },
+        message: `Club ${body.status === 'killed' ? 'permanently disabled' : body.status}`
+      };
+    } catch (error) {
+      console.error('Error in updateClubStatus:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update club subscription
+   * PUT /api/clubs/:id/subscription
+   */
+  @Put(':id/subscription')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async updateClubSubscription(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: any
+  ) {
+    try {
+      const club = await this.clubsService.updateClubSubscription(clubId, dto);
+      
+      return {
+        success: true,
+        club: {
+          id: club.id,
+          name: club.name,
+          subscriptionPrice: club.subscriptionPrice,
+          subscriptionStatus: club.subscriptionStatus,
+          lastPaymentDate: club.lastPaymentDate
+        }
+      };
+    } catch (error) {
+      console.error('Error in updateClubSubscription:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update club terms and conditions
+   * PUT /api/clubs/:id/terms
+   */
+  @Put(':id/terms')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async updateClubTerms(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { termsAndConditions: string }
+  ) {
+    try {
+      const club = await this.clubsService.updateClubTerms(clubId, body.termsAndConditions);
+      
+      return {
+        success: true,
+        club: {
+          id: club.id,
+          name: club.name,
+          termsAndConditions: club.termsAndConditions
+        }
+      };
+    } catch (error) {
+      console.error('Error in updateClubTerms:', error);
+      throw error;
+    }
+  }
 }
 

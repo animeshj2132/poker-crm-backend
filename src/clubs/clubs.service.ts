@@ -239,6 +239,74 @@ export class ClubsService {
       tipHoldPercent: 0.15 // 15% of tips go to club
     };
   }
+
+  /**
+   * Find all clubs with tenant information (Master Admin)
+   */
+  async findAllWithTenants() {
+    return await this.clubsRepo.find({
+      relations: ['tenant'],
+      order: {
+        createdAt: 'DESC'
+      }
+    });
+  }
+
+
+  /**
+   * Update club status (Master Admin)
+   */
+  async updateClubStatus(clubId: string, status: string, reason?: string) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    club.status = status;
+    if (reason) {
+      club.subscriptionNotes = `Status changed to ${status}: ${reason}`;
+    }
+
+    return await this.clubsRepo.save(club);
+  }
+
+  /**
+   * Update club subscription (Master Admin)
+   */
+  async updateClubSubscription(clubId: string, data: any) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    if (data.subscriptionPrice !== undefined) {
+      club.subscriptionPrice = data.subscriptionPrice;
+    }
+    if (data.subscriptionStatus) {
+      club.subscriptionStatus = data.subscriptionStatus;
+    }
+    if (data.lastPaymentDate) {
+      club.lastPaymentDate = new Date(data.lastPaymentDate);
+    }
+    if (data.subscriptionNotes) {
+      club.subscriptionNotes = data.subscriptionNotes;
+    }
+
+    return await this.clubsRepo.save(club);
+  }
+
+  /**
+   * Update club terms and conditions (Master Admin)
+   */
+  async updateClubTerms(clubId: string, termsAndConditions: string) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    club.termsAndConditions = termsAndConditions;
+    return await this.clubsRepo.save(club);
+  }
 }
 
 

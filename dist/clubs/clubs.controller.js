@@ -5149,6 +5149,91 @@ let ClubsController = class ClubsController {
     async getPopularItems(clubId, limit, dateFrom, dateTo) {
         return await this.fnbService.getPopularItems(clubId, limit ? parseInt(limit) : 10, dateFrom, dateTo);
     }
+    async getAllClubsForMasterAdmin() {
+        try {
+            const clubs = await this.clubsService.findAllWithTenants();
+            return clubs.map(club => ({
+                id: club.id,
+                name: club.name,
+                description: club.description,
+                code: club.code,
+                status: club.status || 'active',
+                subscriptionPrice: club.subscriptionPrice || 0,
+                subscriptionStatus: club.subscriptionStatus || 'active',
+                lastPaymentDate: club.lastPaymentDate,
+                termsAndConditions: club.termsAndConditions,
+                logoUrl: club.logoUrl,
+                videoUrl: club.videoUrl,
+                skinColor: club.skinColor,
+                gradient: club.gradient,
+                tenant: {
+                    id: club.tenant.id,
+                    name: club.tenant.name
+                },
+                createdAt: club.createdAt,
+                updatedAt: club.updatedAt
+            }));
+        }
+        catch (error) {
+            console.error('Error in getAllClubsForMasterAdmin:', error);
+            throw error;
+        }
+    }
+    async updateClubStatus(clubId, body) {
+        try {
+            const club = await this.clubsService.updateClubStatus(clubId, body.status, body.reason);
+            return {
+                success: true,
+                club: {
+                    id: club.id,
+                    name: club.name,
+                    status: club.status,
+                    code: club.code
+                },
+                message: `Club ${body.status === 'killed' ? 'permanently disabled' : body.status}`
+            };
+        }
+        catch (error) {
+            console.error('Error in updateClubStatus:', error);
+            throw error;
+        }
+    }
+    async updateClubSubscription(clubId, dto) {
+        try {
+            const club = await this.clubsService.updateClubSubscription(clubId, dto);
+            return {
+                success: true,
+                club: {
+                    id: club.id,
+                    name: club.name,
+                    subscriptionPrice: club.subscriptionPrice,
+                    subscriptionStatus: club.subscriptionStatus,
+                    lastPaymentDate: club.lastPaymentDate
+                }
+            };
+        }
+        catch (error) {
+            console.error('Error in updateClubSubscription:', error);
+            throw error;
+        }
+    }
+    async updateClubTerms(clubId, body) {
+        try {
+            const club = await this.clubsService.updateClubTerms(clubId, body.termsAndConditions);
+            return {
+                success: true,
+                club: {
+                    id: club.id,
+                    name: club.name,
+                    termsAndConditions: club.termsAndConditions
+                }
+            };
+        }
+        catch (error) {
+            console.error('Error in updateClubTerms:', error);
+            throw error;
+        }
+    }
 };
 exports.ClubsController = ClubsController;
 __decorate([
@@ -6259,6 +6344,40 @@ __decorate([
     __metadata("design:paramtypes", [String, String, String, String]),
     __metadata("design:returntype", Promise)
 ], ClubsController.prototype, "getPopularItems", null);
+__decorate([
+    (0, common_1.Get)('master-admin/all'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], ClubsController.prototype, "getAllClubsForMasterAdmin", null);
+__decorate([
+    (0, common_1.Put)(':id/status'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __param(0, (0, common_1.Param)('id', new common_1.ParseUUIDPipe())),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ClubsController.prototype, "updateClubStatus", null);
+__decorate([
+    (0, common_1.Put)(':id/subscription'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __param(0, (0, common_1.Param)('id', new common_1.ParseUUIDPipe())),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ClubsController.prototype, "updateClubSubscription", null);
+__decorate([
+    (0, common_1.Put)(':id/terms'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __param(0, (0, common_1.Param)('id', new common_1.ParseUUIDPipe())),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], ClubsController.prototype, "updateClubTerms", null);
 exports.ClubsController = ClubsController = __decorate([
     (0, common_1.Controller)('clubs'),
     __param(13, (0, typeorm_1.InjectRepository)(player_entity_1.Player)),

@@ -37,6 +37,24 @@ export class Club {
   @Column({ type: 'varchar', length: 6, unique: true, nullable: true })
   code!: string | null; // Unique 6-digit club code
 
+  @Column({ type: 'varchar', length: 20, default: 'active' })
+  status!: string; // active, suspended, killed
+
+  @Column({ type: 'text', nullable: true, name: 'terms_and_conditions' })
+  termsAndConditions!: string | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, name: 'subscription_price' })
+  subscriptionPrice!: number;
+
+  @Column({ type: 'varchar', length: 20, default: 'active', name: 'subscription_status' })
+  subscriptionStatus!: string; // active, paused, cancelled
+
+  @Column({ type: 'timestamp', nullable: true, name: 'last_payment_date' })
+  lastPaymentDate!: Date | null;
+
+  @Column({ type: 'text', nullable: true, name: 'subscription_notes' })
+  subscriptionNotes!: string | null;
+
   @ManyToOne(() => Tenant, (tenant) => tenant.clubs, { nullable: false })
   @JoinColumn({ name: 'tenant_id' })
   tenant!: Tenant;

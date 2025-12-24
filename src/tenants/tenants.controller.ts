@@ -218,5 +218,22 @@ export class TenantsController {
     }
   }
 
+  // Master Admin: Get club logo public URL
+  @Get(':tenantId/clubs/:clubId/logo-url')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async getClubLogoUrl(
+    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
+    @Param('clubId', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      const path = `tenants/${tenantId}/clubs/${clubId}/logo.png`;
+      const logoUrl = this.storageService.getPublicUrl(path);
+      return { logoUrl };
+    } catch (e) {
+      throw new BadRequestException('Failed to get logo URL');
+    }
+  }
+
 }
 
