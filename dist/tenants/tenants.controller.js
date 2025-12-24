@@ -20,6 +20,7 @@ const roles_1 = require("../common/rbac/roles");
 const roles_decorator_1 = require("../common/rbac/roles.decorator");
 const update_branding_dto_1 = require("./dto/update-branding.dto");
 const create_tenant_dto_1 = require("./dto/create-tenant.dto");
+const create_tenant_with_club_dto_1 = require("./dto/create-tenant-with-club.dto");
 const create_super_admin_dto_1 = require("./dto/create-super-admin.dto");
 const setup_tenant_dto_1 = require("./dto/setup-tenant.dto");
 const create_club_with_branding_dto_1 = require("../clubs/dto/create-club-with-branding.dto");
@@ -42,12 +43,88 @@ let TenantsController = class TenantsController {
             throw e;
         }
     }
+    async getTenant(tenantId) {
+        try {
+            const tenant = await this.tenantsService.findById(tenantId);
+            if (!tenant) {
+                throw new common_1.BadRequestException('Tenant not found');
+            }
+            const superAdmin = await this.usersService.getSuperAdminForTenant(tenantId);
+            return {
+                ...tenant,
+                superAdmin: superAdmin ? {
+                    id: superAdmin.id,
+                    email: superAdmin.email,
+                    displayName: superAdmin.displayName
+                } : null
+            };
+        }
+        catch (e) {
+            throw e;
+        }
+    }
     create(dto) {
         try {
             if (!dto.name || !dto.name.trim()) {
                 throw new common_1.BadRequestException('Tenant name is required');
             }
             return this.tenantsService.create(dto.name);
+        }
+        catch (e) {
+            throw e;
+        }
+    }
+    async createTenantWithClub(dto) {
+        try {
+            if (!dto.tenantName || !dto.tenantName.trim()) {
+                throw new common_1.BadRequestException('Tenant name is required');
+            }
+            if (!dto.superAdminName || !dto.superAdminName.trim()) {
+                throw new common_1.BadRequestException('Super Admin name is required');
+            }
+            if (!dto.superAdminEmail || !dto.superAdminEmail.trim()) {
+                throw new common_1.BadRequestException('Super Admin email is required');
+            }
+            if (!dto.clubName || !dto.clubName.trim()) {
+                throw new common_1.BadRequestException('Club name is required');
+            }
+            const existingUser = await this.usersService.findByEmail(dto.superAdminEmail.trim());
+            if (existingUser) {
+                const existingSuperAdminRole = await this.usersService.checkSuperAdminRole(existingUser.id);
+                if (existingSuperAdminRole) {
+                    throw new common_1.ConflictException(`Email ${dto.superAdminEmail} is already used as Super Admin for another tenant.`);
+                }
+            }
+            const tenant = await this.tenantsService.create(dto.tenantName.trim());
+            const superAdminResult = await this.usersService.createSuperAdmin(dto.superAdminEmail.trim(), dto.superAdminName.trim(), tenant.id);
+            const club = await this.clubsService.createWithBranding(tenant.id, {
+                name: dto.clubName.trim(),
+                description: dto.clubDescription || '',
+                logoUrl: dto.logoUrl || undefined,
+                videoUrl: dto.videoUrl || undefined,
+                skinColor: dto.skinColor || '#10b981',
+                gradient: dto.gradient || 'emerald-green-teal'
+            });
+            return {
+                tenant,
+                superAdmin: {
+                    user: superAdminResult.user,
+                    tempPassword: superAdminResult.tempPassword,
+                    email: superAdminResult.user.email,
+                    displayName: superAdminResult.user.displayName,
+                    isExistingUser: superAdminResult.isExistingUser || false
+                },
+                club: {
+                    id: club.id,
+                    name: club.name,
+                    code: club.code,
+                    description: club.description,
+                    logoUrl: club.logoUrl,
+                    videoUrl: club.videoUrl,
+                    skinColor: club.skinColor,
+                    gradient: club.gradient
+                }
+            };
         }
         catch (e) {
             throw e;
@@ -74,9 +151,6 @@ let TenantsController = class TenantsController {
         try {
             if (!dto.name || !dto.name.trim()) {
                 throw new common_1.BadRequestException('Club name is required');
-            }
-            if (!dto.superAdminEmail || !dto.superAdminEmail.trim()) {
-                throw new common_1.BadRequestException('Super Admin email is required');
             }
             await this.storageService.ensureBucket();
             const club = await this.clubsService.createWithBranding(tenantId, {
@@ -185,6 +259,14 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], TenantsController.prototype, "list", null);
 __decorate([
+    (0, common_1.Get)(':id'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    __param(0, (0, common_1.Param)('id', new common_1.ParseUUIDPipe())),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], TenantsController.prototype, "getTenant", null);
+__decorate([
     (0, common_1.Post)(),
     (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
     (0, common_1.HttpCode)(common_1.HttpStatus.CREATED),
@@ -194,6 +276,16 @@ __decorate([
     __metadata("design:paramtypes", [create_tenant_dto_1.CreateTenantDto]),
     __metadata("design:returntype", void 0)
 ], TenantsController.prototype, "create", null);
+__decorate([
+    (0, common_1.Post)('with-club'),
+    (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),
+    (0, common_1.HttpCode)(common_1.HttpStatus.CREATED),
+    (0, common_1.UsePipes)(new common_1.ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [create_tenant_with_club_dto_1.CreateTenantWithClubDto]),
+    __metadata("design:returntype", Promise)
+], TenantsController.prototype, "createTenantWithClub", null);
 __decorate([
     (0, common_1.Patch)(':id/branding'),
     (0, roles_decorator_1.Roles)(roles_1.GlobalRole.MASTER_ADMIN),

@@ -50,15 +50,4 @@ __decorate([
     (0, class_validator_1.MaxLength)(200),
     __metadata("design:type", String)
 ], CreateClubWithBrandingDto.prototype, "gradient", void 0);
-__decorate([
-    (0, class_validator_1.IsEmail)(),
-    (0, class_validator_1.IsNotEmpty)(),
-    __metadata("design:type", String)
-], CreateClubWithBrandingDto.prototype, "superAdminEmail", void 0);
-__decorate([
-    (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsString)(),
-    (0, class_validator_1.MaxLength)(120),
-    __metadata("design:type", String)
-], CreateClubWithBrandingDto.prototype, "superAdminDisplayName", void 0);
 //# sourceMappingURL=create-club-with-branding.dto.js.map

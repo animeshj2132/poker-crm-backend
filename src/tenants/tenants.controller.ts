@@ -1,10 +1,11 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { TenantsService } from './tenants.service';
 import { RolesGuard } from '../common/rbac/roles.guard';
 import { GlobalRole, TenantRole } from '../common/rbac/roles';
 import { Roles } from '../common/rbac/roles.decorator';
 import { UpdateBrandingDto } from './dto/update-branding.dto';
 import { CreateTenantDto } from './dto/create-tenant.dto';
+import { CreateTenantWithClubDto } from './dto/create-tenant-with-club.dto';
 import { CreateSuperAdminDto } from './dto/create-super-admin.dto';
 import { SetupTenantDto } from './dto/setup-tenant.dto';
 import { CreateClubWithBrandingDto } from '../clubs/dto/create-club-with-branding.dto';
@@ -33,6 +34,31 @@ export class TenantsController {
     }
   }
 
+  @Get(':id')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async getTenant(@Param('id', new ParseUUIDPipe()) tenantId: string) {
+    try {
+      const tenant = await this.tenantsService.findById(tenantId);
+      if (!tenant) {
+        throw new BadRequestException('Tenant not found');
+      }
+      
+      // Get super admin for this tenant
+      const superAdmin = await this.usersService.getSuperAdminForTenant(tenantId);
+      
+      return {
+        ...tenant,
+        superAdmin: superAdmin ? {
+          id: superAdmin.id,
+          email: superAdmin.email,
+          displayName: superAdmin.displayName
+        } : null
+      };
+    } catch (e) {
+      throw e;
+    }
+  }
+
   @Post()
   @Roles(GlobalRole.MASTER_ADMIN)
   @HttpCode(HttpStatus.CREATED)
@@ -43,6 +69,80 @@ export class TenantsController {
         throw new BadRequestException('Tenant name is required');
       }
       return this.tenantsService.create(dto.name);
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  @Post('with-club')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createTenantWithClub(@Body() dto: CreateTenantWithClubDto) {
+    try {
+      // Validate required fields
+      if (!dto.tenantName || !dto.tenantName.trim()) {
+        throw new BadRequestException('Tenant name is required');
+      }
+      if (!dto.superAdminName || !dto.superAdminName.trim()) {
+        throw new BadRequestException('Super Admin name is required');
+      }
+      if (!dto.superAdminEmail || !dto.superAdminEmail.trim()) {
+        throw new BadRequestException('Super Admin email is required');
+      }
+      if (!dto.clubName || !dto.clubName.trim()) {
+        throw new BadRequestException('Club name is required');
+      }
+
+      // Check if email is already used as Super Admin for another tenant
+      const existingUser = await this.usersService.findByEmail(dto.superAdminEmail.trim());
+      if (existingUser) {
+        const existingSuperAdminRole = await this.usersService.checkSuperAdminRole(existingUser.id);
+        if (existingSuperAdminRole) {
+          throw new ConflictException(`Email ${dto.superAdminEmail} is already used as Super Admin for another tenant.`);
+        }
+      }
+
+      // Create tenant
+      const tenant = await this.tenantsService.create(dto.tenantName.trim());
+
+      // Create Super Admin user and assign to tenant
+      const superAdminResult = await this.usersService.createSuperAdmin(
+        dto.superAdminEmail.trim(),
+        dto.superAdminName.trim(),
+        tenant.id
+      );
+
+      // Create club with branding
+      const club = await this.clubsService.createWithBranding(tenant.id, {
+        name: dto.clubName.trim(),
+        description: dto.clubDescription || '',
+        logoUrl: dto.logoUrl || undefined,
+        videoUrl: dto.videoUrl || undefined,
+        skinColor: dto.skinColor || '#10b981',
+        gradient: dto.gradient || 'emerald-green-teal'
+      });
+
+      return {
+        tenant,
+        superAdmin: {
+          user: superAdminResult.user,
+          tempPassword: superAdminResult.tempPassword,
+          email: superAdminResult.user.email,
+          displayName: superAdminResult.user.displayName,
+          isExistingUser: superAdminResult.isExistingUser || false
+        },
+        club: {
+          id: club.id,
+          name: club.name,
+          code: club.code,
+          description: club.description,
+          logoUrl: club.logoUrl,
+          videoUrl: club.videoUrl,
+          skinColor: club.skinColor,
+          gradient: club.gradient
+        }
+      };
     } catch (e) {
       throw e;
     }
@@ -85,9 +185,6 @@ export class TenantsController {
     try {
       if (!dto.name || !dto.name.trim()) {
         throw new BadRequestException('Club name is required');
-      }
-      if (!dto.superAdminEmail || !dto.superAdminEmail.trim()) {
-        throw new BadRequestException('Super Admin email is required');
       }
 
       // Ensure storage bucket exists (for logo/video uploads)
