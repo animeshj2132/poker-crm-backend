@@ -4,13 +4,17 @@ import { PlayerTournamentsController } from './player-tournaments.controller';
 import { PlayerTournamentsService } from './player-tournaments.service';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsModule } from '../clubs/clubs.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Player]), ClubsModule],
+  imports: [TypeOrmModule.forFeature([Player]), ClubsModule, AuthModule],
   controllers: [PlayerTournamentsController],
   providers: [PlayerTournamentsService],
   exports: [PlayerTournamentsService],
 })
 export class PlayerTournamentsModule {}
+
+
+
 
 

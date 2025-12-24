@@ -18,10 +18,12 @@ const typeorm_1 = require("@nestjs/typeorm");
 const typeorm_2 = require("typeorm");
 const player_entity_1 = require("../clubs/entities/player.entity");
 const clubs_service_1 = require("../clubs/clubs.service");
+const auth_service_1 = require("../auth/auth.service");
 let PlayerTournamentsService = class PlayerTournamentsService {
-    constructor(playersRepo, clubsService) {
+    constructor(playersRepo, clubsService, authService) {
         this.playersRepo = playersRepo;
         this.clubsService = clubsService;
+        this.authService = authService;
     }
     async getUpcomingTournaments(clubId, limit = 20) {
         try {
@@ -161,7 +163,7 @@ let PlayerTournamentsService = class PlayerTournamentsService {
                 throw new common_1.ForbiddenException('Please complete KYC verification before registering for tournaments');
             }
             const tournament = await this.playersRepo.query(`
-        SELECT id, max_players, current_players, status, start_time
+        SELECT id, max_players, current_players, status, start_time, buy_in
         FROM tournaments
         WHERE id = $1 AND club_id = $2
       `, [tournamentId, clubId]);
@@ -174,6 +176,24 @@ let PlayerTournamentsService = class PlayerTournamentsService {
             }
             if (tourn.current_players >= tourn.max_players) {
                 throw new common_1.BadRequestException('Tournament is full');
+            }
+            const buyInRequired = parseFloat(tourn.buy_in) || 0;
+            if (buyInRequired > 0) {
+                try {
+                    const playerBalance = await this.authService.getPlayerBalance(playerId, clubId);
+                    const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
+                    if (totalAvailableBalance < buyInRequired) {
+                        throw new common_1.BadRequestException(`Insufficient balance. Tournament buy-in required: ₹${buyInRequired.toLocaleString()}, ` +
+                            `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
+                            `Please add funds to your account before registering. Note: Balance will be deducted when the tournament starts.`);
+                    }
+                }
+                catch (balanceError) {
+                    if (balanceError instanceof common_1.BadRequestException) {
+                        throw balanceError;
+                    }
+                    console.error('Error checking player balance for tournament registration:', balanceError);
+                }
             }
             let existing = [];
             try {
@@ -356,6 +376,7 @@ exports.PlayerTournamentsService = PlayerTournamentsService = __decorate([
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(player_entity_1.Player)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
-        clubs_service_1.ClubsService])
+        clubs_service_1.ClubsService,
+        auth_service_1.AuthService])
 ], PlayerTournamentsService);
 //# sourceMappingURL=player-tournaments.service.js.map

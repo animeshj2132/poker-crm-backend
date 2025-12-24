@@ -19,3 +19,6 @@ CREATE INDEX IF NOT EXISTS idx_tournament_registrations_status ON tournament_reg
 -- Success message
 SELECT '✅ Tournament registrations table created successfully!' as message;
 
+
+
+

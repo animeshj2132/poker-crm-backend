@@ -72,3 +72,6 @@ async function createMissingTables() {
 createMissingTables().catch(console.error);
 
 
+
+
+

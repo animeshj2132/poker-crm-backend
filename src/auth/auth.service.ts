@@ -1465,6 +1465,50 @@ export class AuthService {
         throw new BadRequestException('No tables are configured for this club. Please contact the club administrator.');
       }
 
+      // CRITICAL: Check player balance against minimum buy-in requirement
+      let minBuyInRequired = 0;
+      try {
+        // Get minimum buy-in from available tables
+        const whereClause: any = {
+          club: { id: clubId.trim() }
+        };
+        
+        if (tableType && tableType.trim()) {
+          whereClause.tableType = tableType.trim();
+        }
+
+        const tables = await this.tablesRepo.find({
+          where: whereClause
+        });
+
+        // Find the minimum buy-in from all tables
+        const buyIns = tables
+          .map(t => t.minBuyIn)
+          .filter(buyIn => buyIn !== null && buyIn !== undefined && buyIn > 0)
+          .map(buyIn => parseFloat(String(buyIn)) || 0);
+
+        if (buyIns.length > 0) {
+          minBuyInRequired = Math.min(...buyIns);
+        }
+      } catch (dbError) {
+        console.error('Database error checking minimum buy-in:', dbError);
+        // Continue - if we can't check, we'll allow joining waitlist
+      }
+
+      // If there's a minimum buy-in requirement, check player balance
+      if (minBuyInRequired > 0) {
+        const playerBalance = await this.getPlayerBalance(playerId.trim(), clubId.trim());
+        const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
+
+        if (totalAvailableBalance < minBuyInRequired) {
+          throw new BadRequestException(
+            `Insufficient balance. Minimum buy-in required: ₹${minBuyInRequired.toLocaleString()}, ` +
+            `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
+            `Please add funds to your account before joining the waitlist.`
+          );
+        }
+      }
+
       // Edge case: Check if any tables are available (if tableType specified)
       if (tableType && tableType.trim()) {
         let availableTables = [];
