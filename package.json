@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "storage:create-bucket": "ts-node -r tsconfig-paths/register scripts/create-bucket.ts",
+    "storage:create-kyc-bucket": "ts-node -r tsconfig-paths/register scripts/create-kyc-documents-bucket.ts",
     "migrate": "node scripts/run-migrations.js"
   },
   "dependencies": {

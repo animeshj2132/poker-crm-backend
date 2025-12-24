@@ -8,6 +8,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { StorageService } from '../storage/storage.service';
+
+const KYC_DOCUMENTS_BUCKET = 'kyc-documents';
 
 @Injectable()
 export class PlayerDocumentsService {
@@ -15,6 +18,7 @@ export class PlayerDocumentsService {
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
     private readonly clubsService: ClubsService,
+    private readonly storageService: StorageService,
   ) {}
 
   /**
@@ -63,7 +67,7 @@ export class PlayerDocumentsService {
   }
 
   /**
-   * Upload KYC document
+   * Upload KYC document to Supabase storage
    */
   async uploadDocument(
     playerId: string,
@@ -90,6 +94,46 @@ export class PlayerDocumentsService {
         throw new NotFoundException('Player not found');
       }
 
+      // Validate document type
+      const allowedTypes = ['government_id', 'address_proof', 'pan_card', 'id_proof', 'utility_bill', 'profile_photo', 'other'];
+      const documentType = data?.type || data?.documentType || 'other';
+      if (!allowedTypes.includes(documentType)) {
+        throw new BadRequestException(`Document type must be one of: ${allowedTypes.join(', ')}`);
+      }
+
+      let fileUrl = data?.url;
+
+      // Upload file to Supabase if provided
+      if (file && file.buffer) {
+        // Ensure bucket exists (kyc-documents is the same bucket used by player app)
+        try {
+          await this.storageService.ensureBucket(KYC_DOCUMENTS_BUCKET);
+        } catch (err) {
+          console.error('Failed to ensure kyc-documents bucket:', err);
+          throw new BadRequestException(`Storage bucket '${KYC_DOCUMENTS_BUCKET}' not found. Please create it in Supabase Storage.`);
+        }
+
+        const timestamp = Date.now();
+        const fileExtension = file.originalname ? file.originalname.split('.').pop() : 'pdf';
+        const fileName = `${timestamp}-${Math.random().toString(36).substr(2, 9)}.${fileExtension}`;
+        const filePath = `${clubId}/${playerId}/${documentType}/${fileName}`;
+
+        // Upload to Supabase storage
+        await this.storageService.uploadFile(
+          KYC_DOCUMENTS_BUCKET,
+          filePath,
+          file.buffer,
+          file.mimetype || 'application/octet-stream'
+        );
+
+        // Get public URL
+        fileUrl = this.storageService.getPublicUrlForBucket(KYC_DOCUMENTS_BUCKET, filePath);
+      }
+
+      if (!fileUrl) {
+        throw new BadRequestException('File URL is required. Either provide a file or a URL.');
+      }
+
       // Get existing documents
       const existingDocs = (player as any).kycDocuments || [];
       const documents = Array.isArray(existingDocs) ? existingDocs : [];
@@ -97,9 +141,9 @@ export class PlayerDocumentsService {
       // Create new document entry
       const newDocument = {
         id: `doc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        type: data?.type || 'other',
+        type: documentType,
         name: data?.name || file?.originalname || 'Untitled Document',
-        url: data?.url || (file ? `/uploads/${file.filename}` : ''),
+        url: fileUrl,
         uploadedAt: new Date().toISOString(),
         status: 'pending',
         size: file?.size || 0,
@@ -129,7 +173,7 @@ export class PlayerDocumentsService {
       ) {
         throw err;
       }
-      throw new BadRequestException('Failed to upload document');
+      throw new BadRequestException(`Failed to upload document: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 

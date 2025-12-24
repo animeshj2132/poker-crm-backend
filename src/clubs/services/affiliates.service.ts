@@ -261,8 +261,12 @@ export class AffiliatesService {
     phoneNumber?: string,
     playerId?: string,
     affiliateCode?: string,
-    notes?: string
-  ): Promise<Player> {
+    notes?: string,
+    panCard?: string,
+    documentType?: string,
+    documentUrl?: string,
+    initialBalance?: number
+  ): Promise<{ player: Player; tempPassword: string }> {
     // Edge case: Validate inputs
     if (!clubId || typeof clubId !== 'string' || !clubId.trim()) {
       throw new BadRequestException('Club ID is required');
@@ -327,18 +331,52 @@ export class AffiliatesService {
       }
     }
 
+    // Validate PAN card if provided
+    if (panCard !== undefined && panCard !== null) {
+      if (typeof panCard !== 'string') {
+        throw new BadRequestException('PAN card must be a string');
+      }
+      const trimmedPan = panCard.trim().toUpperCase();
+      // PAN card format: 5 letters, 4 digits, 1 letter (e.g., ABCDE1234F)
+      const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+      if (!panRegex.test(trimmedPan)) {
+        throw new BadRequestException('PAN card must be in format: ABCDE1234F (5 letters, 4 digits, 1 letter)');
+      }
+    }
+
+    // Validate initial balance if provided
+    if (initialBalance !== undefined && initialBalance !== null) {
+      if (typeof initialBalance !== 'number' || isNaN(initialBalance)) {
+        throw new BadRequestException('Initial balance must be a number');
+      }
+      if (initialBalance < 0) {
+        throw new BadRequestException('Initial balance cannot be negative');
+      }
+    }
+
     // Validate club exists
     const club = await this.clubsRepo.findOne({ where: { id: clubId.trim() } });
     if (!club) {
       throw new NotFoundException('Club not found');
     }
 
-    // Check if player already exists
+    // Check if player already exists by email
     const existingPlayer = await this.playersRepo.findOne({
       where: { club: { id: clubId.trim() }, email: trimmedEmail }
     });
     if (existingPlayer) {
       throw new ConflictException('Player with this email already exists for this club');
+    }
+
+    // Check if PAN card already exists for this club (if provided)
+    if (panCard) {
+      const trimmedPan = panCard.trim().toUpperCase();
+      const existingPanPlayer = await this.playersRepo.findOne({
+        where: { club: { id: clubId.trim() }, panCard: trimmedPan }
+      });
+      if (existingPanPlayer) {
+        throw new ConflictException('Player with this PAN card number already exists for this club');
+      }
     }
 
     // Find affiliate if code provided
@@ -363,6 +401,7 @@ export class AffiliatesService {
     const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
 
     // Create player
+    // Super Admin creates players with KYC docs, so auto-approve them
     const player = this.playersRepo.create({
       club,
       affiliate,
@@ -370,10 +409,13 @@ export class AffiliatesService {
       email: email.trim().toLowerCase(),
       phoneNumber: phoneNumber?.trim() || null,
       playerId: playerId?.trim() || null,
+      panCard: panCard?.trim().toUpperCase() || null,
       passwordHash,
       mustResetPassword: true, // Force password reset on first login
       status: 'Active',
-      notes: notes?.trim() || null
+      notes: notes?.trim() || null,
+      kycStatus: 'approved', // Auto-approve since Super Admin uploads KYC docs during creation
+      kycApprovedAt: new Date() // Set approval timestamp
     });
 
     const savedPlayer = await this.playersRepo.save(player);
@@ -384,10 +426,10 @@ export class AffiliatesService {
       await this.affiliatesRepo.save(affiliate);
     }
 
-    // Add temp password to return object (ONLY time password is visible)
-    (savedPlayer as any).tempPassword = tempPassword;
+    // TODO: Store KYC document if documentUrl and documentType provided
+    // This should create a kyc_documents entry similar to player app flow
 
-    return savedPlayer;
+    return { player: savedPlayer, tempPassword };
   }
 
   /**

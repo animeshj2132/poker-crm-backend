@@ -653,6 +653,8 @@ export class AuthService {
       }
 
       // Edge case: Create player with error handling
+      // Players created from player portal signup should NOT need password reset
+      // (they set their own password during signup)
       const player = this.playersRepo.create({
         club: club,
         name: fullName,
@@ -661,7 +663,8 @@ export class AuthService {
         playerId: trimmedNickname,
         passwordHash: passwordHash,
         affiliate: affiliate,
-        status: 'Active'
+        status: 'Active',
+        mustResetPassword: false // Player portal signups set their own password
       });
 
       let savedPlayer;
