@@ -20,9 +20,15 @@ export class Affiliate {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
+  @Column({ type: 'uuid', name: 'club_id' })
+  clubId!: string;
+
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
   club!: Club;
+
+  @Column({ type: 'uuid', name: 'user_id' })
+  userId!: string;
 
   @ManyToOne(() => User, { nullable: false })
   @JoinColumn({ name: 'user_id' })

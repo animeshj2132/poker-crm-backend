@@ -1,12 +1,14 @@
 import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Between, ILike } from 'typeorm';
 import { Affiliate } from '../entities/affiliate.entity';
 import { Player } from '../entities/player.entity';
 import { User } from '../../users/user.entity';
 import { Club } from '../club.entity';
+import { AffiliateTransaction, TransactionType, TransactionStatus } from '../entities/affiliate-transaction.entity';
 import { UsersService } from '../../users/users.service';
 import { ClubRole } from '../../common/rbac/roles';
+import { ProcessAffiliatePaymentDto } from '../dto/process-affiliate-payment.dto';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -20,6 +22,8 @@ export class AffiliatesService {
     private readonly usersRepo: Repository<User>,
     @InjectRepository(Club)
     private readonly clubsRepo: Repository<Club>,
+    @InjectRepository(AffiliateTransaction)
+    private readonly affiliateTransactionRepo: Repository<AffiliateTransaction>,
     private readonly usersService: UsersService
   ) {}
 
@@ -512,6 +516,213 @@ export class AffiliatesService {
         createdAt: p.createdAt
       }))
     };
+  }
+
+  // ====================
+  // AFFILIATE PAYMENTS & TRANSACTIONS
+  // ====================
+
+  /**
+   * Process affiliate payment
+   */
+  async processAffiliatePayment(clubId: string, dto: ProcessAffiliatePaymentDto, userId?: string) {
+    // Verify affiliate exists and belongs to club
+    const affiliate = await this.affiliatesRepo.findOne({
+      where: { id: dto.affiliateId, club: { id: clubId } },
+      relations: ['user']
+    });
+
+    if (!affiliate) {
+      throw new NotFoundException('Affiliate not found');
+    }
+
+    // Create transaction
+    const transaction = this.affiliateTransactionRepo.create({
+      affiliateId: dto.affiliateId,
+      clubId,
+      amount: dto.amount,
+      transactionType: dto.transactionType || TransactionType.PAYMENT,
+      description: dto.description,
+      notes: dto.notes,
+      status: TransactionStatus.COMPLETED,
+      processedBy: userId,
+      processedAt: new Date(),
+    });
+
+    const savedTransaction = await this.affiliateTransactionRepo.save(transaction);
+
+    // Update affiliate total commission
+    affiliate.totalCommission = Number(affiliate.totalCommission) + Number(dto.amount);
+    await this.affiliatesRepo.save(affiliate);
+
+    return this.affiliateTransactionRepo.findOne({
+      where: { id: savedTransaction.id },
+      relations: ['affiliate', 'affiliate.user'],
+    });
+  }
+
+  /**
+   * Get affiliate transactions with pagination and filters
+   */
+  async getAffiliateTransactions(
+    clubId: string,
+    page: number = 1,
+    limit: number = 10,
+    search?: string,
+    startDate?: string,
+    endDate?: string,
+    affiliateId?: string,
+  ) {
+    const queryBuilder = this.affiliateTransactionRepo
+      .createQueryBuilder('transaction')
+      .leftJoinAndSelect('transaction.affiliate', 'affiliate')
+      .leftJoinAndSelect('affiliate.user', 'user')
+      .where('transaction.clubId = :clubId', { clubId })
+      .orderBy('transaction.processedAt', 'DESC')
+      .addOrderBy('transaction.createdAt', 'DESC');
+
+    // Search by affiliate name, email, or code
+    if (search && search.trim()) {
+      queryBuilder.andWhere(
+        '(affiliate.name ILIKE :search OR affiliate.code ILIKE :search OR user.email ILIKE :search)',
+        { search: `%${search.trim()}%` },
+      );
+    }
+
+    // Filter by date range
+    if (startDate && endDate) {
+      queryBuilder.andWhere('transaction.processedAt BETWEEN :startDate AND :endDate', {
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+      });
+    }
+
+    // Filter by specific affiliate
+    if (affiliateId) {
+      queryBuilder.andWhere('transaction.affiliateId = :affiliateId', { affiliateId });
+    }
+
+    const total = await queryBuilder.getCount();
+    const skip = (page - 1) * limit;
+
+    const transactions = await queryBuilder.skip(skip).take(limit).getMany();
+
+    return {
+      transactions,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Get affiliates with pagination for management
+   */
+  async getAffiliatesForManagement(
+    clubId: string,
+    page: number = 1,
+    limit: number = 10,
+    search?: string,
+    status?: string,
+  ) {
+    const queryBuilder = this.affiliatesRepo
+      .createQueryBuilder('affiliate')
+      .leftJoinAndSelect('affiliate.user', 'user')
+      .leftJoinAndSelect('affiliate.players', 'players')
+      .where('affiliate.clubId = :clubId', { clubId })
+      .orderBy('affiliate.createdAt', 'DESC');
+
+    // Search by name, code, or email
+    if (search && search.trim()) {
+      queryBuilder.andWhere(
+        '(affiliate.name ILIKE :search OR affiliate.code ILIKE :search OR user.email ILIKE :search)',
+        { search: `%${search.trim()}%` },
+      );
+    }
+
+    // Filter by status
+    if (status) {
+      queryBuilder.andWhere('affiliate.status = :status', { status });
+    }
+
+    const total = await queryBuilder.getCount();
+    const skip = (page - 1) * limit;
+
+    const affiliates = await queryBuilder.skip(skip).take(limit).getMany();
+
+    // Calculate referral counts and earnings for each affiliate
+    const affiliatesWithStats = affiliates.map(affiliate => {
+      const players = affiliate.players || [];
+      const verifiedPlayers = players.filter(p => p.kycStatus === 'approved' || p.kycStatus === 'verified');
+      
+      return {
+        id: affiliate.id,
+        name: affiliate.name,
+        code: affiliate.code,
+        email: affiliate.user?.email,
+        status: affiliate.status,
+        commissionRate: affiliate.commissionRate,
+        totalReferrals: players.length,
+        verifiedReferrals: verifiedPlayers.length,
+        totalCommission: affiliate.totalCommission,
+        createdAt: affiliate.createdAt,
+      };
+    });
+
+    return {
+      affiliates: affiliatesWithStats,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Get affiliate referral players with filters
+   */
+  async getAffiliateReferrals(
+    affiliateId: string,
+    clubId: string,
+    search?: string,
+    kycStatus?: string,
+  ) {
+    const queryBuilder = this.playersRepo
+      .createQueryBuilder('player')
+      .leftJoin('player.affiliate', 'affiliate')
+      .leftJoin('player.club', 'club')
+      .where('affiliate.id = :affiliateId', { affiliateId })
+      .andWhere('club.id = :clubId', { clubId })
+      .orderBy('player.createdAt', 'DESC');
+
+    // Search by name or email
+    if (search && search.trim()) {
+      queryBuilder.andWhere(
+        '(player.name ILIKE :search OR player.email ILIKE :search OR player.phoneNumber ILIKE :search)',
+        { search: `%${search.trim()}%` },
+      );
+    }
+
+    // Filter by KYC status
+    if (kycStatus) {
+      queryBuilder.andWhere('player.kycStatus = :kycStatus', { kycStatus });
+    }
+
+    const players = await queryBuilder.getMany();
+
+    return players.map(p => ({
+      id: p.id,
+      name: p.name,
+      email: p.email,
+      phoneNumber: p.phoneNumber,
+      playerId: p.playerId,
+      kycStatus: p.kycStatus,
+      status: p.status,
+      totalSpent: p.totalSpent,
+      totalCommission: p.totalCommission,
+      createdAt: p.createdAt,
+    }));
   }
 
   /**
