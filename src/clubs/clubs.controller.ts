@@ -101,6 +101,9 @@ import { GenerateReportDto } from './dto/generate-report.dto';
 import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
 import { FactoryResetDto } from './dto/factory-reset.dto';
 import { ActionCategory } from './dto/create-audit-log.dto';
+import { RakeCollectionService } from './services/rake-collection.service';
+import { CreateRakeCollectionDto } from './dto/create-rake-collection.dto';
+import { QueryRakeCollectionsDto } from './dto/query-rake-collections.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -128,6 +131,7 @@ export class ClubsController {
     private readonly financialOverridesService: FinancialOverridesService,
     private readonly chatService: ChatService,
     private readonly reportsService: ReportsService,
+    private readonly rakeCollectionService: RakeCollectionService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -10026,6 +10030,128 @@ export class ClubsController {
       clubId,
       resetAt: new Date().toISOString(),
     };
+  }
+
+  // ============================================================================
+  // RAKE COLLECTION ENDPOINTS (Manager Only)
+  // ============================================================================
+
+  @Get(':id/rake-collections/active-tables')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getActiveTablesForRakeCollection(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access tables for your assigned club');
+        }
+      }
+      const tables = await this.rakeCollectionService.getActiveTables(clubId);
+      return tables;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get active tables: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/rake-collections')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createRakeCollection(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: CreateRakeCollectionDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only create rake collections for your assigned club');
+        }
+      }
+      if (!userId) {
+        throw new BadRequestException('x-user-id header is required');
+      }
+      const collection = await this.rakeCollectionService.createRakeCollection(clubId, dto, userId);
+      return collection;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create rake collection: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Get(':id/rake-collections')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getRakeCollections(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query() query: QueryRakeCollectionsDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access rake collections for your assigned club');
+        }
+      }
+      const result = await this.rakeCollectionService.getRakeCollections(clubId, query);
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get rake collections: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Get(':id/rake-collections/stats')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getRakeCollectionStats(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access rake collection stats for your assigned club');
+        }
+      }
+      const stats = await this.rakeCollectionService.getRakeCollectionStats(clubId, startDate, endDate);
+      return stats;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get rake collection stats: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
   }
 }
 

@@ -24,6 +24,23 @@ export class StaffManagementService {
     private dataSource: DataSource,
   ) {}
 
+  // Map StaffRole to ClubRole
+  private mapStaffRoleToClubRole(staffRole: StaffRole): ClubRole | null {
+    const roleMap: Record<StaffRole, ClubRole | null> = {
+      [StaffRole.SUPER_ADMIN]: ClubRole.SUPER_ADMIN,
+      [StaffRole.ADMIN]: ClubRole.ADMIN,
+      [StaffRole.MANAGER]: ClubRole.MANAGER,
+      [StaffRole.HR]: ClubRole.HR,
+      [StaffRole.GRE]: ClubRole.GRE,
+      [StaffRole.CASHIER]: ClubRole.CASHIER,
+      [StaffRole.AFFILIATE]: ClubRole.AFFILIATE,
+      [StaffRole.STAFF]: ClubRole.STAFF,
+      [StaffRole.KITCHEN_STAFF]: ClubRole.FNB,
+      [StaffRole.DEALER]: ClubRole.STAFF, // Dealers map to STAFF role
+    };
+    return roleMap[staffRole] || null;
+  }
+
   // Generate temporary password
   private generateTempPassword(): string {
     const length = 12;
@@ -133,48 +150,52 @@ export class StaffManagementService {
 
     const savedStaff = await this.staffRepo.save(staff);
 
-    // If role is ADMIN, also create User with ADMIN role in users_v1 table
-    if (data.role === StaffRole.ADMIN && data.email) {
-      try {
-        // Find or create user for the admin
-        let user = await this.userRepo.findOne({ where: { email: data.email } });
-        
-        if (!user) {
-          // Create a new user for the admin
-          const hashedPassword = await bcrypt.hash(tempPassword, 10);
-          user = this.userRepo.create({
-            email: data.email,
-            passwordHash: hashedPassword,
-            displayName: data.name,
-            mustResetPassword: true,
-          });
-          user = await this.userRepo.save(user);
-        } else {
-          // User exists - update password if needed
-          if (!user.passwordHash) {
+    // For ALL staff roles with email, create User entry in users_v1 table
+    if (data.email) {
+      const clubRole = this.mapStaffRoleToClubRole(data.role);
+      
+      if (clubRole) {
+        try {
+          // Find or create user for the staff member
+          let user = await this.userRepo.findOne({ where: { email: data.email } });
+          
+          if (!user) {
+            // Create a new user for the staff member
             const hashedPassword = await bcrypt.hash(tempPassword, 10);
-            user.passwordHash = hashedPassword;
-            user.mustResetPassword = true;
-            await this.userRepo.save(user);
+            user = this.userRepo.create({
+              email: data.email,
+              passwordHash: hashedPassword,
+              displayName: data.name,
+              mustResetPassword: true,
+            });
+            user = await this.userRepo.save(user);
+          } else {
+            // User exists - update password if needed
+            if (!user.passwordHash) {
+              const hashedPassword = await bcrypt.hash(tempPassword, 10);
+              user.passwordHash = hashedPassword;
+              user.mustResetPassword = true;
+              await this.userRepo.save(user);
+            }
           }
-        }
 
-        // Assign ADMIN role to the user for this club
-        const existingRole = await this.userClubRoleRepo.findOne({
-          where: { user: { id: user.id }, club: { id: clubId }, role: ClubRole.ADMIN }
-        });
-
-        if (!existingRole) {
-          const userClubRole = this.userClubRoleRepo.create({
-            user: { id: user.id } as User,
-            club: { id: clubId } as any,
-            role: ClubRole.ADMIN
+          // Assign appropriate role to the user for this club
+          const existingRole = await this.userClubRoleRepo.findOne({
+            where: { user: { id: user.id }, club: { id: clubId }, role: clubRole }
           });
-          await this.userClubRoleRepo.save(userClubRole);
+
+          if (!existingRole) {
+            const userClubRole = this.userClubRoleRepo.create({
+              user: { id: user.id } as User,
+              club: { id: clubId } as any,
+              role: clubRole
+            });
+            await this.userClubRoleRepo.save(userClubRole);
+          }
+        } catch (error) {
+          console.error(`Error creating ${data.role.toLowerCase()} user entry:`, error);
+          // Don't fail the staff creation if user creation fails, but log it
         }
-      } catch (error) {
-        console.error('Error creating admin user entry:', error);
-        // Don't fail the staff creation if user creation fails, but log it
       }
     }
 
@@ -394,18 +415,22 @@ export class StaffManagementService {
 
     await this.staffRepo.save(staff);
 
-    // If this is an ADMIN, also update the User password
-    if (staff.role === StaffRole.ADMIN && staff.email) {
-      try {
-        const user = await this.userRepo.findOne({ where: { email: staff.email } });
-        if (user) {
-          user.passwordHash = passwordHash;
-          user.mustResetPassword = true;
-          await this.userRepo.save(user);
+    // For ALL staff roles with email, also update the User password in users_v1 table
+    if (staff.email) {
+      const clubRole = this.mapStaffRoleToClubRole(staff.role);
+      
+      if (clubRole) {
+        try {
+          const user = await this.userRepo.findOne({ where: { email: staff.email } });
+          if (user) {
+            user.passwordHash = passwordHash;
+            user.mustResetPassword = true;
+            await this.userRepo.save(user);
+          }
+        } catch (error) {
+          console.error(`Error updating ${staff.role.toLowerCase()} user password:`, error);
+          // Don't fail the staff password reset if user update fails
         }
-      } catch (error) {
-        console.error('Error updating admin user password:', error);
-        // Don't fail the staff password reset if user update fails
       }
     }
 
