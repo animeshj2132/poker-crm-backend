@@ -18,7 +18,7 @@ export enum StaffRole {
   CASHIER = 'Cashier',
   AFFILIATE = 'Affiliate',
   DEALER = 'Dealer',
-  KITCHEN_STAFF = 'Kitchen Staff',
+  FNB = 'FNB',
   STAFF = 'Staff' // Custom role - name defined in custom_role_name field
 }
 

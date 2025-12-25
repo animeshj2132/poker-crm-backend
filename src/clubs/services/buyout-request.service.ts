@@ -37,11 +37,11 @@ export class BuyOutRequestService {
       tableId: req.table?.id || null,
       tableNumber: req.tableNumber,
       seatNumber: req.seatNumber,
-      requestedAmount: req.requestedAmount ? Number(req.requestedAmount) : null,
+      requestedAmount: req.requestedAmount ? Number(req.requestedAmount) : 0,
       currentTableBalance: req.currentTableBalance ? Number(req.currentTableBalance) : null,
-      callTimeStartedAt: req.callTimeStartedAt,
       requestedAt: req.requestedAt,
       status: req.status,
+      callTimeStartedAt: req.callTimeStartedAt,
     }));
   }
 
@@ -64,7 +64,7 @@ export class BuyOutRequestService {
       throw new BadRequestException('This request has already been processed');
     }
 
-    const amount = dto.amount || request.currentTableBalance || request.requestedAmount || 0;
+    const amount = dto.amount || request.requestedAmount || request.currentTableBalance || 0;
 
     if (amount <= 0) {
       throw new BadRequestException('Invalid buy-out amount');
@@ -82,12 +82,12 @@ export class BuyOutRequestService {
       request.processedAt = new Date();
       await queryRunner.manager.save(request);
 
-      // Create cash-out transaction
+      // Create buy-out transaction (WITHDRAWAL)
       const transaction = queryRunner.manager.create(FinancialTransaction, {
         club: { id: clubId } as any,
         player: { id: request.player.id } as any,
         amount: amount,
-        type: TransactionType.CASHOUT,
+        type: TransactionType.WITHDRAWAL,
         status: TransactionStatus.COMPLETED,
         description: `Table buy-out - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''}`,
         processedBy: userId,
@@ -144,4 +144,3 @@ export class BuyOutRequestService {
     };
   }
 }
-
