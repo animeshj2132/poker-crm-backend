@@ -98,6 +98,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { UpdateChatSessionDto } from './dto/update-chat-session.dto';
 import { ReportsService } from './services/reports.service';
 import { GenerateReportDto } from './dto/generate-report.dto';
+import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -5260,261 +5261,6 @@ export class ClubsController {
     }
   }
 
-  // ========== Logs & Audits APIs (Enhanced) ==========
-
-  @Get(':id/audit-logs')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN)
-  async getAuditLogs(
-    @Headers('x-tenant-id') tenantId: string | undefined,
-    @Headers('x-club-id') headerClubId: string | undefined,
-    @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Query('limit') limit?: string,
-    @Query('action') action?: string,
-    @Query('entityType') entityType?: string,
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string
-  ) {
-    try {
-      // Edge case: Validate UUID format for clubId
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(clubId)) {
-        throw new BadRequestException('Invalid club ID format');
-      }
-
-      // Edge case: Validate tenant-id header if provided (for SUPER_ADMIN)
-      if (tenantId !== undefined && tenantId !== null) {
-        if (typeof tenantId !== 'string' || !tenantId.trim()) {
-          throw new BadRequestException('x-tenant-id header must be a non-empty string if provided');
-        }
-        if (!uuidRegex.test(tenantId.trim())) {
-          throw new BadRequestException('Invalid tenant ID format');
-        }
-      }
-
-      // Edge case: Validate club-id header if provided (for ADMIN)
-      if (headerClubId !== undefined && headerClubId !== null) {
-        if (typeof headerClubId !== 'string' || !headerClubId.trim()) {
-          throw new BadRequestException('x-club-id header must be a non-empty string if provided');
-        }
-        if (!uuidRegex.test(headerClubId.trim())) {
-          throw new BadRequestException('Invalid club ID format in header');
-        }
-      }
-
-      // Edge case: Club-scoped users (ADMIN) must provide x-club-id header
-      if (!tenantId && !headerClubId) {
-        throw new BadRequestException('x-club-id header is required for ADMIN role');
-      }
-
-      // Edge case: Validate club exists
-      let club;
-      try {
-        club = await this.clubsService.findById(clubId);
-      } catch (dbError) {
-        console.error('Database error fetching club:', dbError);
-        throw new BadRequestException('Unable to verify club. Please try again.');
-      }
-      if (!club) {
-        throw new NotFoundException('Club not found');
-      }
-
-      // For Super Admin, validate tenant
-      if (tenantId && !headerClubId) {
-        try {
-          await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
-        } catch (validationError) {
-          if (validationError instanceof ForbiddenException || validationError instanceof NotFoundException) {
-            throw validationError;
-          }
-          throw new BadRequestException('Unable to validate tenant. Please try again.');
-        }
-      }
-
-      // For club-scoped users (ADMIN), validate they can only view audit logs for their own club
-      if (headerClubId && headerClubId.trim() !== clubId) {
-        throw new ForbiddenException('You can only view audit logs for your assigned club');
-      }
-
-      // Edge case: Validate limit
-      const limitNum = limit ? parseInt(limit, 10) : 100;
-      if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
-        throw new BadRequestException('Limit must be between 1 and 1000');
-      }
-
-      // Edge case: Validate action filter if provided
-      if (action !== undefined && action !== null) {
-        if (typeof action !== 'string' || !action.trim()) {
-          throw new BadRequestException('Action filter must be a non-empty string if provided');
-        }
-        if (action.trim().length > 50) {
-          throw new BadRequestException('Action filter cannot exceed 50 characters');
-        }
-      }
-
-      // Edge case: Validate entityType filter if provided
-      if (entityType !== undefined && entityType !== null) {
-        if (typeof entityType !== 'string' || !entityType.trim()) {
-          throw new BadRequestException('Entity type filter must be a non-empty string if provided');
-        }
-        if (entityType.trim().length > 50) {
-          throw new BadRequestException('Entity type filter cannot exceed 50 characters');
-        }
-      }
-
-      // Edge case: Validate date formats
-        const start = startDate ? new Date(startDate) : undefined;
-        const end = endDate ? new Date(endDate) : undefined;
-        if (start && isNaN(start.getTime())) {
-          throw new BadRequestException('Invalid startDate format');
-        }
-        if (end && isNaN(end.getTime())) {
-          throw new BadRequestException('Invalid endDate format');
-        }
-        if (start && end && start > end) {
-          throw new BadRequestException('startDate cannot be after endDate');
-        }
-
-      // Edge case: Validate date ranges (prevent queries too far in the past/future)
-      const now = new Date();
-      if (start && start > now) {
-        throw new BadRequestException('startDate cannot be in the future');
-      }
-      if (end && end > now) {
-        throw new BadRequestException('endDate cannot be in the future');
-      }
-      const maxDateRange = 365 * 24 * 60 * 60 * 1000; // 1 year in milliseconds
-      if (start && end && (end.getTime() - start.getTime()) > maxDateRange) {
-        throw new BadRequestException('Date range cannot exceed 1 year');
-      }
-
-      // Edge case: Error handling for database query
-      let logs: any[] = [];
-      try {
-        logs = await this.auditLogsService.findAll(clubId, limitNum);
-      } catch (dbError) {
-        console.error('Database error fetching audit logs:', dbError);
-        throw new BadRequestException('Unable to fetch audit logs. Please try again.');
-      }
-
-      // Edge case: Validate logs array
-      if (!Array.isArray(logs)) {
-        console.error('Audit logs query returned non-array result');
-        logs = [];
-      }
-
-      // Apply filters
-      if (action && action.trim()) {
-        logs = logs.filter(log => log && log.action === action.trim());
-      }
-      if (entityType && entityType.trim()) {
-        logs = logs.filter(log => log && log.entityType === entityType.trim());
-      }
-      if (start || end) {
-        const startTime = start ? start.getTime() : 0;
-        const endTime = end ? end.getTime() : Date.now();
-        logs = logs.filter(log => {
-          if (!log || !log.createdAt) return false;
-          const logTime = new Date(log.createdAt).getTime();
-          if (isNaN(logTime)) return false;
-          return logTime >= startTime && logTime <= endTime;
-        });
-      }
-
-      // Edge case: Validate and sanitize log entries
-      const validLogs = logs.map(log => {
-        try {
-          return {
-            id: log.id,
-            action: log.action || 'Unknown',
-            entityType: log.entityType || 'Unknown',
-            entityId: log.entityId || null,
-            userId: log.userId || null,
-            userName: log.userName || null,
-            details: log.details || null,
-            ipAddress: log.ipAddress || null,
-            createdAt: log.createdAt,
-            updatedAt: log.updatedAt
-          };
-        } catch (mapError) {
-          console.error('Error mapping audit log:', log.id, mapError);
-          return null;
-        }
-      }).filter(log => log !== null);
-
-      return {
-        logs: validLogs,
-        total: validLogs.length,
-        limit: limitNum,
-        clubId: clubId
-      };
-    } catch (e) {
-      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
-      throw e;
-      }
-      throw new BadRequestException(`Failed to get audit logs: ${e instanceof Error ? e.message : 'Unknown error'}`);
-    }
-  }
-
-  @Get(':id/audit-logs/export')
-  @Roles(TenantRole.SUPER_ADMIN)
-  async exportAuditLogs(
-    @Headers('x-tenant-id') tenantId: string,
-    @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string,
-    @Query('format') format?: string
-  ) {
-    try {
-      if (!tenantId) throw new BadRequestException('x-tenant-id header required');
-      await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
-      
-      const start = startDate ? new Date(startDate) : undefined;
-      const end = endDate ? new Date(endDate) : undefined;
-      if (start && isNaN(start.getTime())) {
-        throw new BadRequestException('Invalid startDate format');
-      }
-      if (end && isNaN(end.getTime())) {
-        throw new BadRequestException('Invalid endDate format');
-      }
-      if (start && end && start > end) {
-        throw new BadRequestException('startDate cannot be after endDate');
-      }
-
-      const logs = await this.auditLogsService.findAll(clubId, 10000);
-      let filteredLogs = logs;
-
-      if (start || end) {
-        filteredLogs = logs.filter(log => {
-          const logDate = new Date(log.createdAt);
-          if (start && logDate < start) return false;
-          if (end && logDate > end) return false;
-          return true;
-        });
-      }
-
-      const exportFormat = format?.toLowerCase() || 'json';
-      if (exportFormat === 'csv') {
-        // Convert to CSV
-        const headers = ['Date', 'Action', 'Entity Type', 'Entity ID', 'User ID', 'User Email', 'Description'];
-        const rows = filteredLogs.map(log => [
-          log.createdAt.toISOString(),
-          log.action,
-          log.entityType,
-          log.entityId || '',
-          log.userId || '',
-          log.userEmail || '',
-          log.description || ''
-        ]);
-        const csv = [headers.join(','), ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n');
-        return { format: 'csv', data: csv, count: filteredLogs.length };
-      } else {
-        return { format: 'json', data: filteredLogs, count: filteredLogs.length };
-      }
-    } catch (e) {
-      throw e;
-    }
-  }
-
   // ========== AFFILIATE MANAGEMENT ==========
 
   /**
@@ -10162,6 +9908,40 @@ export class ClubsController {
     });
 
     res.send(buffer);
+  }
+
+  /**
+   * ============================================
+   * AUDIT LOGS ENDPOINTS
+   * ============================================
+   */
+
+  /**
+   * Get audit logs with pagination and filters
+   * GET /api/clubs/:clubId/audit-logs
+   */
+  @Get(':clubId/audit-logs')
+  @Roles(ClubRole.SUPER_ADMIN)
+  @UseGuards(RolesGuard)
+  async getAuditLogs(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Query() query: any,
+  ) {
+    return await this.auditLogsService.getAuditLogs(clubId, query);
+  }
+
+  /**
+   * Get audit log statistics
+   * GET /api/clubs/:clubId/audit-logs/statistics
+   */
+  @Get(':clubId/audit-logs/statistics')
+  @Roles(ClubRole.SUPER_ADMIN)
+  @UseGuards(RolesGuard)
+  async getAuditLogStatistics(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Query('days') days?: number,
+  ) {
+    return await this.auditLogsService.getStatistics(clubId, days);
   }
 }
 
