@@ -104,6 +104,9 @@ import { ActionCategory } from './dto/create-audit-log.dto';
 import { RakeCollectionService } from './services/rake-collection.service';
 import { CreateRakeCollectionDto } from './dto/create-rake-collection.dto';
 import { QueryRakeCollectionsDto } from './dto/query-rake-collections.dto';
+import { BuyOutRequestService } from './services/buyout-request.service';
+import { ApproveBuyOutDto } from './dto/approve-buyout.dto';
+import { RejectBuyOutDto } from './dto/reject-buyout.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -132,6 +135,7 @@ export class ClubsController {
     private readonly chatService: ChatService,
     private readonly reportsService: ReportsService,
     private readonly rakeCollectionService: RakeCollectionService,
+    private readonly buyOutRequestService: BuyOutRequestService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -10151,6 +10155,106 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to get rake collection stats: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // ============================================================================
+  // BUY-OUT REQUEST ENDPOINTS (Manager Only)
+  // ============================================================================
+
+  @Get(':id/buyout-requests')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getBuyOutRequests(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('status') status?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access buy-out requests for your assigned club');
+        }
+      }
+      const requests = await this.buyOutRequestService.getPendingBuyOutRequests(clubId);
+      return requests;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get buy-out requests: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/buyout-requests/:requestId/approve')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async approveBuyOutRequest(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() dto: ApproveBuyOutDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only approve buy-out requests for your assigned club');
+        }
+      }
+      if (!userId) {
+        throw new BadRequestException('x-user-id header is required');
+      }
+      const result = await this.buyOutRequestService.approveBuyOutRequest(clubId, requestId, dto, userId);
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to approve buy-out request: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/buyout-requests/:requestId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async rejectBuyOutRequest(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() dto: RejectBuyOutDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only reject buy-out requests for your assigned club');
+        }
+      }
+      if (!userId) {
+        throw new BadRequestException('x-user-id header is required');
+      }
+      const result = await this.buyOutRequestService.rejectBuyOutRequest(clubId, requestId, dto, userId);
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to reject buy-out request: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 }
