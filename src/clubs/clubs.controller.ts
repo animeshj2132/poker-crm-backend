@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
@@ -96,6 +96,8 @@ import { CreateStaffChatSessionDto } from './dto/create-staff-chat-session.dto';
 import { CreatePlayerChatSessionDto } from './dto/create-player-chat-session.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UpdateChatSessionDto } from './dto/update-chat-session.dto';
+import { ReportsService } from './services/reports.service';
+import { GenerateReportDto } from './dto/generate-report.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -122,6 +124,7 @@ export class ClubsController {
     private readonly bonusService: BonusService,
     private readonly financialOverridesService: FinancialOverridesService,
     private readonly chatService: ChatService,
+    private readonly reportsService: ReportsService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -10129,6 +10132,36 @@ export class ClubsController {
   ) {
     const counts = await this.chatService.getUnreadCounts(clubId, userId || '');
     return { success: true, ...counts };
+  }
+
+  // ==================== REPORTS ENDPOINTS ====================
+
+  /**
+   * Generate report
+   * POST /api/clubs/:clubId/reports/generate
+   */
+  @Post(':clubId/reports/generate')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async generateReport(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Body() dto: GenerateReportDto,
+    @Res() res: any,
+  ) {
+    const buffer = await this.reportsService.generateReport(clubId, dto);
+    
+    const filename = `${dto.reportType}_report_${new Date().toISOString().split('T')[0]}.${dto.format === 'excel' ? 'xlsx' : 'pdf'}`;
+    const contentType = dto.format === 'excel' 
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'application/pdf';
+
+    res.set({
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': buffer.length,
+    });
+
+    res.send(buffer);
   }
 }
 
