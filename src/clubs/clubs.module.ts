@@ -56,6 +56,8 @@ import { ChatSession } from './entities/chat-session.entity';
 import { ChatMessage } from './entities/chat-message.entity';
 import { ChatService } from './services/chat.service';
 import { ReportsService } from './services/reports.service';
+import { RakeCollection } from './entities/rake-collection.entity';
+import { RakeCollectionService } from './services/rake-collection.service';
 
 @Module({
   imports: [
@@ -90,7 +92,8 @@ import { ReportsService } from './services/reports.service';
       StaffBonus,
       AffiliateTransaction,
       ChatSession,
-      ChatMessage
+      ChatMessage,
+      RakeCollection
     ]),
     UsersModule,
     StorageModule,
@@ -117,7 +120,8 @@ import { ReportsService } from './services/reports.service';
     BonusService,
     FinancialOverridesService,
     ChatService,
-    ReportsService
+    ReportsService,
+    RakeCollectionService
   ],
   controllers: [ClubsController],
   exports: [
@@ -141,7 +145,8 @@ import { ReportsService } from './services/reports.service';
     BonusService,
     FinancialOverridesService,
     ChatService,
-    ReportsService
+    ReportsService,
+    RakeCollectionService
   ]
 })
 export class ClubsModule {}
