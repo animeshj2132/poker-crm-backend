@@ -9,6 +9,12 @@ import {
 } from 'typeorm';
 import { Club } from '../club.entity';
 
+export enum MenuItemAvailability {
+  AVAILABLE = 'available',
+  LIMITED = 'limited',
+  OUT_OF_STOCK = 'out_of_stock'
+}
+
 @Entity({ name: 'menu_items' })
 export class MenuItem {
   @PrimaryGeneratedColumn('uuid')
@@ -19,6 +25,9 @@ export class MenuItem {
 
   @Column({ type: 'varchar' })
   category!: string;
+
+  @Column({ type: 'boolean', default: false, name: 'is_custom_category' })
+  isCustomCategory!: boolean;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   price!: number;
@@ -32,11 +41,21 @@ export class MenuItem {
   @Column({ type: 'text', nullable: true })
   description!: string | null;
 
-  @Column({ type: 'boolean', default: true, name: 'is_available' })
-  isAvailable!: boolean;
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: MenuItemAvailability.AVAILABLE
+  })
+  availability!: MenuItemAvailability;
 
-  @Column({ type: 'varchar', nullable: true, name: 'image_url' })
-  imageUrl!: string | null;
+  @Column({ type: 'varchar', nullable: true, name: 'image_url_1', length: 2048 })
+  imageUrl1!: string | null;
+
+  @Column({ type: 'varchar', nullable: true, name: 'image_url_2', length: 2048 })
+  imageUrl2!: string | null;
+
+  @Column({ type: 'varchar', nullable: true, name: 'image_url_3', length: 2048 })
+  imageUrl3!: string | null;
 
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })

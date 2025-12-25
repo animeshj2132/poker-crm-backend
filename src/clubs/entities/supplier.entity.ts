@@ -9,6 +9,15 @@ import {
 } from 'typeorm';
 import { Club } from '../club.entity';
 
+export enum SupplierSpecialization {
+  MEAT_POULTRY = 'meat_poultry',
+  VEGETABLES = 'vegetables',
+  SPICES = 'spices',
+  DAIRY = 'dairy',
+  BEVERAGES = 'beverages',
+  CUSTOM = 'custom'
+}
+
 @Entity({ name: 'suppliers' })
 export class Supplier {
   @PrimaryGeneratedColumn('uuid')
@@ -34,6 +43,9 @@ export class Supplier {
 
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive!: boolean;
+
+  @Column({ type: 'jsonb', default: '[]' })
+  specializations!: string[];
 
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })

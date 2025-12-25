@@ -26,7 +26,7 @@ export class UsersController {
   }
 
   @Get(':id')
-  @Roles(GlobalRole.MASTER_ADMIN, TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB)
+  @Roles(GlobalRole.MASTER_ADMIN, TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE)
   async getUser(@Param('id', new ParseUUIDPipe()) userId: string) {
     const user = await this.usersService.findById(userId);
     if (!user) {

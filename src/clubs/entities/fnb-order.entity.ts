@@ -8,6 +8,7 @@ import {
   UpdateDateColumn
 } from 'typeorm';
 import { Club } from '../club.entity';
+import { KitchenStation } from './kitchen-station.entity';
 
 export enum OrderStatus {
   PENDING = 'pending',
@@ -34,8 +35,9 @@ export class FnbOrder {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'varchar', name: 'order_number' })
-  orderNumber!: string;
+  // Order number is assigned only after acceptance
+  @Column({ type: 'varchar', name: 'order_number', nullable: true })
+  orderNumber!: string | null;
 
   @Column({ type: 'varchar', name: 'player_name' })
   playerName!: string;
@@ -61,11 +63,36 @@ export class FnbOrder {
   @Column({ type: 'varchar', nullable: true, name: 'processed_by' })
   processedBy!: string | null;
 
+  // Acceptance/Rejection fields
+  @Column({ type: 'boolean', nullable: true, name: 'is_accepted' })
+  isAccepted!: boolean | null;
+
+  @Column({ type: 'text', nullable: true, name: 'rejected_reason' })
+  rejectedReason!: string | null;
+
+  // Kitchen Station assignment
+  @Column({ type: 'uuid', nullable: true, name: 'station_id' })
+  stationId!: string | null;
+
+  @ManyToOne(() => KitchenStation, { nullable: true })
+  @JoinColumn({ name: 'station_id' })
+  station!: KitchenStation | null;
+
+  @Column({ type: 'varchar', nullable: true, name: 'station_name' })
+  stationName!: string | null;
+
   @Column({ type: 'boolean', default: false, name: 'sent_to_chef' })
   sentToChef!: boolean;
 
   @Column({ type: 'varchar', nullable: true, name: 'chef_assigned' })
   chefAssigned!: string | null;
+
+  // Invoice fields (generated only after delivery)
+  @Column({ type: 'varchar', nullable: true, name: 'invoice_number' })
+  invoiceNumber!: string | null;
+
+  @Column({ type: 'timestamp', nullable: true, name: 'invoice_generated_at' })
+  invoiceGeneratedAt!: Date | null;
 
   @Column({ type: 'json', nullable: true, name: 'status_history' })
   statusHistory!: StatusHistoryEntry[] | null;

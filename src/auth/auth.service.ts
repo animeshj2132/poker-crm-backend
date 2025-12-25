@@ -2,7 +2,6 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { GlobalRole } from '../common/rbac/roles';
 import { UsersService } from '../users/users.service';
 import { ClubsService } from '../clubs/clubs.service';
-import { FnbService } from '../clubs/services/fnb.service';
 import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
@@ -13,21 +12,22 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TenantRole, ClubRole } from '../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
-import { AffiliatesService } from '../clubs/services/affiliates.service';
 import { FinancialTransactionsService } from '../clubs/services/financial-transactions.service';
 import { WaitlistSeatingService } from '../clubs/services/waitlist-seating.service';
 import { CreditRequestsService } from '../clubs/services/credit-requests.service';
+import { AffiliatesService } from '../clubs/services/affiliates.service';
+import { FnbEnhancedService } from '../clubs/services/fnb-enhanced.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly clubsService: ClubsService,
-    private readonly fnbService: FnbService,
-    private readonly affiliatesService: AffiliatesService,
     private readonly financialTransactionsService: FinancialTransactionsService,
     private readonly waitlistSeatingService: WaitlistSeatingService,
     private readonly creditRequestsService: CreditRequestsService,
+    private readonly affiliatesService: AffiliatesService,
+    private readonly fnbService: FnbEnhancedService,
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
@@ -2276,8 +2276,7 @@ export class AuthService {
           })),
           totalAmount: parseFloat(orderData.totalAmount) || 0,
           specialInstructions: orderData.notes || undefined,
-        },
-        player.name,
+        }
       );
 
       return {
@@ -2494,13 +2493,13 @@ export class AuthService {
         throw new NotFoundException('Player not found');
       }
 
-      const orders = await this.fnbService.getOrders(clubId.trim(), {
-        playerId: playerId.trim(),
-      });
+      // Get all orders and filter by playerId
+      const allOrders = await this.fnbService.getOrders(clubId.trim(), 1, 1000);
+      const playerOrders = allOrders.orders.filter(order => order.playerId === playerId.trim());
 
       return {
         success: true,
-        orders: orders.map((order) => ({
+        orders: playerOrders.map((order: any) => ({
           id: order.id,
           orderNumber: order.orderNumber,
           tableNumber: order.tableNumber,

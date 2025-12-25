@@ -1,6 +1,5 @@
 import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { OrderStatus } from '../entities/fnb-order.entity';
 
 export class OrderItemDto {
   @IsString()

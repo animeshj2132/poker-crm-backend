@@ -49,6 +49,9 @@ import { StaffBonus } from './entities/staff-bonus.entity';
 import { BonusService } from './services/bonus.service';
 import { AffiliateTransaction } from './entities/affiliate-transaction.entity';
 import { FinancialOverridesService } from './services/financial-overrides.service';
+import { KitchenStation } from './entities/kitchen-station.entity';
+import { MenuCategory } from './entities/menu-category.entity';
+import { FnbEnhancedService } from './services/fnb-enhanced.service';
 
 @Module({
   imports: [
@@ -72,6 +75,8 @@ import { FinancialOverridesService } from './services/financial-overrides.servic
       MenuItem,
       InventoryItem,
       Supplier,
+      KitchenStation,
+      MenuCategory,
       Shift,
       SalaryPayment,
       DealerTips,
@@ -99,6 +104,7 @@ import { FinancialOverridesService } from './services/financial-overrides.servic
     AnalyticsService,
     AffiliatesService,
     FnbService,
+    FnbEnhancedService,
     TournamentsService,
     ShiftManagementService,
     PayrollService,
@@ -120,6 +126,7 @@ import { FinancialOverridesService } from './services/financial-overrides.servic
     AnalyticsService,
     AffiliatesService,
     FnbService,
+    FnbEnhancedService,
     TournamentsService,
     ShiftManagementService,
     PayrollService,
