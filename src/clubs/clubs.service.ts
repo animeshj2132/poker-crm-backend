@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Club } from './club.entity';
 import { Tenant } from '../tenants/tenant.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
@@ -11,7 +11,8 @@ export class ClubsService {
   constructor(
     @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
     @InjectRepository(Tenant) private readonly tenantsRepo: Repository<Tenant>,
-    @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>
+    @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
+    @InjectDataSource() private readonly dataSource: DataSource
   ) {}
 
   /**
@@ -306,6 +307,118 @@ export class ClubsService {
 
     club.termsAndConditions = termsAndConditions;
     return await this.clubsRepo.save(club);
+  }
+
+  /**
+   * Factory Reset - Delete all club data
+   * WARNING: This is destructive and irreversible
+   */
+  async factoryReset(clubId: string) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    // Use a transaction to ensure all deletions happen atomically
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        // Delete in reverse order of dependencies
+        
+        // 1. Delete chat messages
+        await manager.query('DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE club_id = $1)', [clubId]);
+      
+        // 2. Delete chat sessions
+        await manager.query('DELETE FROM chat_sessions WHERE club_id = $1', [clubId]);
+      
+      // 3. Delete FNB orders
+      await manager.query('DELETE FROM fnb_orders WHERE club_id = $1', [clubId]);
+      
+      // 4. Delete menu items
+      await manager.query('DELETE FROM menu_items WHERE club_id = $1', [clubId]);
+      
+      // 5. Delete inventory items
+      await manager.query('DELETE FROM inventory_items WHERE club_id = $1', [clubId]);
+      
+      // 6. Delete suppliers
+      await manager.query('DELETE FROM suppliers WHERE club_id = $1', [clubId]);
+      
+      // 7. Delete kitchen stations
+      await manager.query('DELETE FROM kitchen_stations WHERE club_id = $1', [clubId]);
+      
+      // 8. Delete menu categories
+      await manager.query('DELETE FROM menu_categories WHERE club_id = $1', [clubId]);
+      
+      // 9. Delete affiliate transactions
+      await manager.query('DELETE FROM affiliate_transactions WHERE affiliate_id IN (SELECT id FROM affiliates WHERE club_id = $1)', [clubId]);
+      
+      // 10. Delete affiliates
+      await manager.query('DELETE FROM affiliates WHERE club_id = $1', [clubId]);
+      
+      // 11. Delete bonuses
+      await manager.query('DELETE FROM player_bonuses WHERE club_id = $1', [clubId]);
+      await manager.query('DELETE FROM staff_bonuses WHERE club_id = $1', [clubId]);
+      
+      // 12. Delete tip settings
+      await manager.query('DELETE FROM tip_settings WHERE club_id = $1', [clubId]);
+      
+      // 13. Delete dealer cashouts
+      await manager.query('DELETE FROM dealer_cashouts WHERE club_id = $1', [clubId]);
+      
+      // 14. Delete dealer tips
+      await manager.query('DELETE FROM dealer_tips WHERE club_id = $1', [clubId]);
+      
+      // 15. Delete salary payments
+      await manager.query('DELETE FROM salary_payments WHERE club_id = $1', [clubId]);
+      
+      // 16. Delete shifts
+      await manager.query('DELETE FROM shifts WHERE club_id = $1', [clubId]);
+      
+      // 17. Delete tournaments and tournament players
+      await manager.query('DELETE FROM tournament_players WHERE tournament_id IN (SELECT id FROM tournaments WHERE club_id = $1)', [clubId]);
+      await manager.query('DELETE FROM tournaments WHERE club_id = $1', [clubId]);
+      
+      // 18. Delete tables
+      await manager.query('DELETE FROM tables WHERE club_id = $1', [clubId]);
+      
+      // 19. Delete waitlist entries
+      await manager.query('DELETE FROM waitlist_entries WHERE club_id = $1', [clubId]);
+      
+      // 20. Delete financial transactions
+      await manager.query('DELETE FROM financial_transactions WHERE club_id = $1', [clubId]);
+      
+      // 21. Delete credit requests
+      await manager.query('DELETE FROM credit_requests WHERE club_id = $1', [clubId]);
+      
+      // 22. Delete VIP products
+      await manager.query('DELETE FROM vip_products WHERE club_id = $1', [clubId]);
+      
+      // 23. Delete push notifications
+      await manager.query('DELETE FROM push_notifications WHERE club_id = $1', [clubId]);
+      
+      // 24. Delete club settings
+      await manager.query('DELETE FROM club_settings WHERE club_id = $1', [clubId]);
+      
+      // 25. Delete players
+      await manager.query('DELETE FROM players WHERE club_id = $1', [clubId]);
+      
+      // 26. Delete staff
+      await manager.query('DELETE FROM staff WHERE club_id = $1', [clubId]);
+      
+      // 27. Delete audit logs (keep the factory reset log that was created before this)
+      await manager.query('DELETE FROM audit_logs WHERE club_id = $1 AND action_type != $2', [clubId, 'factory_reset']);
+      
+      // 28. Delete user club roles
+      await manager.query('DELETE FROM user_club_roles WHERE club_id = $1', [clubId]);
+    });
+    } catch (error) {
+      console.error('Factory reset error:', error);
+      throw new BadRequestException(`Factory reset failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
+    return {
+      success: true,
+      message: 'All club data has been wiped successfully',
+    };
   }
 }
 

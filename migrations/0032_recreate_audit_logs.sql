@@ -1,3 +1,4 @@
+
 -- Drop old audit logs table and recreate with new schema
 DROP TABLE IF EXISTS audit_logs CASCADE;
 
