@@ -47,6 +47,7 @@ import { TipSettings } from './entities/tip-settings.entity';
 import { PlayerBonus } from './entities/player-bonus.entity';
 import { StaffBonus } from './entities/staff-bonus.entity';
 import { BonusService } from './services/bonus.service';
+import { AffiliateTransaction } from './entities/affiliate-transaction.entity';
 
 @Module({
   imports: [
@@ -76,7 +77,8 @@ import { BonusService } from './services/bonus.service';
       DealerCashout,
       TipSettings,
       PlayerBonus,
-      StaffBonus
+      StaffBonus,
+      AffiliateTransaction
     ]),
     UsersModule,
     StorageModule,

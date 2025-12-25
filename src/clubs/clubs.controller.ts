@@ -78,6 +78,7 @@ import { CopyShiftDto } from './dto/copy-shift.dto';
 import { PayrollService } from './services/payroll.service';
 import { ProcessSalaryDto } from './dto/process-salary.dto';
 import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
+import { ProcessAffiliatePaymentDto } from './dto/process-affiliate-payment.dto';
 import { ProcessDealerCashoutDto } from './dto/process-dealer-cashout.dto';
 import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
 import { BonusService } from './services/bonus.service';
@@ -5644,13 +5645,17 @@ export class ClubsController {
   }
 
   /**
-   * Get all affiliates for a club
+   * Get all affiliates for a club with pagination
    * GET /clubs/:id/affiliates
    */
   @Get(':id/affiliates')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.AFFILIATE)
   async getAffiliates(
     @Param('id', ParseUUIDPipe) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-club-id') headerClubId?: string
   ) {
@@ -5692,30 +5697,113 @@ export class ClubsController {
         throw new ForbiddenException('You can only view affiliates for your assigned club');
       }
 
-      const affiliates = await this.affiliatesService.findByClub(clubId);
+      const pageNum = page ? parseInt(page, 10) : 1;
+      const limitNum = limit ? parseInt(limit, 10) : 10;
       
-      // Edge case: Return empty array if no affiliates, not null
-      if (!affiliates || !Array.isArray(affiliates)) {
-        return [];
-      }
+      const result = await this.affiliatesService.getAffiliatesForManagement(
+        clubId,
+        pageNum,
+        limitNum,
+        search,
+        status
+      );
 
-      return affiliates.map(a => ({
-        id: a.id,
-        code: a.code,
-        name: a.name,
-        email: a.user?.email || null,
-        commissionRate: a.commissionRate,
-        status: a.status,
-        totalReferrals: a.totalReferrals,
-        totalCommission: a.totalCommission,
-        createdAt: a.createdAt
-      }));
+      return result;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
       }
       throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get affiliates'));
+    }
+  }
+
+  /**
+   * Get affiliate referral players with filters
+   * GET /clubs/:clubId/affiliates/:affiliateId/referrals
+   */
+  @Get(':clubId/affiliates/:affiliateId/referrals')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  async getAffiliateReferrals(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('affiliateId', new ParseUUIDPipe()) affiliateId: string,
+    @Query('search') search?: string,
+    @Query('kycStatus') kycStatus?: string,
+  ) {
+    try {
+      const players = await this.affiliatesService.getAffiliateReferrals(
+        affiliateId,
+        clubId,
+        search,
+        kycStatus
+      );
+      return { success: true, players };
+    } catch (error) {
+      console.error('Error in getAffiliateReferrals:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process affiliate payment
+   * POST /clubs/:clubId/affiliates/payments
+   */
+  @Post(':clubId/affiliates/payments')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processAffiliatePayment(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() processAffiliatePaymentDto: ProcessAffiliatePaymentDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const transaction = await this.affiliatesService.processAffiliatePayment(
+        clubId,
+        processAffiliatePaymentDto,
+        userId
+      );
+      return { success: true, transaction };
+    } catch (error) {
+      console.error('Error in processAffiliatePayment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get affiliate transactions with pagination and filters
+   * GET /clubs/:clubId/affiliates/transactions
+   */
+  @Get(':clubId/affiliates/transactions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  async getAffiliateTransactions(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('affiliateId') affiliateId?: string,
+  ) {
+    try {
+      const pageNum = page ? parseInt(page, 10) : 1;
+      const limitNum = limit ? parseInt(limit, 10) : 10;
+
+      const result = await this.affiliatesService.getAffiliateTransactions(
+        clubId,
+        pageNum,
+        limitNum,
+        search,
+        startDate,
+        endDate,
+        affiliateId
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getAffiliateTransactions:', error);
+      throw error;
     }
   }
 

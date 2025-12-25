@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Staff, StaffRole, StaffStatus } from '../entities/staff.entity';
+import { Affiliate } from '../entities/affiliate.entity';
+import { User } from '../../users/user.entity';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 
@@ -10,6 +12,10 @@ export class StaffManagementService {
   constructor(
     @InjectRepository(Staff)
     private staffRepo: Repository<Staff>,
+    @InjectRepository(Affiliate)
+    private affiliateRepo: Repository<Affiliate>,
+    @InjectRepository(User)
+    private userRepo: Repository<User>,
     @InjectDataSource()
     private dataSource: DataSource,
   ) {}
@@ -122,6 +128,43 @@ export class StaffManagementService {
     });
 
     const savedStaff = await this.staffRepo.save(staff);
+
+    // If role is AFFILIATE, also create entry in affiliates table
+    if (data.role === StaffRole.AFFILIATE && data.email && affiliateCode) {
+      try {
+        // Find or create user for the affiliate
+        let user = await this.userRepo.findOne({ where: { email: data.email } });
+        
+        if (!user) {
+          // Create a new user for the affiliate
+          const hashedPassword = await bcrypt.hash(tempPassword, 10);
+          user = this.userRepo.create({
+            email: data.email,
+            passwordHash: hashedPassword,
+            displayName: data.name,
+            mustResetPassword: true,
+          });
+          user = await this.userRepo.save(user);
+        }
+
+        // Create affiliate entry
+        const affiliate = this.affiliateRepo.create({
+          clubId,
+          userId: user.id,
+          code: affiliateCode,
+          name: data.name,
+          commissionRate: 5.0, // Default 5%
+          status: 'Active',
+          totalCommission: 0,
+          totalReferrals: 0,
+        });
+
+        await this.affiliateRepo.save(affiliate);
+      } catch (error) {
+        console.error('Error creating affiliate entry:', error);
+        // Don't fail the staff creation if affiliate creation fails
+      }
+    }
 
     // Return staff data with temporary password (only returned once)
     return {
