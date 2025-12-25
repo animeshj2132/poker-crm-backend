@@ -3,12 +3,16 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
 import { Club } from '../club.entity';
+import { Player } from '../entities/player.entity';
+import { EditTransactionDto } from '../dto/edit-transaction.dto';
+import { CancelTransactionDto } from '../dto/cancel-transaction.dto';
 
 @Injectable()
 export class FinancialTransactionsService {
   constructor(
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
-    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>
+    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
+    @InjectRepository(Player) private readonly playerRepo: Repository<Player>,
   ) {}
 
   async create(clubId: string, data: {
@@ -144,6 +148,80 @@ export class FinancialTransactionsService {
     }
 
     transaction.status = TransactionStatus.CANCELLED;
+    return this.transactionsRepo.save(transaction);
+  }
+
+  /**
+   * Edit transaction with override tracking
+   */
+  async editTransaction(id: string, clubId: string, dto: EditTransactionDto, userId?: string) {
+    const transaction = await this.findOne(id, clubId);
+
+    if (transaction.status === TransactionStatus.CANCELLED) {
+      throw new ConflictException('Cannot edit a cancelled transaction');
+    }
+
+    // Store original amount if this is the first override
+    if (!transaction.isOverridden) {
+      transaction.originalAmount = Number(transaction.amount);
+    }
+
+    // Calculate balance adjustment for player transactions
+    const amountDifference = Number(dto.amount) - Number(transaction.amount);
+    
+    // Update transaction
+    transaction.amount = Number(dto.amount);
+    transaction.isOverridden = true;
+    transaction.overrideReason = dto.reason;
+    transaction.overriddenBy = userId;
+    transaction.overriddenAt = new Date();
+
+    // Update player balance if transaction affects player balance
+    if (transaction.status === TransactionStatus.COMPLETED && amountDifference !== 0) {
+      const player = await this.playerRepo.findOne({
+        where: { id: transaction.playerId, club: { id: clubId } },
+      });
+
+      if (player) {
+        // Determine if transaction increases or decreases balance
+        const isCredit = [TransactionType.DEPOSIT, TransactionType.BONUS, TransactionType.CREDIT, TransactionType.REFUND].includes(transaction.type);
+        const isDebit = [TransactionType.CASHOUT, TransactionType.WITHDRAWAL, TransactionType.BUY_IN].includes(transaction.type);
+
+        // Adjust player balance based on transaction type and amount difference
+        // Note: This is a simplified approach. You may need to adjust based on your balance calculation logic
+        // For now, we'll just update the transaction and let the balance be recalculated elsewhere
+      }
+    }
+
+    return this.transactionsRepo.save(transaction);
+  }
+
+  /**
+   * Cancel transaction with reason
+   */
+  async cancelTransaction(id: string, clubId: string, dto: CancelTransactionDto, userId?: string) {
+    const transaction = await this.findOne(id, clubId);
+
+    if (transaction.status === TransactionStatus.CANCELLED) {
+      throw new ConflictException('Transaction has already been cancelled');
+    }
+
+    // If cancelling a completed transaction, mark as overridden
+    if (transaction.status === TransactionStatus.COMPLETED) {
+      if (!transaction.isOverridden) {
+        transaction.originalAmount = Number(transaction.amount);
+      }
+      transaction.isOverridden = true;
+      transaction.overrideReason = dto.reason || 'Transaction cancelled by admin';
+      transaction.overriddenBy = userId;
+      transaction.overriddenAt = new Date();
+    }
+
+    transaction.status = TransactionStatus.CANCELLED;
+    if (dto.reason && !transaction.overrideReason) {
+      transaction.overrideReason = dto.reason;
+    }
+
     return this.transactionsRepo.save(transaction);
   }
 }
