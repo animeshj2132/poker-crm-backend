@@ -28,5 +28,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'GRE' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'club_role')) THEN
     ALTER TYPE club_role ADD VALUE 'GRE';
   END IF;
+  
+  IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'FNB' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'club_role')) THEN
+    ALTER TYPE club_role ADD VALUE 'FNB';
+  END IF;
 END $$;
 

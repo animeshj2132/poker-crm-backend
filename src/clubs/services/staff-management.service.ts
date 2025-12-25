@@ -35,7 +35,7 @@ export class StaffManagementService {
       [StaffRole.CASHIER]: ClubRole.CASHIER,
       [StaffRole.AFFILIATE]: ClubRole.AFFILIATE,
       [StaffRole.STAFF]: ClubRole.STAFF,
-      [StaffRole.KITCHEN_STAFF]: ClubRole.FNB,
+      [StaffRole.FNB]: ClubRole.FNB,
       [StaffRole.DEALER]: ClubRole.STAFF, // Dealers map to STAFF role
     };
     return roleMap[staffRole] || null;
@@ -190,11 +190,17 @@ export class StaffManagementService {
               club: { id: clubId } as any,
               role: clubRole
             });
-            await this.userClubRoleRepo.save(userClubRole);
+            const savedRole = await this.userClubRoleRepo.save(userClubRole);
+            console.log(`✅ Successfully created user_club_roles entry for ${data.email} with role ${clubRole} in club ${clubId}. Entry ID: ${savedRole.id}`);
+          } else {
+            console.log(`ℹ️ User ${data.email} already has role ${clubRole} for club ${clubId}. Entry ID: ${existingRole.id}`);
           }
         } catch (error) {
-          console.error(`Error creating ${data.role.toLowerCase()} user entry:`, error);
-          // Don't fail the staff creation if user creation fails, but log it
+          console.error(`❌ CRITICAL ERROR creating ${data.role.toLowerCase()} user entry for ${data.email}:`, error);
+          console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+          console.error('Error details:', error instanceof Error ? error.message : String(error));
+          // Don't fail the staff creation if user creation fails, but log it prominently
+          // This is a critical issue that will prevent login, so we log it clearly
         }
       }
     }

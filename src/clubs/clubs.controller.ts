@@ -550,7 +550,7 @@ export class ClubsController {
 
   @Get(':id')
   @UseGuards(RolesGuard)
-  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE)
+  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB)
   async getClub(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -8561,7 +8561,7 @@ export class ClubsController {
    * POST /api/clubs/:id/fnb/kitchen-stations
    */
   @Post(':id/fnb/kitchen-stations')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async createKitchenStation(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateKitchenStationDto,
@@ -8600,7 +8600,7 @@ export class ClubsController {
    * PATCH /api/clubs/:id/fnb/kitchen-stations/:stationId
    */
   @Patch(':id/fnb/kitchen-stations/:stationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async updateKitchenStation(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('stationId', ParseUUIDPipe) stationId: string,
@@ -8614,7 +8614,7 @@ export class ClubsController {
    * DELETE /api/clubs/:id/fnb/kitchen-stations/:stationId
    */
   @Delete(':id/fnb/kitchen-stations/:stationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async deleteKitchenStation(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('stationId', ParseUUIDPipe) stationId: string,
@@ -8723,7 +8723,7 @@ export class ClubsController {
    * DELETE /api/clubs/:id/fnb/categories/:categoryId
    */
   @Delete(':id/fnb/categories/:categoryId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async deleteMenuCategory(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('categoryId', ParseUUIDPipe) categoryId: string,
@@ -9800,7 +9800,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/chat/player/sessions
    */
   @Post(':clubId/chat/player/sessions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
   @UseGuards(RolesGuard)
   async createPlayerChatSession(
     @Param('clubId', ParseUUIDPipe) clubId: string,
@@ -9815,7 +9815,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/chat/player/sessions
    */
   @Get(':clubId/chat/player/sessions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
   @UseGuards(RolesGuard)
   async getPlayerChatSessions(
     @Param('clubId', ParseUUIDPipe) clubId: string,
