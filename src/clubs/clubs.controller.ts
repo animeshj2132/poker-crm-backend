@@ -571,9 +571,10 @@ export class ClubsController {
   }
 
   @Get(':id/revenue')
-  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN)
+  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
   async getClubRevenue(
     @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string
   ) {
     try {
@@ -586,6 +587,13 @@ export class ClubsController {
       // For Super Admin, validate tenant
       if (tenantId && typeof tenantId === 'string' && tenantId.trim()) {
         await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users (ADMIN/MANAGER), validate club access
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access revenue for your assigned club');
+        }
       }
 
       const revenue = await this.clubsService.getClubRevenue(clubId);

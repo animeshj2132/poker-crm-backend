@@ -1,10 +1,11 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
 import { Club } from './club.entity';
 import { Tenant } from '../tenants/tenant.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { ClubRole } from '../common/rbac/roles';
+import { FinancialTransaction, TransactionType, TransactionStatus } from './entities/financial-transaction.entity';
 
 @Injectable()
 export class ClubsService {
@@ -12,6 +13,7 @@ export class ClubsService {
     @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
     @InjectRepository(Tenant) private readonly tenantsRepo: Repository<Tenant>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
+    @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectDataSource() private readonly dataSource: DataSource
   ) {}
 
@@ -195,44 +197,93 @@ export class ClubsService {
   }
 
   /**
-   * Get club revenue, rake, and tips data
-   * TODO: Replace with real data from game transactions
+   * Get club revenue, rake, and tips data from real transactions
    */
   async getClubRevenue(clubId: string) {
     const club = await this.findById(clubId);
     if (!club) throw new NotFoundException('Club not found');
 
     const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStart = new Date(yesterday);
+    yesterdayStart.setHours(0, 0, 0, 0);
+    const yesterdayEnd = new Date(yesterday);
+    yesterdayEnd.setHours(23, 59, 59, 999);
 
     // Format dates
     const formatDate = (date: Date) => date.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
     const formatTime = (date: Date) => date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const formatFull = (date: Date) => date.toLocaleString('en-IN', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-    // TODO: Replace with actual database queries for revenue/rake/tips
-    // For now, return mock data structure
-    // In production, this should query:
-    // - Game transactions for revenue
-    // - Rake calculations from games
-    // - Tips from transactions
+    // Query today's transactions
+    const todayTransactions = await this.transactionsRepo.find({
+      where: {
+        club: { id: clubId },
+        createdAt: Between(todayStart, todayEnd),
+        status: TransactionStatus.COMPLETED
+      }
+    });
+
+    // Query yesterday's transactions
+    const yesterdayTransactions = await this.transactionsRepo.find({
+      where: {
+        club: { id: clubId },
+        createdAt: Between(yesterdayStart, yesterdayEnd),
+        status: TransactionStatus.COMPLETED
+      }
+    });
+
+    // Calculate today's revenue (DEPOSIT and BUY_IN transactions)
+    const todayRevenue = todayTransactions
+      .filter(t => (t.type === TransactionType.DEPOSIT || t.type === TransactionType.BUY_IN))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // Calculate today's rake
+    const todayRake = todayTransactions
+      .filter(t => t.type === TransactionType.RAKE)
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // Calculate today's tips
+    const todayTips = todayTransactions
+      .filter(t => t.type === TransactionType.TIP)
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // Calculate yesterday's revenue
+    const yesterdayRevenue = yesterdayTransactions
+      .filter(t => (t.type === TransactionType.DEPOSIT || t.type === TransactionType.BUY_IN))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // Calculate yesterday's rake
+    const yesterdayRake = yesterdayTransactions
+      .filter(t => t.type === TransactionType.RAKE)
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // Calculate yesterday's tips
+    const yesterdayTips = yesterdayTransactions
+      .filter(t => t.type === TransactionType.TIP)
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
     
     return {
       clubId: club.id,
       clubName: club.name,
       previousDay: {
-        revenue: 125000, // Total revenue from games
-        rake: 12500,     // 10% rake
-        tips: 3750,      // Tips collected
+        revenue: Number(yesterdayRevenue.toFixed(2)),
+        rake: Number(yesterdayRake.toFixed(2)),
+        tips: Number(yesterdayTips.toFixed(2)),
         date: formatDate(yesterday),
         time: formatTime(yesterday),
         lastUpdated: formatFull(yesterday)
       },
       currentDay: {
-        revenue: 45230,  // Total revenue from games today
-        rake: 4523,      // 10% rake
-        tips: 1357,      // Tips collected today
+        revenue: Number(todayRevenue.toFixed(2)),
+        rake: Number(todayRake.toFixed(2)),
+        tips: Number(todayTips.toFixed(2)),
         date: formatDate(now),
         time: formatTime(now),
         lastUpdated: formatFull(now)
