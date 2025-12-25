@@ -110,6 +110,8 @@ import { RejectBuyOutDto } from './dto/reject-buyout.dto';
 import { BuyInRequestService } from './services/buyin-request.service';
 import { ApproveBuyInDto } from './dto/approve-buyin.dto';
 import { RejectBuyInDto } from './dto/reject-buyin.dto';
+import { AttendanceTrackingService } from './services/attendance-tracking.service';
+import { CreateAttendanceDto } from './dto/create-attendance.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -140,6 +142,7 @@ export class ClubsController {
     private readonly rakeCollectionService: RakeCollectionService,
     private readonly buyOutRequestService: BuyOutRequestService,
     private readonly buyInRequestService: BuyInRequestService,
+    private readonly attendanceTrackingService: AttendanceTrackingService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -2443,7 +2446,7 @@ export class ClubsController {
 
   // ========== Push Notifications ==========
   @Get(':id/push-notifications')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   async listPushNotifications(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -2472,7 +2475,7 @@ export class ClubsController {
   }
 
   @Post(':id/push-notifications')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createPushNotification(
@@ -2508,7 +2511,7 @@ export class ClubsController {
   }
 
   @Put(':id/push-notifications/:notificationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, skipMissingProperties: true }))
   async updatePushNotification(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -2542,7 +2545,7 @@ export class ClubsController {
   }
 
   @Delete(':id/push-notifications/:notificationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   @HttpCode(HttpStatus.NO_CONTENT)
   async removePushNotification(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -2572,7 +2575,7 @@ export class ClubsController {
   }
 
   @Post(':id/push-notifications/upload-url')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   async createPushNotificationUploadUrl(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -6134,6 +6137,7 @@ export class ClubsController {
    * POST /clubs/:id/players
    */
   @Post(':id/players')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createPlayer(
@@ -6422,7 +6426,7 @@ export class ClubsController {
    * GET /api/clubs/:id/players
    */
   @Get(':id/players')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE, ClubRole.HR)
   async getPlayers(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Headers('x-tenant-id') tenantId?: string,
@@ -6644,7 +6648,7 @@ export class ClubsController {
    * GET /api/clubs/:id/players/:playerId
    */
   @Get(':id/players/:playerId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE, ClubRole.AFFILIATE)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE, ClubRole.AFFILIATE, ClubRole.HR)
   async getPlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
@@ -6787,7 +6791,7 @@ export class ClubsController {
    * GET /api/clubs/:id/players/pending-approval
    */
   @Get(':id/players-pending-approval')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE, ClubRole.HR)
   async getPendingApprovalPlayers(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Headers('x-tenant-id') tenantId?: string,
@@ -6878,7 +6882,7 @@ export class ClubsController {
    * POST /api/clubs/:id/players/:playerId/approve
    */
   @Post(':id/players/:playerId/approve')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async approvePlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
@@ -6974,7 +6978,7 @@ export class ClubsController {
    * POST /api/clubs/:id/players/:playerId/reject
    */
   @Post(':id/players/:playerId/reject')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async rejectPlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
@@ -7071,7 +7075,7 @@ export class ClubsController {
    * POST /api/clubs/:id/players/:playerId/suspend
    */
   @Post(':id/players/:playerId/suspend')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async suspendPlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
@@ -7183,7 +7187,7 @@ export class ClubsController {
    * POST /api/clubs/:id/players/:playerId/unsuspend
    */
   @Post(':id/players/:playerId/unsuspend')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   async unsuspendPlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
@@ -7274,7 +7278,7 @@ export class ClubsController {
    * GET /api/clubs/:id/players-suspended
    */
   @Get(':id/players-suspended')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE, ClubRole.HR)
   async getSuspendedPlayers(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Headers('x-tenant-id') tenantId?: string,
@@ -10359,6 +10363,104 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to reject buy-in request: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // =========================================================================
+  // ATTENDANCE TRACKING (HR)
+  // =========================================================================
+
+  @Get(':id/attendance')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async getAttendanceRecords(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('staffId') staffId?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access attendance records for your assigned club');
+        }
+      }
+      const records = await this.attendanceTrackingService.getAttendanceRecords(
+        clubId,
+        startDate,
+        endDate,
+        staffId
+      );
+      return records;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get attendance records: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Get(':id/attendance/stats')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async getAttendanceStats(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access attendance stats for your assigned club');
+        }
+      }
+      const stats = await this.attendanceTrackingService.getAttendanceStats(clubId, startDate, endDate);
+      return stats;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get attendance stats: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/attendance')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createAttendanceRecord(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: CreateAttendanceDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only create attendance records for your assigned club');
+        }
+      }
+      const record = await this.attendanceTrackingService.createAttendanceRecord(clubId, dto, userId || '');
+      return { success: true, record };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create attendance record: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 }

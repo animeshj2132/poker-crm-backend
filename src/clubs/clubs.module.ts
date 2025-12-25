@@ -62,6 +62,8 @@ import { BuyOutRequest } from './entities/buyout-request.entity';
 import { BuyOutRequestService } from './services/buyout-request.service';
 import { BuyInRequest } from './entities/buyin-request.entity';
 import { BuyInRequestService } from './services/buyin-request.service';
+import { AttendanceTracking } from './entities/attendance-tracking.entity';
+import { AttendanceTrackingService } from './services/attendance-tracking.service';
 
 @Module({
   imports: [
@@ -99,7 +101,8 @@ import { BuyInRequestService } from './services/buyin-request.service';
       ChatMessage,
       RakeCollection,
       BuyOutRequest,
-      BuyInRequest
+      BuyInRequest,
+      AttendanceTracking
     ]),
     UsersModule,
     StorageModule,
@@ -129,7 +132,8 @@ import { BuyInRequestService } from './services/buyin-request.service';
     ReportsService,
     RakeCollectionService,
     BuyOutRequestService,
-    BuyInRequestService
+    BuyInRequestService,
+    AttendanceTrackingService
   ],
   controllers: [ClubsController],
   exports: [
@@ -156,7 +160,8 @@ import { BuyInRequestService } from './services/buyin-request.service';
     ReportsService,
     RakeCollectionService,
     BuyOutRequestService,
-    BuyInRequestService
+    BuyInRequestService,
+    AttendanceTrackingService
   ]
 })
 export class ClubsModule {}
