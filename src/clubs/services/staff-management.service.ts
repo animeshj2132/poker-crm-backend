@@ -36,7 +36,7 @@ export class StaffManagementService {
       [StaffRole.AFFILIATE]: ClubRole.AFFILIATE,
       [StaffRole.STAFF]: ClubRole.STAFF,
       [StaffRole.FNB]: ClubRole.FNB,
-      [StaffRole.DEALER]: ClubRole.STAFF, // Dealers map to STAFF role
+      [StaffRole.DEALER]: ClubRole.DEALER, // Dealers map to DEALER role
     };
     return roleMap[staffRole] || null;
   }

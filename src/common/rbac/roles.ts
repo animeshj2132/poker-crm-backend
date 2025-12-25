@@ -15,7 +15,8 @@ export enum ClubRole {
   AFFILIATE = 'AFFILIATE',
   CASHIER = 'CASHIER',
   GRE = 'GRE',
-  FNB = 'FNB'
+  FNB = 'FNB',
+  DEALER = 'DEALER'
 }
 
 export type AnyRole = GlobalRole | TenantRole | ClubRole;

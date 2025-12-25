@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Request, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
@@ -550,7 +550,7 @@ export class ClubsController {
 
   @Get(':id')
   @UseGuards(RolesGuard)
-  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB)
+  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB, ClubRole.DEALER)
   async getClub(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -5512,22 +5512,58 @@ export class ClubsController {
    * GET /clubs/:clubId/affiliates/:affiliateId/referrals
    */
   @Get(':clubId/affiliates/:affiliateId/referrals')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.AFFILIATE)
   @UseGuards(RolesGuard)
   async getAffiliateReferrals(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('affiliateId', new ParseUUIDPipe()) affiliateId: string,
     @Query('search') search?: string,
     @Query('kycStatus') kycStatus?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Headers('x-user-id') userId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For AFFILIATE role, enforce that they can only view their own referrals
+      const user = req?.user;
+      const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isAffiliateOnly = userRoles.includes(ClubRole.AFFILIATE) && 
+                             !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN].includes(r));
+      
+      if (isAffiliateOnly && userId) {
+        // AFFILIATE can only view their own referrals - get their affiliate ID from user
+        const affiliate = await this.affiliatesRepo.findOne({
+          where: { userId, clubId },
+        });
+        if (affiliate) {
+          affiliateId = affiliate.id; // Force affiliateId to current affiliate
+        } else {
+          throw new ForbiddenException('Affiliate not found');
+        }
+      }
+
       const players = await this.affiliatesService.getAffiliateReferrals(
         affiliateId,
         clubId,
         search,
         kycStatus
       );
-      return { success: true, players };
+      
+      // Filter by date range if provided
+      let filteredPlayers = players;
+      if (startDate || endDate) {
+        filteredPlayers = players.filter((p: any) => {
+          const playerDate = new Date(p.createdAt);
+          if (startDate && playerDate < new Date(startDate)) return false;
+          if (endDate && playerDate > new Date(endDate)) return false;
+          return true;
+        });
+      }
+      
+      return { success: true, players: filteredPlayers };
     } catch (error) {
       console.error('Error in getAffiliateReferrals:', error);
       throw error;
@@ -5565,7 +5601,7 @@ export class ClubsController {
    * GET /clubs/:clubId/affiliates/transactions
    */
   @Get(':clubId/affiliates/transactions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.AFFILIATE)
   @UseGuards(RolesGuard)
   async getAffiliateTransactions(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -5575,8 +5611,30 @@ export class ClubsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('affiliateId') affiliateId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For AFFILIATE role, enforce that they can only view their own transactions
+      const user = req?.user;
+      const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isAffiliateOnly = userRoles.includes(ClubRole.AFFILIATE) && 
+                             !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN].includes(r));
+      
+      if (isAffiliateOnly && userId) {
+        // AFFILIATE can only view their own transactions - get their affiliate ID from user
+        const affiliate = await this.affiliatesRepo.findOne({
+          where: { userId, clubId },
+        });
+        if (affiliate) {
+          affiliateId = affiliate.id; // Force affiliateId to current affiliate
+        } else {
+          throw new ForbiddenException('Affiliate not found');
+        }
+      }
+
       const pageNum = page ? parseInt(page, 10) : 1;
       const limitNum = limit ? parseInt(limit, 10) : 10;
 
@@ -9057,7 +9115,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/shifts?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&staffId=uuid&role=Dealer
    */
   @Get(':clubId/shifts')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getShifts(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9065,8 +9123,36 @@ export class ClubsController {
     @Query('endDate') endDate?: string,
     @Query('staffId') staffId?: string,
     @Query('role') role?: StaffRole,
+    @Headers('x-user-id') userId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For DEALER role, enforce that they can only view their own shifts
+      const user = req?.user;
+      const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
+                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR].includes(r));
+      
+      if (isDealerOnly && userId) {
+        // DEALER can only view their own shifts - get their staff ID from email
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentStaff = staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER);
+          if (currentStaff) {
+            staffId = currentStaff.id; // Force staffId to current dealer
+            role = StaffRole.DEALER; // Force role to DEALER
+          } else {
+            throw new ForbiddenException('Dealer not found');
+          }
+        } else {
+          throw new ForbiddenException('User email not found');
+        }
+      }
+
       const shifts = await this.shiftManagementService.getShifts(
         clubId,
         startDate,
@@ -9236,7 +9322,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/salary?page=1&limit=10&search=&startDate=&endDate=&staffId=
    */
   @Get(':clubId/payroll/salary')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getSalaryPayments(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9246,8 +9332,42 @@ export class ClubsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('staffId') staffId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Headers('x-club-id') headerClubId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For STAFF/DEALER role, enforce that they can only view their own salary
+      const user = req?.user;
+      const clubIdFromHeader = headerClubId || clubId;
+      
+      // Check if user has STAFF or DEALER role and no other admin roles for this club
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isStaffOnly = userRoles.includes(ClubRole.STAFF) && 
+                         !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER, ClubRole.DEALER].includes(r));
+      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
+                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER].includes(r));
+      
+      if ((isStaffOnly || isDealerOnly) && userId) {
+        // STAFF/DEALER role can only view their own data - get their staff ID from user email
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentStaff = isDealerOnly 
+            ? staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER)
+            : staffList.find(s => s.email === userEntity.email);
+          if (currentStaff) {
+            staffId = currentStaff.id; // Force staffId to current staff member/dealer
+          } else {
+            throw new ForbiddenException(isDealerOnly ? 'Dealer not found' : 'Staff member not found');
+          }
+        } else {
+          throw new ForbiddenException('User email not found');
+        }
+      }
+
       const result = await this.payrollService.getSalaryPayments(
         clubId,
         page ? parseInt(page) : 1,
@@ -9331,13 +9451,40 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/tips/settings
    */
   @Get(':clubId/payroll/tips/settings')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getTipSettings(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Query('dealerId') dealerId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For DEALER role, enforce that they can only view their own tip settings
+      const user = req?.user;
+      const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
+                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER].includes(r));
+      
+      if (isDealerOnly && userId) {
+        // DEALER can only view their own tip settings - get their staff ID from email
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentStaff = staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER);
+          if (currentStaff) {
+            dealerId = currentStaff.id; // Force dealerId to current dealer
+          } else {
+            throw new ForbiddenException('Dealer not found');
+          }
+        } else {
+          throw new ForbiddenException('User email not found');
+        }
+      }
+
       const settings = await this.payrollService.getTipSettings(clubId, dealerId);
       return { success: true, settings };
     } catch (error) {
@@ -9396,7 +9543,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/tips?page=1&limit=10&search=&startDate=&endDate=&dealerId=&status=
    */
   @Get(':clubId/payroll/tips')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getDealerTips(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9407,8 +9554,36 @@ export class ClubsController {
     @Query('endDate') endDate?: string,
     @Query('dealerId') dealerId?: string,
     @Query('status') status?: string,
+    @Headers('x-user-id') userId?: string,
+    @Headers('x-club-id') headerClubId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For DEALER role, enforce that they can only view their own tips
+      const user = req?.user;
+      const clubIdFromHeader = headerClubId || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
+                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR].includes(r));
+      
+      if (isDealerOnly && userId) {
+        // DEALER can only view their own tips - get their staff ID from email
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentStaff = staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER);
+          if (currentStaff) {
+            dealerId = currentStaff.id; // Force dealerId to current dealer
+          } else {
+            throw new ForbiddenException('Dealer not found');
+          }
+        } else {
+          throw new ForbiddenException('User email not found');
+        }
+      }
+
       const result = await this.payrollService.getDealerTips(
         clubId,
         page ? parseInt(page) : 1,
@@ -9613,7 +9788,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/bonuses/staff
    */
   @Get(':clubId/bonuses/staff')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getStaffBonuses(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9623,8 +9798,38 @@ export class ClubsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('staffId') staffId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Headers('x-club-id') headerClubId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For STAFF role, enforce that they can only view their own bonuses
+      const user = req?.user;
+      const clubIdFromHeader = headerClubId || clubId;
+      
+      // Check if user has STAFF role and no other admin roles for this club
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isStaffOnly = userRoles.includes(ClubRole.STAFF) && 
+                         !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR].includes(r));
+      
+      if (isStaffOnly && userId) {
+        // STAFF role can only view their own data - get their staff ID from user email
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentStaff = staffList.find(s => s.email === userEntity.email);
+          if (currentStaff) {
+            staffId = currentStaff.id; // Force staffId to current staff member
+          } else {
+            throw new ForbiddenException('Staff member not found');
+          }
+        } else {
+          throw new ForbiddenException('User email not found');
+        }
+      }
+
       const result = await this.bonusService.getStaffBonuses(
         clubId,
         page ? parseInt(page) : 1,
@@ -9668,7 +9873,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/financial-overrides/transactions
    */
   @Get(':clubId/financial-overrides/transactions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.DEALER, ClubRole.AFFILIATE)
   @UseGuards(RolesGuard)
   async getAllTransactionsForOverrides(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9676,18 +9881,61 @@ export class ClubsController {
     @Query('subCategory') subCategory?: 'dealer-cashout' | 'salary-bonus',
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Headers('x-user-id') userId?: string,
+    @Request() req?: any,
   ) {
     try {
+      // For DEALER role, enforce that they can only view their own transactions
+      const user = req?.user;
+      const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
+      const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
+      const userRoles = clubRoleEntry?.roles || [];
+      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
+                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN].includes(r));
+      const isAffiliateOnly = userRoles.includes(ClubRole.AFFILIATE) && 
+                             !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN].includes(r));
+      
+      // Force category and subCategory for DEALER and AFFILIATE
+      let finalCategory = category;
+      let finalSubCategory = subCategory;
+      if (isDealerOnly) {
+        finalCategory = 'staff';
+        finalSubCategory = 'dealer-cashout';
+      } else if (isAffiliateOnly) {
+        finalCategory = 'player';
+        // Affiliates see player transactions related to their referrals
+      }
+
       const pageNum = page ? parseInt(page, 10) : 1;
       const limitNum = limit ? parseInt(limit, 10) : 50;
 
       const result = await this.financialOverridesService.getAllTransactions(
         clubId,
-        category,
-        subCategory,
+        finalCategory,
+        finalSubCategory,
         pageNum,
         limitNum,
       );
+      
+      // Filter results for DEALER if needed
+      if (isDealerOnly && userId && result.transactions) {
+        // Get dealer's staff ID and filter transactions
+        const userEntity = await this.usersService.findById(userId);
+        if (userEntity?.email) {
+          const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
+          const staffList = Array.isArray(allStaff) ? allStaff : [];
+          const currentDealer = staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER);
+          if (currentDealer) {
+            // Filter transactions to only show those related to this dealer
+            result.transactions = result.transactions.filter((t: any) => 
+              t.entityId === currentDealer.id || t.dealerId === currentDealer.id
+            );
+            result.total = result.transactions.length;
+            result.totalPages = Math.ceil(result.total / limitNum);
+          }
+        }
+      }
+
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in getAllTransactionsForOverrides:', error);
@@ -9758,7 +10006,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/chat/staff/sessions
    */
   @Post(':clubId/chat/staff/sessions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async createStaffChatSession(
     @Param('clubId', ParseUUIDPipe) clubId: string,
@@ -9774,7 +10022,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/chat/staff/sessions
    */
   @Get(':clubId/chat/staff/sessions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getStaffChatSessions(
     @Param('clubId', ParseUUIDPipe) clubId: string,
@@ -9839,7 +10087,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/chat/sessions/:sessionId/messages
    */
   @Post(':clubId/chat/sessions/:sessionId/messages')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async sendMessage(
     @Param('clubId', ParseUUIDPipe) clubId: string,
@@ -9856,7 +10104,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/chat/sessions/:sessionId/messages
    */
   @Get(':clubId/chat/sessions/:sessionId/messages')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getSessionMessages(
     @Param('clubId', ParseUUIDPipe) clubId: string,
@@ -9896,7 +10144,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/chat/unread-counts
    */
   @Get(':clubId/chat/unread-counts')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getUnreadCounts(
     @Param('clubId', ParseUUIDPipe) clubId: string,
