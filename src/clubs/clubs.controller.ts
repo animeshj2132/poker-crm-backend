@@ -79,6 +79,9 @@ import { PayrollService } from './services/payroll.service';
 import { ProcessSalaryDto } from './dto/process-salary.dto';
 import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
 import { ProcessAffiliatePaymentDto } from './dto/process-affiliate-payment.dto';
+import { EditTransactionDto } from './dto/edit-transaction.dto';
+import { CancelTransactionDto } from './dto/cancel-transaction.dto';
+import { FinancialOverridesService } from './services/financial-overrides.service';
 import { ProcessDealerCashoutDto } from './dto/process-dealer-cashout.dto';
 import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
 import { BonusService } from './services/bonus.service';
@@ -107,6 +110,7 @@ export class ClubsController {
     private readonly shiftManagementService: ShiftManagementService,
     private readonly payrollService: PayrollService,
     private readonly bonusService: BonusService,
+    private readonly financialOverridesService: FinancialOverridesService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -9706,6 +9710,96 @@ export class ClubsController {
       return { success: true, staff };
     } catch (error) {
       console.error('Error in getStaffForBonus:', error);
+      throw error;
+    }
+  }
+
+  // ========== FINANCIAL OVERRIDES ==========
+
+  /**
+   * Get all transactions (player and staff) for financial overrides
+   * GET /api/clubs/:clubId/financial-overrides/transactions
+   */
+  @Get(':clubId/financial-overrides/transactions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  async getAllTransactionsForOverrides(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('category') category?: 'player' | 'staff',
+    @Query('subCategory') subCategory?: 'dealer-cashout' | 'salary-bonus',
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const pageNum = page ? parseInt(page, 10) : 1;
+      const limitNum = limit ? parseInt(limit, 10) : 50;
+
+      const result = await this.financialOverridesService.getAllTransactions(
+        clubId,
+        category,
+        subCategory,
+        pageNum,
+        limitNum,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getAllTransactionsForOverrides:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Edit financial transaction
+   * PUT /api/clubs/:clubId/financial-overrides/transactions/:transactionId/edit
+   */
+  @Put(':clubId/financial-overrides/transactions/:transactionId/edit')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async editTransaction(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
+    @Body() editTransactionDto: EditTransactionDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const transaction = await this.financialTransactionsService.editTransaction(
+        transactionId,
+        clubId,
+        editTransactionDto,
+        userId,
+      );
+      return { success: true, transaction };
+    } catch (error) {
+      console.error('Error in editTransaction:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cancel financial transaction
+   * POST /api/clubs/:clubId/financial-overrides/transactions/:transactionId/cancel
+   */
+  @Post(':clubId/financial-overrides/transactions/:transactionId/cancel')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async cancelTransactionOverride(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
+    @Body() cancelTransactionDto: CancelTransactionDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const transaction = await this.financialTransactionsService.cancelTransaction(
+        transactionId,
+        clubId,
+        cancelTransactionDto,
+        userId,
+      );
+      return { success: true, transaction };
+    } catch (error) {
+      console.error('Error in cancelTransactionOverride:', error);
       throw error;
     }
   }

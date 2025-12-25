@@ -51,6 +51,21 @@ export class FinancialTransaction {
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true, name: 'original_amount' })
+  originalAmount?: number;
+
+  @Column({ type: 'text', nullable: true, name: 'override_reason' })
+  overrideReason?: string;
+
+  @Column({ type: 'uuid', nullable: true, name: 'overridden_by' })
+  overriddenBy?: string;
+
+  @Column({ type: 'timestamp', nullable: true, name: 'overridden_at' })
+  overriddenAt?: Date;
+
+  @Column({ type: 'boolean', default: false, name: 'is_overridden' })
+  isOverridden!: boolean;
+
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
   club!: Club;

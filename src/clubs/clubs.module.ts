@@ -48,6 +48,7 @@ import { PlayerBonus } from './entities/player-bonus.entity';
 import { StaffBonus } from './entities/staff-bonus.entity';
 import { BonusService } from './services/bonus.service';
 import { AffiliateTransaction } from './entities/affiliate-transaction.entity';
+import { FinancialOverridesService } from './services/financial-overrides.service';
 
 @Module({
   imports: [
@@ -101,7 +102,8 @@ import { AffiliateTransaction } from './entities/affiliate-transaction.entity';
     TournamentsService,
     ShiftManagementService,
     PayrollService,
-    BonusService
+    BonusService,
+    FinancialOverridesService
   ],
   controllers: [ClubsController],
   exports: [
@@ -121,7 +123,8 @@ import { AffiliateTransaction } from './entities/affiliate-transaction.entity';
     TournamentsService,
     ShiftManagementService,
     PayrollService,
-    BonusService
+    BonusService,
+    FinancialOverridesService
   ]
 })
 export class ClubsModule {}
