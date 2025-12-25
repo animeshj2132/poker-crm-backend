@@ -1,53 +1,66 @@
 import {
-  Column,
-  CreateDateColumn,
   Entity,
+  PrimaryGeneratedColumn,
+  Column,
   ManyToOne,
-  PrimaryGeneratedColumn
+  JoinColumn,
+  CreateDateColumn,
 } from 'typeorm';
 import { Club } from '../club.entity';
+import { Staff } from './staff.entity';
 
-export enum AuditLogAction {
-  CREATE = 'CREATE',
-  UPDATE = 'UPDATE',
-  DELETE = 'DELETE',
-  APPROVE = 'APPROVE',
-  DENY = 'DENY',
-  LOGIN = 'LOGIN',
-  LOGOUT = 'LOGOUT',
-  OVERRIDE = 'OVERRIDE'
-}
-
-@Entity({ name: 'audit_logs' })
+@Entity('audit_logs')
 export class AuditLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'varchar' })
-  action!: AuditLogAction;
+  @ManyToOne(() => Club)
+  @JoinColumn({ name: 'club_id' })
+  club!: Club;
 
-  @Column({ type: 'varchar' })
-  entityType!: string; // e.g., 'staff', 'credit_request', 'transaction', 'user'
+  @Column({ type: 'uuid', name: 'club_id' })
+  clubId!: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  entityId!: string | null;
+  @ManyToOne(() => Staff, { nullable: true })
+  @JoinColumn({ name: 'staff_id' })
+  staff?: Staff;
 
-  @Column({ type: 'varchar', nullable: true })
-  userId!: string | null;
+  @Column({ type: 'uuid', nullable: true, name: 'staff_id' })
+  staffId?: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  userEmail!: string | null;
+  @Column({ type: 'varchar', length: 255, name: 'staff_name' })
+  staffName!: string;
 
-  @Column({ type: 'text', nullable: true })
-  description!: string | null;
+  @Column({ type: 'varchar', length: 100, name: 'staff_role' })
+  staffRole!: string;
 
-  @Column({ type: 'jsonb', nullable: true })
-  metadata!: Record<string, unknown> | null;
+  @Column({ type: 'varchar', length: 100, name: 'action_type' })
+  actionType!: string;
 
-  @ManyToOne(() => Club, { nullable: true })
-  club!: Club | null;
+  @Column({ type: 'varchar', length: 50, name: 'action_category' })
+  actionCategory!: string;
 
-  @CreateDateColumn()
+  @Column({ type: 'text' })
+  description!: string;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, name: 'target_type' })
+  targetType?: string;
+
+  @Column({ type: 'uuid', nullable: true, name: 'target_id' })
+  targetId?: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, name: 'target_name' })
+  targetName?: string;
+
+  @Column({ type: 'jsonb', default: {} })
+  metadata!: Record<string, any>;
+
+  @Column({ type: 'varchar', length: 45, nullable: true, name: 'ip_address' })
+  ipAddress?: string;
+
+  @Column({ type: 'text', nullable: true, name: 'user_agent' })
+  userAgent?: string;
+
+  @CreateDateColumn({ type: 'timestamp with time zone', name: 'created_at' })
   createdAt!: Date;
 }
-
