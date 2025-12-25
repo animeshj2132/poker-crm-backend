@@ -39,6 +39,11 @@ import { TournamentsService } from './services/tournaments.service';
 import { StaffManagementService } from './services/staff-management.service';
 import { ShiftManagementService } from './services/shift-management.service';
 import { Shift } from './entities/shift.entity';
+import { PayrollService } from './services/payroll.service';
+import { SalaryPayment } from './entities/salary-payment.entity';
+import { DealerTips } from './entities/dealer-tips.entity';
+import { DealerCashout } from './entities/dealer-cashout.entity';
+import { TipSettings } from './entities/tip-settings.entity';
 
 @Module({
   imports: [
@@ -62,7 +67,11 @@ import { Shift } from './entities/shift.entity';
       MenuItem,
       InventoryItem,
       Supplier,
-      Shift
+      Shift,
+      SalaryPayment,
+      DealerTips,
+      DealerCashout,
+      TipSettings
     ]),
     UsersModule,
     StorageModule,
@@ -83,7 +92,8 @@ import { Shift } from './entities/shift.entity';
     AffiliatesService,
     FnbService,
     TournamentsService,
-    ShiftManagementService
+    ShiftManagementService,
+    PayrollService
   ],
   controllers: [ClubsController],
   exports: [
@@ -101,7 +111,8 @@ import { Shift } from './entities/shift.entity';
     AffiliatesService,
     FnbService,
     TournamentsService,
-    ShiftManagementService
+    ShiftManagementService,
+    PayrollService
   ]
 })
 export class ClubsModule {}

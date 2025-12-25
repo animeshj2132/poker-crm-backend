@@ -75,6 +75,11 @@ import { ShiftManagementService } from './services/shift-management.service';
 import { CreateShiftDto } from './dto/create-shift.dto';
 import { UpdateShiftDto } from './dto/update-shift.dto';
 import { CopyShiftDto } from './dto/copy-shift.dto';
+import { PayrollService } from './services/payroll.service';
+import { ProcessSalaryDto } from './dto/process-salary.dto';
+import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
+import { ProcessDealerCashoutDto } from './dto/process-dealer-cashout.dto';
+import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -96,6 +101,7 @@ export class ClubsController {
     private readonly tournamentsService: TournamentsService,
     private readonly staffManagementService: StaffManagementService,
     private readonly shiftManagementService: ShiftManagementService,
+    private readonly payrollService: PayrollService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -9152,6 +9158,308 @@ export class ClubsController {
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in deleteMultipleShifts:', error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // PAYROLL MANAGEMENT
+  // =====================================================
+
+  /**
+   * Process salary payment
+   * POST /api/clubs/:clubId/payroll/salary
+   */
+  @Post(':clubId/payroll/salary')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processSalary(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() processSalaryDto: ProcessSalaryDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const payment = await this.payrollService.processSalary(clubId, processSalaryDto, userId);
+      return { success: true, payment };
+    } catch (error) {
+      console.error('Error in processSalary:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get salary payments with pagination
+   * GET /api/clubs/:clubId/payroll/salary?page=1&limit=10&search=&startDate=&endDate=&staffId=
+   */
+  @Get(':clubId/payroll/salary')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getSalaryPayments(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('staffId') staffId?: string,
+  ) {
+    try {
+      const result = await this.payrollService.getSalaryPayments(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        staffId,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getSalaryPayments:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get salary payment by ID
+   * GET /api/clubs/:clubId/payroll/salary/:paymentId
+   */
+  @Get(':clubId/payroll/salary/:paymentId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getSalaryPaymentById(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
+  ) {
+    try {
+      const payment = await this.payrollService.getSalaryPaymentById(clubId, paymentId);
+      return { success: true, payment };
+    } catch (error) {
+      console.error('Error in getSalaryPaymentById:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all staff for payroll
+   * GET /api/clubs/:clubId/payroll/staff
+   */
+  @Get(':clubId/payroll/staff')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getAllStaffForPayroll(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+  ) {
+    try {
+      const staff = await this.payrollService.getAllStaffForPayroll(clubId);
+      return { success: true, staff };
+    } catch (error) {
+      console.error('Error in getAllStaffForPayroll:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get dealers for payroll
+   * GET /api/clubs/:clubId/payroll/dealers
+   */
+  @Get(':clubId/payroll/dealers')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDealersForPayroll(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+  ) {
+    try {
+      const dealers = await this.payrollService.getDealersForPayroll(clubId);
+      return { success: true, dealers };
+    } catch (error) {
+      console.error('Error in getDealersForPayroll:', error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // DEALER TIPS
+  // =====================================================
+
+  /**
+   * Get tip settings
+   * GET /api/clubs/:clubId/payroll/tips/settings
+   */
+  @Get(':clubId/payroll/tips/settings')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async getTipSettings(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('dealerId') dealerId?: string,
+  ) {
+    try {
+      const settings = await this.payrollService.getTipSettings(clubId, dealerId);
+      return { success: true, settings };
+    } catch (error) {
+      console.error('Error in getTipSettings:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update tip settings
+   * POST /api/clubs/:clubId/payroll/tips/settings
+   */
+  @Post(':clubId/payroll/tips/settings')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateTipSettings(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() updateTipSettingsDto: UpdateTipSettingsDto,
+    @Headers('x-user-id') userId?: string,
+    @Query('dealerId') dealerId?: string,
+  ) {
+    try {
+      const settings = await this.payrollService.updateTipSettings(clubId, updateTipSettingsDto, userId, dealerId);
+      return { success: true, settings };
+    } catch (error) {
+      console.error('Error in updateTipSettings:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process dealer tips
+   * POST /api/clubs/:clubId/payroll/tips
+   */
+  @Post(':clubId/payroll/tips')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processDealerTips(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() processDealerTipsDto: ProcessDealerTipsDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const tips = await this.payrollService.processDealerTips(clubId, processDealerTipsDto, userId);
+      return { success: true, tips };
+    } catch (error) {
+      console.error('Error in processDealerTips:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get dealer tips with pagination
+   * GET /api/clubs/:clubId/payroll/tips?page=1&limit=10&search=&startDate=&endDate=&dealerId=&status=
+   */
+  @Get(':clubId/payroll/tips')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDealerTips(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('dealerId') dealerId?: string,
+    @Query('status') status?: string,
+  ) {
+    try {
+      const result = await this.payrollService.getDealerTips(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        dealerId,
+        status as any,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getDealerTips:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get dealer tips summary
+   * GET /api/clubs/:clubId/payroll/tips/:dealerId/summary?startDate=&endDate=
+   */
+  @Get(':clubId/payroll/tips/:dealerId/summary')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDealerTipsSummary(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('dealerId', new ParseUUIDPipe()) dealerId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    try {
+      const summary = await this.payrollService.getDealerTipsSummary(clubId, dealerId, startDate, endDate);
+      return { success: true, summary };
+    } catch (error) {
+      console.error('Error in getDealerTipsSummary:', error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // DEALER CASHOUTS
+  // =====================================================
+
+  /**
+   * Process dealer cashout
+   * POST /api/clubs/:clubId/payroll/cashout
+   */
+  @Post(':clubId/payroll/cashout')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processDealerCashout(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() processDealerCashoutDto: ProcessDealerCashoutDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const cashout = await this.payrollService.processDealerCashout(clubId, processDealerCashoutDto, userId);
+      return { success: true, cashout };
+    } catch (error) {
+      console.error('Error in processDealerCashout:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get dealer cashouts with pagination
+   * GET /api/clubs/:clubId/payroll/cashout?page=1&limit=10&search=&startDate=&endDate=&dealerId=
+   */
+  @Get(':clubId/payroll/cashout')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDealerCashouts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('dealerId') dealerId?: string,
+  ) {
+    try {
+      const result = await this.payrollService.getDealerCashouts(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        dealerId,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getDealerCashouts:', error);
       throw error;
     }
   }
