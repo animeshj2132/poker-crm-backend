@@ -107,6 +107,9 @@ import { QueryRakeCollectionsDto } from './dto/query-rake-collections.dto';
 import { BuyOutRequestService } from './services/buyout-request.service';
 import { ApproveBuyOutDto } from './dto/approve-buyout.dto';
 import { RejectBuyOutDto } from './dto/reject-buyout.dto';
+import { BuyInRequestService } from './services/buyin-request.service';
+import { ApproveBuyInDto } from './dto/approve-buyin.dto';
+import { RejectBuyInDto } from './dto/reject-buyin.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -136,6 +139,7 @@ export class ClubsController {
     private readonly reportsService: ReportsService,
     private readonly rakeCollectionService: RakeCollectionService,
     private readonly buyOutRequestService: BuyOutRequestService,
+    private readonly buyInRequestService: BuyInRequestService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -579,7 +583,7 @@ export class ClubsController {
   }
 
   @Get(':id/revenue')
-  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   async getClubRevenue(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -597,7 +601,7 @@ export class ClubsController {
         await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
       }
 
-      // For club-scoped users (ADMIN/MANAGER), validate club access
+      // For club-scoped users (ADMIN/MANAGER/CASHIER), validate club access
       if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
         if (headerClubId.trim() !== clubId) {
           throw new ForbiddenException('You can only access revenue for your assigned club');
@@ -2439,7 +2443,7 @@ export class ClubsController {
 
   // ========== Push Notifications ==========
   @Get(':id/push-notifications')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   async listPushNotifications(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -2468,7 +2472,7 @@ export class ClubsController {
   }
 
   @Post(':id/push-notifications')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createPushNotification(
@@ -2504,7 +2508,7 @@ export class ClubsController {
   }
 
   @Put(':id/push-notifications/:notificationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, skipMissingProperties: true }))
   async updatePushNotification(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -2538,7 +2542,7 @@ export class ClubsController {
   }
 
   @Delete(':id/push-notifications/:notificationId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @HttpCode(HttpStatus.NO_CONTENT)
   async removePushNotification(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -2568,7 +2572,7 @@ export class ClubsController {
   }
 
   @Post(':id/push-notifications/upload-url')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   async createPushNotificationUploadUrl(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -9228,7 +9232,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/salary?page=1&limit=10&search=&startDate=&endDate=&staffId=
    */
   @Get(':clubId/payroll/salary')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getSalaryPayments(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9281,7 +9285,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/staff
    */
   @Get(':clubId/payroll/staff')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getAllStaffForPayroll(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9508,7 +9512,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/bonuses/players
    */
   @Post(':clubId/bonuses/players')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async processPlayerBonus(
@@ -9530,7 +9534,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/bonuses/players
    */
   @Get(':clubId/bonuses/players')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getPlayerBonuses(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9563,7 +9567,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/bonuses/players/list
    */
   @Get(':clubId/bonuses/players/list')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getPlayersForBonus(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -10255,6 +10259,106 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to reject buy-out request: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // =========================================================================
+  // BUY-IN REQUESTS (Cashier)
+  // =========================================================================
+
+  @Get(':id/buyin-requests')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  async getBuyInRequests(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('status') status?: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only access buy-in requests for your assigned club');
+        }
+      }
+      const requests = await this.buyInRequestService.getPendingBuyInRequests(clubId);
+      return requests;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get buy-in requests: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/buyin-requests/:requestId/approve')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async approveBuyInRequest(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() dto: ApproveBuyInDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only approve buy-in requests for your assigned club');
+        }
+      }
+      if (!userId) {
+        throw new BadRequestException('x-user-id header is required');
+      }
+      const result = await this.buyInRequestService.approveBuyInRequest(clubId, requestId, dto, userId);
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to approve buy-in request: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/buyin-requests/:requestId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async rejectBuyInRequest(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() dto: RejectBuyInDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only reject buy-in requests for your assigned club');
+        }
+      }
+      if (!userId) {
+        throw new BadRequestException('x-user-id header is required');
+      }
+      const result = await this.buyInRequestService.rejectBuyInRequest(clubId, requestId, dto, userId);
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to reject buy-in request: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 }
