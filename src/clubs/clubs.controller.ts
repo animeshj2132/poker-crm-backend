@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
@@ -99,6 +99,8 @@ import { UpdateChatSessionDto } from './dto/update-chat-session.dto';
 import { ReportsService } from './services/reports.service';
 import { GenerateReportDto } from './dto/generate-report.dto';
 import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
+import { FactoryResetDto } from './dto/factory-reset.dto';
+import { ActionCategory } from './dto/create-audit-log.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -9942,6 +9944,80 @@ export class ClubsController {
     @Query('days') days?: number,
   ) {
     return await this.auditLogsService.getStatistics(clubId, days);
+  }
+
+  /**
+   * ============================================
+   * SYSTEM CONTROL - FACTORY RESET
+   * ============================================
+   */
+
+  /**
+   * Factory Reset - Wipe all club data
+   * POST /api/clubs/:clubId/system/factory-reset
+   * WARNING: This is destructive and irreversible
+   */
+  @Post(':clubId/system/factory-reset')
+  @Roles(ClubRole.SUPER_ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  @HttpCode(HttpStatus.OK)
+  async factoryReset(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Body() dto: FactoryResetDto,
+    @Headers('x-user-id') userId: string,
+  ) {
+    if (!userId) {
+      throw new BadRequestException('User ID required');
+    }
+
+    // Verify confirmation text
+    if (dto.confirmationText !== 'DELETE ALL DATA') {
+      throw new BadRequestException('Confirmation text must be exactly "DELETE ALL DATA"');
+    }
+
+    // Verify club exists
+    const club = await this.clubsService.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    // Verify user password
+    const user = await this.usersService.findById(userId, true); // Include password hash
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('User does not have a password set');
+    }
+
+    const bcrypt = require('bcrypt');
+    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid password');
+    }
+
+    // Log the factory reset action
+    await this.auditLogsService.logAction({
+      clubId,
+      staffId: userId,
+      staffName: user.displayName || user.email,
+      staffRole: 'SUPER_ADMIN',
+      actionType: 'factory_reset',
+      actionCategory: ActionCategory.SYSTEM,
+      description: `FACTORY RESET: All club data wiped by ${user.displayName || user.email}`,
+    });
+
+    // Execute factory reset - delete all data
+    await this.clubsService.factoryReset(clubId);
+
+    return {
+      success: true,
+      message: 'Factory reset completed successfully. All club data has been wiped.',
+      clubId,
+      resetAt: new Date().toISOString(),
+    };
   }
 }
 
