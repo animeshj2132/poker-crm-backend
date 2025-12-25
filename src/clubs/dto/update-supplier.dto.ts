@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsEmail, IsNumber, IsOptional, IsString, Max, MaxLength, Min, IsArray } from 'class-validator';
 
 export class UpdateSupplierDto {
   @IsOptional()
@@ -35,6 +35,11 @@ export class UpdateSupplierDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  specializations?: string[];
 }
 
 

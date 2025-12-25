@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { FnbOrder, OrderStatus, StatusHistoryEntry } from '../entities/fnb-order.entity';
-import { MenuItem } from '../entities/menu-item.entity';
+import { MenuItem, MenuItemAvailability } from '../entities/menu-item.entity';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { Supplier } from '../entities/supplier.entity';
 import { Club } from '../club.entity';
@@ -50,17 +50,11 @@ export class FnbService {
       throw new BadRequestException('Total amount does not match sum of items');
     }
 
-    // Generate order number
-    const lastOrder = await this.orderRepo.findOne({
-      where: { club: { id: clubId } },
-      order: { createdAt: 'DESC' }
-    });
-    const orderNumber = this.generateOrderNumber(lastOrder?.orderNumber);
-
+    // Order number will be assigned later when accepted
     // Create order
     const order = this.orderRepo.create({
       ...dto,
-      orderNumber,
+      orderNumber: null, // Will be assigned when accepted
       club,
       status: OrderStatus.PENDING,
       statusHistory: [{
@@ -237,7 +231,7 @@ export class FnbService {
       ...dto,
       club,
       stock: dto.stock ?? 0,
-      isAvailable: dto.isAvailable ?? true
+      availability: dto.availability || MenuItemAvailability.AVAILABLE
     });
 
     return await this.menuRepo.save(menuItem);

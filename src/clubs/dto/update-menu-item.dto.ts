@@ -1,4 +1,5 @@
-import { IsBoolean, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsNumber, IsOptional, IsString, MaxLength, Min, IsEnum } from 'class-validator';
+import { MenuItemAvailability } from '../entities/menu-item.entity';
 
 export class UpdateMenuItemDto {
   @IsOptional()
@@ -10,6 +11,10 @@ export class UpdateMenuItemDto {
   @IsString()
   @MaxLength(100)
   category?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isCustomCategory?: boolean;
 
   @IsOptional()
   @IsNumber()
@@ -32,13 +37,23 @@ export class UpdateMenuItemDto {
   description?: string;
 
   @IsOptional()
-  @IsBoolean()
-  isAvailable?: boolean;
+  @IsEnum(MenuItemAvailability)
+  availability?: MenuItemAvailability;
 
   @IsOptional()
   @IsString()
   @MaxLength(2048)
-  imageUrl?: string;
+  imageUrl1?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  imageUrl2?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  imageUrl3?: string;
 }
 
 

@@ -56,8 +56,12 @@ import { Repository } from 'typeorm';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { Affiliate } from './entities/affiliate.entity';
 import { FnbService } from './services/fnb.service';
+import { FnbEnhancedService } from './services/fnb-enhanced.service';
 import { CreateFnbOrderDto } from './dto/create-fnb-order.dto';
 import { UpdateFnbOrderDto } from './dto/update-fnb-order.dto';
+import { CreateKitchenStationDto } from './dto/create-kitchen-station.dto';
+import { UpdateKitchenStationDto } from './dto/update-kitchen-station.dto';
+import { AcceptRejectOrderDto } from './dto/accept-reject-order.dto';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
@@ -105,6 +109,7 @@ export class ClubsController {
     private readonly analyticsService: AnalyticsService,
     private readonly affiliatesService: AffiliatesService,
     private readonly fnbService: FnbService,
+    private readonly fnbEnhancedService: FnbEnhancedService,
     private readonly tournamentsService: TournamentsService,
     private readonly staffManagementService: StaffManagementService,
     private readonly shiftManagementService: ShiftManagementService,
@@ -8436,7 +8441,7 @@ export class ClubsController {
     @Body() dto: CreateFnbOrderDto,
     @Headers('x-user-id') userId?: string,
   ) {
-    return await this.fnbService.createOrder(clubId, dto, userId);
+    return await this.fnbEnhancedService.createOrder(clubId, dto);
   }
 
   /**
@@ -8448,18 +8453,15 @@ export class ClubsController {
   async getFnbOrders(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Query('status') status?: OrderStatus,
-    @Query('tableNumber') tableNumber?: string,
-    @Query('playerId') playerId?: string,
-    @Query('dateFrom') dateFrom?: string,
-    @Query('dateTo') dateTo?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return await this.fnbService.getOrders(clubId, {
-      status,
-      tableNumber,
-      playerId,
-      dateFrom,
-      dateTo,
-    });
+    return await this.fnbEnhancedService.getOrders(
+      clubId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      status
+    );
   }
 
   /**
@@ -8472,7 +8474,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('orderId', ParseUUIDPipe) orderId: string,
   ) {
-    return await this.fnbService.getOrder(clubId, orderId);
+    return await this.fnbEnhancedService.getOrder(clubId, orderId);
   }
 
   /**
@@ -8487,21 +8489,22 @@ export class ClubsController {
     @Body() dto: UpdateFnbOrderDto,
     @Headers('x-user-id') userId?: string,
   ) {
-    return await this.fnbService.updateOrderStatus(clubId, orderId, dto, userId);
+    return await this.fnbEnhancedService.updateOrderStatus(clubId, orderId, dto, userId || 'System');
   }
 
   /**
    * Cancel FNB Order
-   * DELETE /api/clubs/:id/fnb/orders/:orderId/cancel
+   * POST /api/clubs/:id/fnb/orders/:orderId/cancel
    */
-  @Delete(':id/fnb/orders/:orderId/cancel')
+  @Post(':id/fnb/orders/:orderId/cancel')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async cancelFnbOrder(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body('reason') reason: string,
     @Headers('x-user-id') userId?: string,
   ) {
-    return await this.fnbService.cancelOrder(clubId, orderId, userId);
+    return await this.fnbEnhancedService.cancelOrder(clubId, orderId, reason || 'Cancelled by admin', userId || 'System');
   }
 
   /**
@@ -8514,7 +8517,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateMenuItemDto,
   ) {
-    return await this.fnbService.createMenuItem(clubId, dto);
+    return await this.fnbEnhancedService.createMenuItem(clubId, dto);
   }
 
   /**
@@ -8529,11 +8532,7 @@ export class ClubsController {
     @Query('available') available?: string,
     @Query('search') search?: string,
   ) {
-    return await this.fnbService.getMenuItems(clubId, {
-      category,
-      available: available === 'true',
-      search,
-    });
+    return await this.fnbEnhancedService.getMenuItems(clubId);
   }
 
   /**
@@ -8546,7 +8545,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return await this.fnbService.getMenuItem(clubId, itemId);
+    return await this.fnbEnhancedService.getMenuItem(clubId, itemId);
   }
 
   /**
@@ -8560,7 +8559,7 @@ export class ClubsController {
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateMenuItemDto,
   ) {
-    return await this.fnbService.updateMenuItem(clubId, itemId, dto);
+    return await this.fnbEnhancedService.updateMenuItem(clubId, itemId, dto);
   }
 
   /**
@@ -8573,7 +8572,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return await this.fnbService.deleteMenuItem(clubId, itemId);
+    return await this.fnbEnhancedService.deleteMenuItem(clubId, itemId);
   }
 
   /**
@@ -8585,7 +8584,7 @@ export class ClubsController {
   async getMenuCategories(
     @Param('id', ParseUUIDPipe) clubId: string,
   ) {
-    return await this.fnbService.getCategories(clubId);
+    return await this.fnbEnhancedService.getMenuCategories(clubId);
   }
 
   /**
@@ -8598,7 +8597,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateInventoryItemDto,
   ) {
-    return await this.fnbService.createInventoryItem(clubId, dto);
+    return await this.fnbEnhancedService.createInventoryItem(clubId, dto);
   }
 
   /**
@@ -8609,15 +8608,9 @@ export class ClubsController {
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async getInventoryItems(
     @Param('id', ParseUUIDPipe) clubId: string,
-    @Query('category') category?: string,
     @Query('lowStock') lowStock?: string,
-    @Query('outOfStock') outOfStock?: string,
   ) {
-    return await this.fnbService.getInventoryItems(clubId, {
-      category,
-      lowStock: lowStock === 'true',
-      outOfStock: outOfStock === 'true',
-    });
+    return await this.fnbEnhancedService.getInventoryItems(clubId, lowStock === 'true');
   }
 
   /**
@@ -8630,7 +8623,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return await this.fnbService.getInventoryItem(clubId, itemId);
+    return await this.fnbEnhancedService.getInventoryItem(clubId, itemId);
   }
 
   /**
@@ -8644,7 +8637,7 @@ export class ClubsController {
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateInventoryItemDto,
   ) {
-    return await this.fnbService.updateInventoryItem(clubId, itemId, dto);
+    return await this.fnbEnhancedService.updateInventoryItem(clubId, itemId, dto);
   }
 
   /**
@@ -8657,7 +8650,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return await this.fnbService.deleteInventoryItem(clubId, itemId);
+    return await this.fnbEnhancedService.deleteInventoryItem(clubId, itemId);
   }
 
   /**
@@ -8669,7 +8662,7 @@ export class ClubsController {
   async getLowStockItems(
     @Param('id', ParseUUIDPipe) clubId: string,
   ) {
-    return await this.fnbService.getLowStockItems(clubId);
+    return await this.fnbEnhancedService.getInventoryItems(clubId, true);
   }
 
   /**
@@ -8681,7 +8674,7 @@ export class ClubsController {
   async getOutOfStockItems(
     @Param('id', ParseUUIDPipe) clubId: string,
   ) {
-    return await this.fnbService.getOutOfStockItems(clubId);
+    return await this.fnbEnhancedService.getInventoryItems(clubId, true);
   }
 
   /**
@@ -8694,7 +8687,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateSupplierDto,
   ) {
-    return await this.fnbService.createSupplier(clubId, dto);
+    return await this.fnbEnhancedService.createSupplier(clubId, dto);
   }
 
   /**
@@ -8707,7 +8700,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Query('activeOnly') activeOnly?: string,
   ) {
-    return await this.fnbService.getSuppliers(clubId, activeOnly === 'true');
+    return await this.fnbEnhancedService.getSuppliers(clubId);
   }
 
   /**
@@ -8720,7 +8713,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('supplierId', ParseUUIDPipe) supplierId: string,
   ) {
-    return await this.fnbService.getSupplier(clubId, supplierId);
+    return await this.fnbEnhancedService.getSupplier(clubId, supplierId);
   }
 
   /**
@@ -8734,7 +8727,7 @@ export class ClubsController {
     @Param('supplierId', ParseUUIDPipe) supplierId: string,
     @Body() dto: UpdateSupplierDto,
   ) {
-    return await this.fnbService.updateSupplier(clubId, supplierId, dto);
+    return await this.fnbEnhancedService.updateSupplier(clubId, supplierId, dto);
   }
 
   /**
@@ -8747,7 +8740,7 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('supplierId', ParseUUIDPipe) supplierId: string,
   ) {
-    return await this.fnbService.deleteSupplier(clubId, supplierId);
+    return await this.fnbEnhancedService.deleteSupplier(clubId, supplierId);
   }
 
   /**
@@ -8761,7 +8754,7 @@ export class ClubsController {
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
   ) {
-    return await this.fnbService.getOrderAnalytics(clubId, dateFrom, dateTo);
+    return await this.fnbEnhancedService.getOrderAnalytics(clubId);
   }
 
   /**
@@ -8773,15 +8766,188 @@ export class ClubsController {
   async getPopularItems(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Query('limit') limit?: string,
-    @Query('dateFrom') dateFrom?: string,
-    @Query('dateTo') dateTo?: string,
   ) {
-    return await this.fnbService.getPopularItems(
+    return await this.fnbEnhancedService.getPopularItems(
       clubId,
-      limit ? parseInt(limit) : 10,
-      dateFrom,
-      dateTo
+      limit ? parseInt(limit) : 10
     );
+  }
+
+  // ==================== ENHANCED FNB ENDPOINTS (Kitchen Stations & Advanced Orders) ====================
+
+  /**
+   * Create Kitchen Station
+   * POST /api/clubs/:id/fnb/kitchen-stations
+   */
+  @Post(':id/fnb/kitchen-stations')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async createKitchenStation(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Body() dto: CreateKitchenStationDto,
+  ) {
+    return await this.fnbEnhancedService.createKitchenStation(clubId, dto);
+  }
+
+  /**
+   * Get Kitchen Stations
+   * GET /api/clubs/:id/fnb/kitchen-stations
+   */
+  @Get(':id/fnb/kitchen-stations')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async getKitchenStations(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Query('activeOnly') activeOnly?: string,
+  ) {
+    return await this.fnbEnhancedService.getKitchenStations(clubId, activeOnly === 'true');
+  }
+
+  /**
+   * Get Single Kitchen Station
+   * GET /api/clubs/:id/fnb/kitchen-stations/:stationId
+   */
+  @Get(':id/fnb/kitchen-stations/:stationId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async getKitchenStation(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+  ) {
+    return await this.fnbEnhancedService.getKitchenStation(clubId, stationId);
+  }
+
+  /**
+   * Update Kitchen Station
+   * PATCH /api/clubs/:id/fnb/kitchen-stations/:stationId
+   */
+  @Patch(':id/fnb/kitchen-stations/:stationId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async updateKitchenStation(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Body() dto: UpdateKitchenStationDto,
+  ) {
+    return await this.fnbEnhancedService.updateKitchenStation(clubId, stationId, dto);
+  }
+
+  /**
+   * Delete Kitchen Station
+   * DELETE /api/clubs/:id/fnb/kitchen-stations/:stationId
+   */
+  @Delete(':id/fnb/kitchen-stations/:stationId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async deleteKitchenStation(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+  ) {
+    return await this.fnbEnhancedService.deleteKitchenStation(clubId, stationId);
+  }
+
+  /**
+   * Get Station Statistics
+   * GET /api/clubs/:id/fnb/kitchen-stations/:stationId/statistics
+   */
+  @Get(':id/fnb/kitchen-stations/:stationId/statistics')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async getStationStatistics(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+  ) {
+    return await this.fnbEnhancedService.getStationStatistics(clubId, stationId);
+  }
+
+  /**
+   * Accept FNB Order
+   * POST /api/clubs/:id/fnb/orders/:orderId/accept
+   */
+  @Post(':id/fnb/orders/:orderId/accept')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async acceptFnbOrder(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: AcceptRejectOrderDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    return await this.fnbEnhancedService.acceptOrder(clubId, orderId, { ...dto, isAccepted: true }, userId || 'System');
+  }
+
+  /**
+   * Reject FNB Order
+   * POST /api/clubs/:id/fnb/orders/:orderId/reject
+   */
+  @Post(':id/fnb/orders/:orderId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async rejectFnbOrder(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: AcceptRejectOrderDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    return await this.fnbEnhancedService.rejectOrder(clubId, orderId, { ...dto, isAccepted: false }, userId || 'System');
+  }
+
+  /**
+   * Mark Order as Ready
+   * POST /api/clubs/:id/fnb/orders/:orderId/ready
+   */
+  @Post(':id/fnb/orders/:orderId/ready')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async markOrderReady(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    return await this.fnbEnhancedService.markOrderReady(clubId, orderId, userId || 'System');
+  }
+
+  /**
+   * Mark Order as Delivered
+   * POST /api/clubs/:id/fnb/orders/:orderId/delivered
+   */
+  @Post(':id/fnb/orders/:orderId/delivered')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async markOrderDelivered(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    return await this.fnbEnhancedService.markOrderDelivered(clubId, orderId, userId || 'System');
+  }
+
+  /**
+   * Create Custom Menu Category
+   * POST /api/clubs/:id/fnb/categories
+   */
+  @Post(':id/fnb/categories')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async createMenuCategory(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Body('categoryName') categoryName: string,
+  ) {
+    return await this.fnbEnhancedService.createMenuCategory(clubId, categoryName);
+  }
+
+  /**
+   * Get All Menu Categories (Enhanced)
+   * GET /api/clubs/:id/fnb/categories/all
+   */
+  @Get(':id/fnb/categories/all')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  async getAllMenuCategories(
+    @Param('id', ParseUUIDPipe) clubId: string,
+  ) {
+    return await this.fnbEnhancedService.getMenuCategories(clubId);
+  }
+
+  /**
+   * Delete Menu Category
+   * DELETE /api/clubs/:id/fnb/categories/:categoryId
+   */
+  @Delete(':id/fnb/categories/:categoryId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async deleteMenuCategory(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('categoryId', ParseUUIDPipe) categoryId: string,
+  ) {
+    return await this.fnbEnhancedService.deleteMenuCategory(clubId, categoryId);
   }
 
   // =========================================================================
