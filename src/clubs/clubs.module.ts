@@ -58,6 +58,8 @@ import { ChatService } from './services/chat.service';
 import { ReportsService } from './services/reports.service';
 import { RakeCollection } from './entities/rake-collection.entity';
 import { RakeCollectionService } from './services/rake-collection.service';
+import { BuyOutRequest } from './entities/buyout-request.entity';
+import { BuyOutRequestService } from './services/buyout-request.service';
 
 @Module({
   imports: [
@@ -93,7 +95,8 @@ import { RakeCollectionService } from './services/rake-collection.service';
       AffiliateTransaction,
       ChatSession,
       ChatMessage,
-      RakeCollection
+      RakeCollection,
+      BuyOutRequest
     ]),
     UsersModule,
     StorageModule,
@@ -121,7 +124,8 @@ import { RakeCollectionService } from './services/rake-collection.service';
     FinancialOverridesService,
     ChatService,
     ReportsService,
-    RakeCollectionService
+    RakeCollectionService,
+    BuyOutRequestService
   ],
   controllers: [ClubsController],
   exports: [
@@ -146,7 +150,8 @@ import { RakeCollectionService } from './services/rake-collection.service';
     FinancialOverridesService,
     ChatService,
     ReportsService,
-    RakeCollectionService
+    RakeCollectionService,
+    BuyOutRequestService
   ]
 })
 export class ClubsModule {}
