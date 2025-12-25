@@ -7,6 +7,7 @@ export enum TenantRole {
 }
 
 export enum ClubRole {
+  SUPER_ADMIN = 'SUPER_ADMIN',
   ADMIN = 'ADMIN',
   MANAGER = 'MANAGER',
   HR = 'HR',

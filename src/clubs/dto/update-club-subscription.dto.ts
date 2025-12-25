@@ -19,3 +19,4 @@ export class UpdateClubSubscriptionDto {
   subscriptionNotes?: string;
 }
 
+

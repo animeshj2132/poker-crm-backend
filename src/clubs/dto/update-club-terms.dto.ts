@@ -5,3 +5,4 @@ export class UpdateClubTermsDto {
   termsAndConditions!: string;
 }
 
+
