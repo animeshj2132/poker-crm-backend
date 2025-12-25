@@ -4,6 +4,8 @@ import { Repository, DataSource } from 'typeorm';
 import { Staff, StaffRole, StaffStatus } from '../entities/staff.entity';
 import { Affiliate } from '../entities/affiliate.entity';
 import { User } from '../../users/user.entity';
+import { UserClubRole } from '../../users/user-club-role.entity';
+import { ClubRole } from '../../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 
@@ -16,6 +18,8 @@ export class StaffManagementService {
     private affiliateRepo: Repository<Affiliate>,
     @InjectRepository(User)
     private userRepo: Repository<User>,
+    @InjectRepository(UserClubRole)
+    private userClubRoleRepo: Repository<UserClubRole>,
     @InjectDataSource()
     private dataSource: DataSource,
   ) {}
@@ -128,6 +132,51 @@ export class StaffManagementService {
     });
 
     const savedStaff = await this.staffRepo.save(staff);
+
+    // If role is ADMIN, also create User with ADMIN role in users_v1 table
+    if (data.role === StaffRole.ADMIN && data.email) {
+      try {
+        // Find or create user for the admin
+        let user = await this.userRepo.findOne({ where: { email: data.email } });
+        
+        if (!user) {
+          // Create a new user for the admin
+          const hashedPassword = await bcrypt.hash(tempPassword, 10);
+          user = this.userRepo.create({
+            email: data.email,
+            passwordHash: hashedPassword,
+            displayName: data.name,
+            mustResetPassword: true,
+          });
+          user = await this.userRepo.save(user);
+        } else {
+          // User exists - update password if needed
+          if (!user.passwordHash) {
+            const hashedPassword = await bcrypt.hash(tempPassword, 10);
+            user.passwordHash = hashedPassword;
+            user.mustResetPassword = true;
+            await this.userRepo.save(user);
+          }
+        }
+
+        // Assign ADMIN role to the user for this club
+        const existingRole = await this.userClubRoleRepo.findOne({
+          where: { user: { id: user.id }, club: { id: clubId }, role: ClubRole.ADMIN }
+        });
+
+        if (!existingRole) {
+          const userClubRole = this.userClubRoleRepo.create({
+            user: { id: user.id } as User,
+            club: { id: clubId } as any,
+            role: ClubRole.ADMIN
+          });
+          await this.userClubRoleRepo.save(userClubRole);
+        }
+      } catch (error) {
+        console.error('Error creating admin user entry:', error);
+        // Don't fail the staff creation if user creation fails, but log it
+      }
+    }
 
     // If role is AFFILIATE, also create entry in affiliates table
     if (data.role === StaffRole.AFFILIATE && data.email && affiliateCode) {
@@ -344,6 +393,21 @@ export class StaffManagementService {
     staff.tempPassword = true;
 
     await this.staffRepo.save(staff);
+
+    // If this is an ADMIN, also update the User password
+    if (staff.role === StaffRole.ADMIN && staff.email) {
+      try {
+        const user = await this.userRepo.findOne({ where: { email: staff.email } });
+        if (user) {
+          user.passwordHash = passwordHash;
+          user.mustResetPassword = true;
+          await this.userRepo.save(user);
+        }
+      } catch (error) {
+        console.error('Error updating admin user password:', error);
+        // Don't fail the staff password reset if user update fails
+      }
+    }
 
     return {
       message: 'Password reset successfully',
