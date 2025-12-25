@@ -35,6 +35,10 @@ import { MenuItem } from './entities/menu-item.entity';
 import { InventoryItem } from './entities/inventory-item.entity';
 import { Supplier } from './entities/supplier.entity';
 import { EventsModule } from '../events/events.module';
+import { TournamentsService } from './services/tournaments.service';
+import { StaffManagementService } from './services/staff-management.service';
+import { ShiftManagementService } from './services/shift-management.service';
+import { Shift } from './entities/shift.entity';
 
 @Module({
   imports: [
@@ -57,7 +61,8 @@ import { EventsModule } from '../events/events.module';
       FnbOrder,
       MenuItem,
       InventoryItem,
-      Supplier
+      Supplier,
+      Shift
     ]),
     UsersModule,
     StorageModule,
@@ -66,6 +71,7 @@ import { EventsModule } from '../events/events.module';
   providers: [
     ClubsService,
     StaffService,
+    StaffManagementService,
     CreditRequestsService,
     FinancialTransactionsService,
     VipProductsService,
@@ -75,12 +81,15 @@ import { EventsModule } from '../events/events.module';
     WaitlistSeatingService,
     AnalyticsService,
     AffiliatesService,
-    FnbService
+    FnbService,
+    TournamentsService,
+    ShiftManagementService
   ],
   controllers: [ClubsController],
   exports: [
     ClubsService,
     StaffService,
+    StaffManagementService,
     CreditRequestsService,
     FinancialTransactionsService,
     VipProductsService,
@@ -90,7 +99,9 @@ import { EventsModule } from '../events/events.module';
     WaitlistSeatingService,
     AnalyticsService,
     AffiliatesService,
-    FnbService
+    FnbService,
+    TournamentsService,
+    ShiftManagementService
   ]
 })
 export class ClubsModule {}

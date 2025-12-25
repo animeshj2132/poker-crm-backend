@@ -17,3 +17,4 @@ COMMENT ON COLUMN vip_products.images IS 'Array of image objects with url field 
 COMMENT ON COLUMN vip_products.stock IS 'Available stock for this product';
 COMMENT ON COLUMN vip_products.is_active IS 'Whether product is active and available for redemption';
 
+

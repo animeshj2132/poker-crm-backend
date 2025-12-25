@@ -65,6 +65,16 @@ import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { OrderStatus } from './entities/fnb-order.entity';
+import { TournamentsService } from './services/tournaments.service';
+import { CreateTournamentDto } from './dto/create-tournament.dto';
+import { UpdateTournamentDto } from './dto/update-tournament.dto';
+import { EndTournamentDto } from './dto/end-tournament.dto';
+import { StaffManagementService } from './services/staff-management.service';
+import { SuspendStaffDto } from './dto/suspend-staff.dto';
+import { ShiftManagementService } from './services/shift-management.service';
+import { CreateShiftDto } from './dto/create-shift.dto';
+import { UpdateShiftDto } from './dto/update-shift.dto';
+import { CopyShiftDto } from './dto/copy-shift.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -83,6 +93,9 @@ export class ClubsController {
     private readonly analyticsService: AnalyticsService,
     private readonly affiliatesService: AffiliatesService,
     private readonly fnbService: FnbService,
+    private readonly tournamentsService: TournamentsService,
+    private readonly staffManagementService: StaffManagementService,
+    private readonly shiftManagementService: ShiftManagementService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -1085,6 +1098,171 @@ export class ClubsController {
       throw e;
       }
       throw new BadRequestException(`Failed to delete staff: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // =========================================================================
+  // ENHANCED STAFF MANAGEMENT
+  // =========================================================================
+
+  /**
+   * Create staff member with KYC and auto-generated password
+   * POST /api/clubs/:clubId/staff-management/create
+   */
+  @Post(':clubId/staff-management/create')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async createStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Headers('x-user-id') userId: string,
+    @Body() dto: CreateStaffDto,
+  ) {
+    try {
+      const staff = await this.staffManagementService.createStaff(clubId, dto, userId);
+      return { success: true, staff, message: 'Staff member created successfully' };
+    } catch (error) {
+      console.error('Error in createStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all staff with filters
+   * GET /api/clubs/:clubId/staff-management
+   */
+  @Get(':clubId/staff-management')
+  async getAllStaffMembers(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('role') role?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('sortBy') sortBy?: 'createdAt' | 'name' | 'role',
+    @Query('sortOrder') sortOrder?: 'ASC' | 'DESC',
+  ) {
+    try {
+      const staff = await this.staffManagementService.getAllStaff(clubId, {
+        role: role as any,
+        status: status as any,
+        search,
+        sortBy,
+        sortOrder,
+      });
+      return { success: true, staff };
+    } catch (error) {
+      console.error('Error in getAllStaffMembers:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get staff member by ID
+   * GET /api/clubs/:clubId/staff-management/:staffId
+   */
+  @Get(':clubId/staff-management/:staffId')
+  async getStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+  ) {
+    try {
+      const staff = await this.staffManagementService.getStaffById(clubId, staffId);
+      return { success: true, staff };
+    } catch (error) {
+      console.error('Error in getStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update staff member
+   * PUT /api/clubs/:clubId/staff-management/:staffId
+   */
+  @Put(':clubId/staff-management/:staffId')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async updateStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Body() dto: Partial<CreateStaffDto>,
+  ) {
+    try {
+      const staff = await this.staffManagementService.updateStaff(clubId, staffId, dto);
+      return { success: true, staff, message: 'Staff member updated successfully' };
+    } catch (error) {
+      console.error('Error in updateStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Suspend staff member
+   * POST /api/clubs/:clubId/staff-management/:staffId/suspend
+   */
+  @Post(':clubId/staff-management/:staffId/suspend')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async suspendStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Headers('x-user-id') userId: string,
+    @Body() dto: SuspendStaffDto,
+  ) {
+    try {
+      const staff = await this.staffManagementService.suspendStaff(clubId, staffId, dto.reason, userId);
+      return { success: true, staff, message: 'Staff member suspended successfully' };
+    } catch (error) {
+      console.error('Error in suspendStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reactivate staff member
+   * POST /api/clubs/:clubId/staff-management/:staffId/reactivate
+   */
+  @Post(':clubId/staff-management/:staffId/reactivate')
+  async reactivateStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+  ) {
+    try {
+      const staff = await this.staffManagementService.reactivateStaff(clubId, staffId);
+      return { success: true, staff, message: 'Staff member reactivated successfully' };
+    } catch (error) {
+      console.error('Error in reactivateStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete staff member
+   * DELETE /api/clubs/:clubId/staff-management/:staffId
+   */
+  @Delete(':clubId/staff-management/:staffId')
+  async deleteStaffMember(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+  ) {
+    try {
+      const result = await this.staffManagementService.deleteStaff(clubId, staffId);
+      return { success: true, message: result.message };
+    } catch (error) {
+      console.error('Error in deleteStaffMember:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reset staff password
+   * POST /api/clubs/:clubId/staff-management/:staffId/reset-password
+   */
+  @Post(':clubId/staff-management/:staffId/reset-password')
+  async resetStaffMemberPassword(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+  ) {
+    try {
+      const result = await this.staffManagementService.resetStaffPassword(clubId, staffId);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in resetStaffMemberPassword:', error);
+      throw error;
     }
   }
 
@@ -8626,6 +8804,354 @@ export class ClubsController {
       };
     } catch (error) {
       console.error('Error in updateClubTerms:', error);
+      throw error;
+    }
+  }
+
+  // =========================================================================
+  // TOURNAMENTS
+  // =========================================================================
+
+  /**
+   * Get all tournaments for a club
+   * GET /api/clubs/:clubId/tournaments
+   */
+  @Get(':clubId/tournaments')
+  async getTournaments(@Param('clubId', new ParseUUIDPipe()) clubId: string) {
+    try {
+      const tournaments = await this.tournamentsService.getTournaments(clubId);
+      return { success: true, tournaments };
+    } catch (error) {
+      console.error('Error in getTournaments:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get tournament by ID
+   * GET /api/clubs/:clubId/tournaments/:tournamentId
+   */
+  @Get(':clubId/tournaments/:tournamentId')
+  async getTournamentById(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+  ) {
+    try {
+      const tournament = await this.tournamentsService.getTournamentById(clubId, tournamentId);
+      return { success: true, tournament };
+    } catch (error) {
+      console.error('Error in getTournamentById:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create new tournament
+   * POST /api/clubs/:clubId/tournaments
+   */
+  @Post(':clubId/tournaments')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async createTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Headers('x-user-id') userId: string,
+    @Body() dto: CreateTournamentDto,
+  ) {
+    try {
+      const tournament = await this.tournamentsService.createTournament(clubId, userId, dto);
+      return { success: true, tournament, message: 'Tournament created successfully' };
+    } catch (error) {
+      console.error('Error in createTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update tournament
+   * PUT /api/clubs/:clubId/tournaments/:tournamentId
+   */
+  @Put(':clubId/tournaments/:tournamentId')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async updateTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Body() dto: UpdateTournamentDto,
+  ) {
+    try {
+      const tournament = await this.tournamentsService.updateTournament(clubId, tournamentId, dto);
+      return { success: true, tournament, message: 'Tournament updated successfully' };
+    } catch (error) {
+      console.error('Error in updateTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete tournament
+   * DELETE /api/clubs/:clubId/tournaments/:tournamentId
+   */
+  @Delete(':clubId/tournaments/:tournamentId')
+  async deleteTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+  ) {
+    try {
+      const result = await this.tournamentsService.deleteTournament(clubId, tournamentId);
+      return { success: true, message: result.message };
+    } catch (error) {
+      console.error('Error in deleteTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Start tournament
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/start
+   */
+  @Post(':clubId/tournaments/:tournamentId/start')
+  async startTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+  ) {
+    try {
+      const tournament = await this.tournamentsService.startTournament(clubId, tournamentId);
+      return { success: true, tournament, message: 'Tournament started successfully' };
+    } catch (error) {
+      console.error('Error in startTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * End tournament with winners
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/end
+   */
+  @Post(':clubId/tournaments/:tournamentId/end')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  async endTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Body() dto: EndTournamentDto,
+  ) {
+    try {
+      const tournament = await this.tournamentsService.endTournament(clubId, tournamentId, dto);
+      return { success: true, tournament, message: 'Tournament ended and winners updated successfully' };
+    } catch (error) {
+      console.error('Error in endTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get tournament players
+   * GET /api/clubs/:clubId/tournaments/:tournamentId/players
+   */
+  @Get(':clubId/tournaments/:tournamentId/players')
+  async getTournamentPlayers(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+  ) {
+    try {
+      const players = await this.tournamentsService.getTournamentPlayers(clubId, tournamentId);
+      return { success: true, players };
+    } catch (error) {
+      console.error('Error in getTournamentPlayers:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get tournament winners
+   * GET /api/clubs/:clubId/tournaments/:tournamentId/winners
+   */
+  @Get(':clubId/tournaments/:tournamentId/winners')
+  async getTournamentWinners(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+  ) {
+    try {
+      const winners = await this.tournamentsService.getTournamentWinners(clubId, tournamentId);
+      return { success: true, winners };
+    } catch (error) {
+      console.error('Error in getTournamentWinners:', error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // SHIFT MANAGEMENT
+  // =====================================================
+
+  /**
+   * Create a new shift
+   * POST /api/clubs/:clubId/shifts
+   */
+  @Post(':clubId/shifts')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createShift(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() createShiftDto: CreateShiftDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const shift = await this.shiftManagementService.createShift(clubId, createShiftDto, userId);
+      return { success: true, shift };
+    } catch (error) {
+      console.error('Error in createShift:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all shifts with optional filters
+   * GET /api/clubs/:clubId/shifts?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&staffId=uuid&role=Dealer
+   */
+  @Get(':clubId/shifts')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getShifts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('staffId') staffId?: string,
+    @Query('role') role?: StaffRole,
+  ) {
+    try {
+      const shifts = await this.shiftManagementService.getShifts(
+        clubId,
+        startDate,
+        endDate,
+        staffId,
+        role,
+      );
+      return { success: true, shifts };
+    } catch (error) {
+      console.error('Error in getShifts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get shift by ID
+   * GET /api/clubs/:clubId/shifts/:shiftId
+   */
+  @Get(':clubId/shifts/:shiftId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getShiftById(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
+  ) {
+    try {
+      const shift = await this.shiftManagementService.getShiftById(clubId, shiftId);
+      return { success: true, shift };
+    } catch (error) {
+      console.error('Error in getShiftById:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a shift
+   * PATCH /api/clubs/:clubId/shifts/:shiftId
+   */
+  @Patch(':clubId/shifts/:shiftId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateShift(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
+    @Body() updateShiftDto: UpdateShiftDto,
+  ) {
+    try {
+      const shift = await this.shiftManagementService.updateShift(clubId, shiftId, updateShiftDto);
+      return { success: true, shift };
+    } catch (error) {
+      console.error('Error in updateShift:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a shift
+   * DELETE /api/clubs/:clubId/shifts/:shiftId
+   */
+  @Delete(':clubId/shifts/:shiftId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async deleteShift(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
+  ) {
+    try {
+      const result = await this.shiftManagementService.deleteShift(clubId, shiftId);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in deleteShift:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Copy shifts to new dates
+   * POST /api/clubs/:clubId/shifts/copy
+   */
+  @Post(':clubId/shifts/copy')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async copyShifts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() copyShiftDto: CopyShiftDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const result = await this.shiftManagementService.copyShifts(clubId, copyShiftDto, userId);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in copyShifts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all dealers for shift assignment
+   * GET /api/clubs/:clubId/shifts/dealers
+   */
+  @Get(':clubId/shifts-dealers')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDealersForShifts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+  ) {
+    try {
+      const dealers = await this.shiftManagementService.getDealers(clubId);
+      return { success: true, dealers };
+    } catch (error) {
+      console.error('Error in getDealersForShifts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete multiple shifts
+   * POST /api/clubs/:clubId/shifts/delete-multiple
+   */
+  @Post(':clubId/shifts/delete-multiple')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async deleteMultipleShifts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { shiftIds: string[] },
+  ) {
+    try {
+      const result = await this.shiftManagementService.deleteMultipleShifts(clubId, body.shiftIds);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in deleteMultipleShifts:', error);
       throw error;
     }
   }
