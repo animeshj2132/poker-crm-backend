@@ -55,6 +55,7 @@ import { FnbEnhancedService } from './services/fnb-enhanced.service';
 import { ChatSession } from './entities/chat-session.entity';
 import { ChatMessage } from './entities/chat-message.entity';
 import { ChatService } from './services/chat.service';
+import { ReportsService } from './services/reports.service';
 
 @Module({
   imports: [
@@ -115,7 +116,8 @@ import { ChatService } from './services/chat.service';
     PayrollService,
     BonusService,
     FinancialOverridesService,
-    ChatService
+    ChatService,
+    ReportsService
   ],
   controllers: [ClubsController],
   exports: [
@@ -138,7 +140,8 @@ import { ChatService } from './services/chat.service';
     PayrollService,
     BonusService,
     FinancialOverridesService,
-    ChatService
+    ChatService,
+    ReportsService
   ]
 })
 export class ClubsModule {}
