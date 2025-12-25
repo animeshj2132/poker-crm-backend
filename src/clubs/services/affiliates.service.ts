@@ -661,6 +661,8 @@ export class AffiliatesService {
         name: affiliate.name,
         code: affiliate.code,
         email: affiliate.user?.email,
+        userId: affiliate.userId || affiliate.user?.id, // Include userId for matching
+        user: affiliate.user ? { id: affiliate.user.id, email: affiliate.user.email } : null, // Include user object
         status: affiliate.status,
         commissionRate: affiliate.commissionRate,
         totalReferrals: players.length,
