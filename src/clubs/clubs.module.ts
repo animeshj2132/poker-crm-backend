@@ -44,6 +44,9 @@ import { SalaryPayment } from './entities/salary-payment.entity';
 import { DealerTips } from './entities/dealer-tips.entity';
 import { DealerCashout } from './entities/dealer-cashout.entity';
 import { TipSettings } from './entities/tip-settings.entity';
+import { PlayerBonus } from './entities/player-bonus.entity';
+import { StaffBonus } from './entities/staff-bonus.entity';
+import { BonusService } from './services/bonus.service';
 
 @Module({
   imports: [
@@ -71,7 +74,9 @@ import { TipSettings } from './entities/tip-settings.entity';
       SalaryPayment,
       DealerTips,
       DealerCashout,
-      TipSettings
+      TipSettings,
+      PlayerBonus,
+      StaffBonus
     ]),
     UsersModule,
     StorageModule,
@@ -93,7 +98,8 @@ import { TipSettings } from './entities/tip-settings.entity';
     FnbService,
     TournamentsService,
     ShiftManagementService,
-    PayrollService
+    PayrollService,
+    BonusService
   ],
   controllers: [ClubsController],
   exports: [
@@ -112,7 +118,8 @@ import { TipSettings } from './entities/tip-settings.entity';
     FnbService,
     TournamentsService,
     ShiftManagementService,
-    PayrollService
+    PayrollService,
+    BonusService
   ]
 })
 export class ClubsModule {}

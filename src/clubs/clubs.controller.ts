@@ -80,6 +80,9 @@ import { ProcessSalaryDto } from './dto/process-salary.dto';
 import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
 import { ProcessDealerCashoutDto } from './dto/process-dealer-cashout.dto';
 import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
+import { BonusService } from './services/bonus.service';
+import { CreatePlayerBonusDto } from './dto/create-player-bonus.dto';
+import { CreateStaffBonusDto } from './dto/create-staff-bonus.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -102,6 +105,7 @@ export class ClubsController {
     private readonly staffManagementService: StaffManagementService,
     private readonly shiftManagementService: ShiftManagementService,
     private readonly payrollService: PayrollService,
+    private readonly bonusService: BonusService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -9460,6 +9464,160 @@ export class ClubsController {
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in getDealerCashouts:', error);
+      throw error;
+    }
+  }
+
+  // =============================================================================
+  // BONUS MANAGEMENT
+  // =============================================================================
+
+  /**
+   * Process player bonus
+   * POST /api/clubs/:clubId/bonuses/players
+   */
+  @Post(':clubId/bonuses/players')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processPlayerBonus(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Headers('x-user-id') userId: string,
+    @Body() dto: CreatePlayerBonusDto,
+  ) {
+    try {
+      const bonus = await this.bonusService.processPlayerBonus(clubId, dto, userId);
+      return { success: true, bonus };
+    } catch (error) {
+      console.error('Error in processPlayerBonus:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get player bonuses with pagination and filters
+   * GET /api/clubs/:clubId/bonuses/players
+   */
+  @Get(':clubId/bonuses/players')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async getPlayerBonuses(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('playerId') playerId?: string,
+  ) {
+    try {
+      const result = await this.bonusService.getPlayerBonuses(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        playerId,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getPlayerBonuses:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all players for bonus processing (KYC approved/verified only)
+   * GET /api/clubs/:clubId/bonuses/players/list
+   */
+  @Get(':clubId/bonuses/players/list')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async getPlayersForBonus(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('search') search?: string,
+  ) {
+    try {
+      const players = await this.bonusService.getAllPlayersForBonus(clubId, search);
+      return { success: true, players };
+    } catch (error) {
+      console.error('Error in getPlayersForBonus:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process staff bonus
+   * POST /api/clubs/:clubId/bonuses/staff
+   */
+  @Post(':clubId/bonuses/staff')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processStaffBonus(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Headers('x-user-id') userId: string,
+    @Body() dto: CreateStaffBonusDto,
+  ) {
+    try {
+      const bonus = await this.bonusService.processStaffBonus(clubId, dto, userId);
+      return { success: true, bonus };
+    } catch (error) {
+      console.error('Error in processStaffBonus:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get staff bonuses with pagination and filters
+   * GET /api/clubs/:clubId/bonuses/staff
+   */
+  @Get(':clubId/bonuses/staff')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getStaffBonuses(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('staffId') staffId?: string,
+  ) {
+    try {
+      const result = await this.bonusService.getStaffBonuses(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        staffId,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getStaffBonuses:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all staff for bonus processing
+   * GET /api/clubs/:clubId/bonuses/staff/list
+   */
+  @Get(':clubId/bonuses/staff/list')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getStaffForBonus(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('search') search?: string,
+  ) {
+    try {
+      const staff = await this.bonusService.getAllStaffForBonus(clubId, search);
+      return { success: true, staff };
+    } catch (error) {
+      console.error('Error in getStaffForBonus:', error);
       throw error;
     }
   }
