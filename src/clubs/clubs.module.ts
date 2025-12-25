@@ -52,6 +52,9 @@ import { FinancialOverridesService } from './services/financial-overrides.servic
 import { KitchenStation } from './entities/kitchen-station.entity';
 import { MenuCategory } from './entities/menu-category.entity';
 import { FnbEnhancedService } from './services/fnb-enhanced.service';
+import { ChatSession } from './entities/chat-session.entity';
+import { ChatMessage } from './entities/chat-message.entity';
+import { ChatService } from './services/chat.service';
 
 @Module({
   imports: [
@@ -84,7 +87,9 @@ import { FnbEnhancedService } from './services/fnb-enhanced.service';
       TipSettings,
       PlayerBonus,
       StaffBonus,
-      AffiliateTransaction
+      AffiliateTransaction,
+      ChatSession,
+      ChatMessage
     ]),
     UsersModule,
     StorageModule,
@@ -109,7 +114,8 @@ import { FnbEnhancedService } from './services/fnb-enhanced.service';
     ShiftManagementService,
     PayrollService,
     BonusService,
-    FinancialOverridesService
+    FinancialOverridesService,
+    ChatService
   ],
   controllers: [ClubsController],
   exports: [
@@ -131,7 +137,8 @@ import { FnbEnhancedService } from './services/fnb-enhanced.service';
     ShiftManagementService,
     PayrollService,
     BonusService,
-    FinancialOverridesService
+    FinancialOverridesService,
+    ChatService
   ]
 })
 export class ClubsModule {}

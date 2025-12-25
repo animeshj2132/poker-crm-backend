@@ -91,6 +91,11 @@ import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
 import { BonusService } from './services/bonus.service';
 import { CreatePlayerBonusDto } from './dto/create-player-bonus.dto';
 import { CreateStaffBonusDto } from './dto/create-staff-bonus.dto';
+import { ChatService } from './services/chat.service';
+import { CreateStaffChatSessionDto } from './dto/create-staff-chat-session.dto';
+import { CreatePlayerChatSessionDto } from './dto/create-player-chat-session.dto';
+import { SendMessageDto } from './dto/send-message.dto';
+import { UpdateChatSessionDto } from './dto/update-chat-session.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -116,6 +121,7 @@ export class ClubsController {
     private readonly payrollService: PayrollService,
     private readonly bonusService: BonusService,
     private readonly financialOverridesService: FinancialOverridesService,
+    private readonly chatService: ChatService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -9968,6 +9974,161 @@ export class ClubsController {
       console.error('Error in cancelTransactionOverride:', error);
       throw error;
     }
+  }
+
+  // ==================== CHAT ENDPOINTS ====================
+
+  /**
+   * Create staff chat session
+   * POST /api/clubs/:clubId/chat/staff/sessions
+   */
+  @Post(':clubId/chat/staff/sessions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @UseGuards(RolesGuard)
+  async createStaffChatSession(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Body() dto: CreateStaffChatSessionDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const session = await this.chatService.createStaffChatSession(clubId, userId || '', dto);
+    return { success: true, session };
+  }
+
+  /**
+   * Get staff chat sessions
+   * GET /api/clubs/:clubId/chat/staff/sessions
+   */
+  @Get(':clubId/chat/staff/sessions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @UseGuards(RolesGuard)
+  async getStaffChatSessions(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('role') role?: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const result = await this.chatService.getStaffChatSessions(
+      clubId,
+      userId || '',
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      search,
+      role
+    );
+    return { success: true, ...result };
+  }
+
+  /**
+   * Create player chat session
+   * POST /api/clubs/:clubId/chat/player/sessions
+   */
+  @Post(':clubId/chat/player/sessions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async createPlayerChatSession(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Body() dto: CreatePlayerChatSessionDto,
+  ) {
+    const session = await this.chatService.createPlayerChatSession(clubId, dto);
+    return { success: true, session };
+  }
+
+  /**
+   * Get player chat sessions
+   * GET /api/clubs/:clubId/chat/player/sessions
+   */
+  @Get(':clubId/chat/player/sessions')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async getPlayerChatSessions(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    const result = await this.chatService.getPlayerChatSessions(
+      clubId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      status as any,
+      search
+    );
+    return { success: true, ...result };
+  }
+
+  /**
+   * Send message
+   * POST /api/clubs/:clubId/chat/sessions/:sessionId/messages
+   */
+  @Post(':clubId/chat/sessions/:sessionId/messages')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @UseGuards(RolesGuard)
+  async sendMessage(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Body() dto: SendMessageDto,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const message = await this.chatService.sendMessage(clubId, sessionId, userId || '', dto);
+    return { success: true, message };
+  }
+
+  /**
+   * Get session messages
+   * GET /api/clubs/:clubId/chat/sessions/:sessionId/messages
+   */
+  @Get(':clubId/chat/sessions/:sessionId/messages')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @UseGuards(RolesGuard)
+  async getSessionMessages(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const result = await this.chatService.getSessionMessages(
+      clubId,
+      sessionId,
+      userId || '',
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 50
+    );
+    return { success: true, ...result };
+  }
+
+  /**
+   * Update chat session
+   * PATCH /api/clubs/:clubId/chat/sessions/:sessionId
+   */
+  @Patch(':clubId/chat/sessions/:sessionId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async updateChatSession(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Body() dto: UpdateChatSessionDto,
+  ) {
+    const session = await this.chatService.updateChatSession(clubId, sessionId, dto);
+    return { success: true, session };
+  }
+
+  /**
+   * Get unread counts
+   * GET /api/clubs/:clubId/chat/unread-counts
+   */
+  @Get(':clubId/chat/unread-counts')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB)
+  @UseGuards(RolesGuard)
+  async getUnreadCounts(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const counts = await this.chatService.getUnreadCounts(clubId, userId || '');
+    return { success: true, ...counts };
   }
 }
 
