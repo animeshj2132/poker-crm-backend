@@ -1044,7 +1044,19 @@ export class ClubsController {
         }
       }
 
-      return await this.staffService.create(clubId, dto.name, dto.role, dto.employeeId);
+      // Use staffManagementService which supports KYC documents
+      const result = await this.staffManagementService.createStaff(clubId, {
+        name: dto.name,
+        role: dto.role,
+        email: dto.email,
+        phone: dto.phone,
+        employeeId: dto.employeeId,
+        aadharDocumentUrl: dto.aadharDocumentUrl,
+        panDocumentUrl: dto.panDocumentUrl,
+        customRoleName: dto.customRoleName,
+      }, 'system'); // createdBy can be enhanced later
+      
+      return { success: true, staff: result, tempPassword: result.tempPasswordPlainText };
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ConflictException || e instanceof ForbiddenException) {
@@ -1104,7 +1116,18 @@ export class ClubsController {
         }
       }
 
-      return await this.staffService.update(staffId, clubId, dto);
+      // Use staffManagementService which supports KYC documents
+      const updated = await this.staffManagementService.updateStaff(clubId, staffId, {
+        name: dto.name,
+        email: dto.email,
+        phone: dto.phone,
+        employeeId: dto.employeeId,
+        aadharDocumentUrl: dto.aadharDocumentUrl,
+        panDocumentUrl: dto.panDocumentUrl,
+        customRoleName: dto.customRoleName,
+      });
+      
+      return { success: true, staff: updated };
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ConflictException || e instanceof ForbiddenException) {

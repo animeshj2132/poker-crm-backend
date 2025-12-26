@@ -20,5 +20,26 @@ export class UpdateStaffDto {
   @IsString()
   @MaxLength(50)
   employeeId?: string;
+
+  @IsOptional()
+  @IsString()
+  aadharDocumentUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  panDocumentUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  customRoleName?: string;
 }
 

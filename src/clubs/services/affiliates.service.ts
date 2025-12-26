@@ -404,6 +404,17 @@ export class AffiliatesService {
     const saltRounds = 12;
     const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
 
+    // Prepare KYC documents array
+    const kycDocuments: any[] = [];
+    if (documentUrl && documentType) {
+      kycDocuments.push({
+        type: documentType.trim(),
+        url: documentUrl.trim(),
+        uploadedAt: new Date().toISOString(),
+        status: 'approved'
+      });
+    }
+
     // Create player
     // Super Admin creates players with KYC docs, so auto-approve them
     const player = this.playersRepo.create({
@@ -419,7 +430,8 @@ export class AffiliatesService {
       status: 'Active',
       notes: notes?.trim() || null,
       kycStatus: 'approved', // Auto-approve since Super Admin uploads KYC docs during creation
-      kycApprovedAt: new Date() // Set approval timestamp
+      kycApprovedAt: new Date(), // Set approval timestamp
+      kycDocuments: kycDocuments.length > 0 ? kycDocuments : null // Store KYC documents
     });
 
     const savedPlayer = await this.playersRepo.save(player);
@@ -429,9 +441,6 @@ export class AffiliatesService {
       affiliate.totalReferrals += 1;
       await this.affiliatesRepo.save(affiliate);
     }
-
-    // TODO: Store KYC document if documentUrl and documentType provided
-    // This should create a kyc_documents entry similar to player app flow
 
     return { player: savedPlayer, tempPassword };
   }

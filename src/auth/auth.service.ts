@@ -5,6 +5,7 @@ import { ClubsService } from '../clubs/clubs.service';
 import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
+import { Staff } from '../clubs/entities/staff.entity';
 import { FinancialTransaction, TransactionStatus } from '../clubs/entities/financial-transaction.entity';
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../clubs/entities/table.entity';
@@ -31,6 +32,7 @@ export class AuthService {
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
+    @InjectRepository(Staff) private readonly staffRepo: Repository<Staff>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(WaitlistEntry) private readonly waitlistRepo: Repository<WaitlistEntry>,
     @InjectRepository(Table) private readonly tablesRepo: Repository<Table>
@@ -98,6 +100,55 @@ export class AuthService {
         clubRoles = [];
       }
 
+      // Check if user has club roles and validate club/staff status
+      if (clubRoles.length > 0) {
+        const clubId = clubRoles[0].club?.id;
+        
+        if (clubId) {
+          // Check club status
+          const club = await this.clubsService.findById(clubId);
+          if (!club) {
+            throw new UnauthorizedException('Club not found');
+          }
+
+          // If club is suspended or killed, block staff login (except Super Admin)
+          const isSuperAdmin = tenantRoles.some(tr => tr.role === TenantRole.SUPER_ADMIN);
+          if (!isSuperAdmin && !user.isMasterAdmin) {
+            if (club.status === 'killed') {
+              throw new UnauthorizedException('Club not found');
+            }
+            if (club.status === 'suspended') {
+              throw new UnauthorizedException('Club not found');
+            }
+          }
+
+          // Check staff status (if user is not Super Admin or Master Admin)
+          if (!isSuperAdmin && !user.isMasterAdmin) {
+            try {
+              const staff = await this.staffRepo.findOne({
+                where: { email: email.trim(), club: { id: clubId } }
+              });
+
+              if (staff) {
+                if (staff.status === 'Suspended') {
+                  throw new UnauthorizedException('Your account is suspended by admin. Please contact them.');
+                }
+                if (staff.status === 'Deactivated') {
+                  throw new UnauthorizedException('Your account has been deactivated. Please contact admin.');
+                }
+              }
+            } catch (err) {
+              // If it's our custom error, re-throw it
+              if (err instanceof UnauthorizedException) {
+                throw err;
+              }
+              // Otherwise, log and continue (staff might not exist in staff table for some roles)
+              console.error('Error checking staff status:', err);
+            }
+          }
+        }
+      }
+
       return {
         user: {
           id: user.id,
@@ -118,7 +169,8 @@ export class AuthService {
           club: {
             id: cr.club?.id || '',
             name: (cr.club as any)?.name || '',
-            tenantId: (cr.club as any)?.tenant?.id || ''
+            tenantId: (cr.club as any)?.tenant?.id || '',
+            status: (cr.club as any)?.status || 'active'
           }
         }))
       };
