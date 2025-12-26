@@ -180,77 +180,18 @@ export class TournamentsService {
     const values: any[] = [];
     let paramIndex = 1;
 
+    // Basic tournament fields that exist as columns in the database
     if (dto.name !== undefined) {
       updates.push(`name = $${paramIndex++}`);
       values.push(dto.name);
-    }
-    if (tournamentType !== undefined) {
-      updates.push(`tournament_type = $${paramIndex++}`);
-      values.push(tournamentType);
     }
     if (dto.buy_in !== undefined) {
       updates.push(`buy_in = $${paramIndex++}`);
       values.push(dto.buy_in);
     }
-    if (dto.entry_fee !== undefined) {
-      updates.push(`entry_fee = $${paramIndex++}`);
-      values.push(dto.entry_fee);
-    }
-    if (dto.starting_chips !== undefined) {
-      updates.push(`starting_chips = $${paramIndex++}`);
-      values.push(dto.starting_chips);
-    }
-    if (blindStructure !== undefined) {
-      updates.push(`blind_structure = $${paramIndex++}`);
-      values.push(blindStructure);
-    }
-    if (dto.number_of_levels !== undefined) {
-      updates.push(`number_of_levels = $${paramIndex++}`);
-      values.push(dto.number_of_levels);
-    }
-    if (dto.minutes_per_level !== undefined) {
-      updates.push(`minutes_per_level = $${paramIndex++}`);
-      values.push(dto.minutes_per_level);
-    }
-    if (breakStructure !== undefined) {
-      updates.push(`break_structure = $${paramIndex++}`);
-      values.push(breakStructure);
-    }
-    if (dto.break_duration !== undefined) {
-      updates.push(`break_duration = $${paramIndex++}`);
-      values.push(dto.break_duration);
-    }
-    if (dto.late_registration !== undefined) {
-      updates.push(`late_registration = $${paramIndex++}`);
-      values.push(dto.late_registration);
-    }
-    if (payoutStructure !== undefined) {
-      updates.push(`payout_structure = $${paramIndex++}`);
-      values.push(payoutStructure);
-    }
-    if (seatDrawMethod !== undefined) {
-      updates.push(`seat_draw_method = $${paramIndex++}`);
-      values.push(seatDrawMethod);
-    }
-    if (clockPauseRules !== undefined) {
-      updates.push(`clock_pause_rules = $${paramIndex++}`);
-      values.push(clockPauseRules);
-    }
-    if (dto.allow_rebuys !== undefined) {
-      updates.push(`allow_rebuys = $${paramIndex++}`);
-      values.push(dto.allow_rebuys);
-    }
-    if (dto.allow_addon !== undefined) {
-      updates.push(`allow_addon = $${paramIndex++}`);
-      values.push(dto.allow_addon);
-    }
-    if (dto.allow_reentry !== undefined) {
-      updates.push(`allow_reentry = $${paramIndex++}`);
-      values.push(dto.allow_reentry);
-    }
-    if (dto.bounty_amount !== undefined) {
-      updates.push(`bounty_amount = $${paramIndex++}`);
-      values.push(dto.bounty_amount);
+    if (dto.prize_pool !== undefined) {
+      updates.push(`prize_pool = $${paramIndex++}`);
+      values.push(dto.prize_pool);
     }
     if (dto.max_players !== undefined) {
       updates.push(`max_players = $${paramIndex++}`);
@@ -265,7 +206,7 @@ export class TournamentsService {
       values.push(dto.status);
     }
 
-    // Rummy-specific fields (nullable, so poker tournaments are unaffected)
+    // Rummy-specific fields (nullable columns, so poker tournaments are unaffected)
     if (dto.rummy_variant !== undefined) {
       updates.push(`rummy_variant = $${paramIndex++}`);
       values.push(dto.rummy_variant || null);
@@ -290,13 +231,46 @@ export class TournamentsService {
       updates.push(`deal_duration = $${paramIndex++}`);
       values.push(dto.deal_duration || null);
     }
-    if (dto.prize_pool !== undefined) {
-      updates.push(`prize_pool = $${paramIndex++}`);
-      values.push(dto.prize_pool || null);
-    }
     if (dto.min_players !== undefined) {
       updates.push(`min_players = $${paramIndex++}`);
       values.push(dto.min_players || null);
+    }
+
+    // Handle poker-specific fields in structure JSONB column
+    const hasPokerFields = tournamentType || dto.entry_fee !== undefined || dto.starting_chips !== undefined || 
+                          blindStructure || dto.number_of_levels !== undefined || dto.minutes_per_level !== undefined ||
+                          breakStructure || dto.break_duration !== undefined || dto.late_registration !== undefined ||
+                          payoutStructure || seatDrawMethod || clockPauseRules ||
+                          dto.allow_rebuys !== undefined || dto.allow_addon !== undefined || 
+                          dto.allow_reentry !== undefined || dto.bounty_amount !== undefined;
+
+    if (hasPokerFields && !dto.rummy_variant) {
+      // Get existing tournament to merge with existing structure
+      const tournament = await this.getTournamentById(clubId, tournamentId);
+      const existingStructure = tournament.structure || {};
+      
+      const structureData = {
+        ...existingStructure,
+        tournament_type: tournamentType || existingStructure.tournament_type,
+        entry_fee: dto.entry_fee !== undefined ? dto.entry_fee : existingStructure.entry_fee,
+        starting_chips: dto.starting_chips !== undefined ? dto.starting_chips : existingStructure.starting_chips,
+        blind_structure: blindStructure || existingStructure.blind_structure,
+        number_of_levels: dto.number_of_levels !== undefined ? dto.number_of_levels : existingStructure.number_of_levels,
+        minutes_per_level: dto.minutes_per_level !== undefined ? dto.minutes_per_level : existingStructure.minutes_per_level,
+        break_structure: breakStructure || existingStructure.break_structure,
+        break_duration: dto.break_duration !== undefined ? dto.break_duration : existingStructure.break_duration,
+        late_registration: dto.late_registration !== undefined ? dto.late_registration : existingStructure.late_registration,
+        payout_structure: payoutStructure || existingStructure.payout_structure,
+        seat_draw_method: seatDrawMethod || existingStructure.seat_draw_method,
+        clock_pause_rules: clockPauseRules || existingStructure.clock_pause_rules,
+        allow_rebuys: dto.allow_rebuys !== undefined ? dto.allow_rebuys : existingStructure.allow_rebuys,
+        allow_addon: dto.allow_addon !== undefined ? dto.allow_addon : existingStructure.allow_addon,
+        allow_reentry: dto.allow_reentry !== undefined ? dto.allow_reentry : existingStructure.allow_reentry,
+        bounty_amount: dto.bounty_amount !== undefined ? dto.bounty_amount : existingStructure.bounty_amount,
+      };
+
+      updates.push(`structure = $${paramIndex++}`);
+      values.push(JSON.stringify(structureData));
     }
 
     if (updates.length === 0) {
