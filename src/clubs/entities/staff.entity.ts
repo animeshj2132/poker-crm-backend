@@ -8,6 +8,7 @@ import {
   UpdateDateColumn
 } from 'typeorm';
 import { Club } from '../club.entity';
+import { User } from '../../users/user.entity';
 
 export enum StaffRole {
   SUPER_ADMIN = 'Super Admin',
@@ -82,6 +83,13 @@ export class Staff {
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
   club!: Club;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'user_id' })
+  user?: User;
+
+  @Column({ type: 'uuid', nullable: true, name: 'user_id' })
+  userId?: string | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;

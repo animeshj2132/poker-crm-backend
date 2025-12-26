@@ -101,6 +101,7 @@ export class AuthService {
       }
 
       // Check if user has club roles and validate club/staff status
+      let staffId: string | undefined;
       if (clubRoles.length > 0) {
         const clubId = clubRoles[0].club?.id;
         
@@ -130,6 +131,7 @@ export class AuthService {
               });
 
               if (staff) {
+                staffId = staff.id; // Store staff ID for response
                 if (staff.status === 'Suspended') {
                   throw new UnauthorizedException('Your account is suspended by admin. Please contact them.');
                 }
@@ -155,7 +157,8 @@ export class AuthService {
           email: user.email,
           displayName: user.displayName,
           isMasterAdmin: user.isMasterAdmin || false,
-          mustResetPassword: user.mustResetPassword || false
+          mustResetPassword: user.mustResetPassword || false,
+          staffId: staffId // Include staff ID if available
         },
         tenantRoles: tenantRoles.map(tr => ({
           role: tr.role,
