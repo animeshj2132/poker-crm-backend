@@ -361,6 +361,19 @@ export class ClubsService {
   }
 
   /**
+   * Update club rummy enabled status (Master Admin)
+   */
+  async updateClubRummyEnabled(clubId: string, rummyEnabled: boolean) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    club.rummyEnabled = rummyEnabled;
+    return await this.clubsRepo.save(club);
+  }
+
+  /**
    * Factory Reset - Delete all club data
    * WARNING: This is destructive and irreversible
    */

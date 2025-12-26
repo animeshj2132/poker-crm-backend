@@ -55,6 +55,9 @@ export class Club {
   @Column({ type: 'text', nullable: true, name: 'subscription_notes' })
   subscriptionNotes!: string | null;
 
+  @Column({ type: 'boolean', default: false, name: 'rummy_enabled' })
+  rummyEnabled!: boolean;
+
   @ManyToOne(() => Tenant, (tenant) => tenant.clubs, { nullable: false })
   @JoinColumn({ name: 'tenant_id' })
   tenant!: Tenant;
