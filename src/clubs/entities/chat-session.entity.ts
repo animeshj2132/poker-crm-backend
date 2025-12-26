@@ -70,5 +70,12 @@ export class ChatSession {
 
   @Column({ type: 'timestamp', nullable: true, name: 'closed_at' })
   closedAt!: Date | null;
+
+  // One-sided archiving (user can delete chat from their side only)
+  @Column({ type: 'boolean', default: false, name: 'archived_by_initiator' })
+  archivedByInitiator!: boolean;
+
+  @Column({ type: 'boolean', default: false, name: 'archived_by_recipient' })
+  archivedByRecipient!: boolean;
 }
 

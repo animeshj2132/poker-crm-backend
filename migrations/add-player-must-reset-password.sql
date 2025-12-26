@@ -13,3 +13,4 @@ WHERE must_reset_password IS NULL;
 COMMENT ON COLUMN players.must_reset_password IS 'Force password reset on first login (when created by admin with temp password)';
 
 
+
