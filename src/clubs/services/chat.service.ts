@@ -135,27 +135,42 @@ export class ChatService {
       relations: ['user']
     });
 
-    // Combine and format
+    // Combine and format - include staff members, Super Admins, and Admins
     const users = [
+      // Add all staff members
+      ...staffMembers.map(staff => ({
+        id: staff.id,
+        displayName: staff.name,
+        name: staff.name,
+        email: staff.email,
+        role: staff.customRoleName || staff.role,
+        roles: [{ role: staff.role }],
+        isStaff: true,
+        status: staff.status
+      })),
+      // Add Super Admin users
       ...superAdminUsers.map(role => ({
         id: role.user.id,
         displayName: role.user.displayName,
         email: role.user.email,
+        role: 'Staff',
         roles: [{ role: 'SUPER_ADMIN' }],
         isUser: true
       })),
+      // Add Admin users
       ...adminUsers.map(role => ({
         id: role.user.id,
         displayName: role.user.displayName,
         email: role.user.email,
+        role: 'Staff',
         roles: [{ role: 'ADMIN' }],
         isUser: true
       }))
     ];
 
-    // Remove duplicates (in case user has both Super Admin and Admin roles)
+    // Remove duplicates (in case user has both Super Admin and Admin roles, or exists as both staff and user)
     const uniqueUsers = users.filter((user, index, self) =>
-      index === self.findIndex(u => u.id === user.id)
+      index === self.findIndex(u => u.id === user.id || u.email?.toLowerCase() === user.email?.toLowerCase())
     );
 
     return uniqueUsers;

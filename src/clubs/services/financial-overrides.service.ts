@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { FinancialTransaction } from '../entities/financial-transaction.entity';
@@ -114,6 +114,12 @@ export class FinancialOverridesService {
             .getMany();
 
           for (const cashout of dealerCashouts) {
+            // Check if transaction has been overridden (contains [OVERRIDE] in notes)
+            const isOverridden = cashout.notes?.includes('[OVERRIDE]') || false;
+            const overrideReason = isOverridden 
+              ? cashout.notes?.split('[OVERRIDE]')[1]?.trim() 
+              : undefined;
+            
             transactions.push({
               id: cashout.id,
               type: 'Dealer Cashout',
@@ -124,6 +130,8 @@ export class FinancialOverridesService {
               status: 'Completed',
               date: cashout.cashoutDate || cashout.createdAt,
               notes: cashout.notes,
+              isOverridden,
+              overrideReason,
             });
           }
         }
@@ -161,6 +169,12 @@ export class FinancialOverridesService {
             .getMany();
 
           for (const salary of salaryPayments) {
+            // Check if transaction has been overridden (contains [OVERRIDE] in notes)
+            const isOverridden = salary.notes?.includes('[OVERRIDE]') || false;
+            const overrideReason = isOverridden 
+              ? salary.notes?.split('[OVERRIDE]')[1]?.trim() 
+              : undefined;
+            
             transactions.push({
               id: salary.id,
               type: 'Salary Payment',
@@ -171,6 +185,8 @@ export class FinancialOverridesService {
               status: salary.status || 'Processed',
               date: salary.paymentDate || salary.createdAt,
               notes: salary.notes,
+              isOverridden,
+              overrideReason,
             });
           }
         }
@@ -201,6 +217,55 @@ export class FinancialOverridesService {
       limit,
       totalPages: Math.ceil(total / limit),
     };
+  }
+
+  /**
+   * Edit ANY transaction type (financial, dealer cashout, or salary payment)
+   */
+  async editAnyTransaction(id: string, clubId: string, amount: number, reason: string, userId?: string) {
+    // Try to find in financial_transactions first
+    let transaction = await this.financialTransactionRepo.findOne({
+      where: { id, club: { id: clubId } },
+    });
+
+    if (transaction) {
+      // Edit financial transaction
+      if (!transaction.isOverridden) {
+        transaction.originalAmount = Number(transaction.amount);
+      }
+      transaction.amount = Number(amount);
+      transaction.isOverridden = true;
+      transaction.overrideReason = reason;
+      transaction.overriddenBy = userId;
+      transaction.overriddenAt = new Date();
+      return await this.financialTransactionRepo.save(transaction);
+    }
+
+    // Try to find in dealer_cashouts
+    let dealerCashout = await this.dealerCashoutRepo.findOne({
+      where: { id, clubId },
+    });
+
+    if (dealerCashout) {
+      // Edit dealer cashout
+      dealerCashout.amount = Number(amount);
+      dealerCashout.notes = `${dealerCashout.notes || ''}\n[OVERRIDE] ${reason}`.trim();
+      return await this.dealerCashoutRepo.save(dealerCashout);
+    }
+
+    // Try to find in salary_payments
+    let salaryPayment = await this.salaryPaymentRepo.findOne({
+      where: { id, clubId },
+    });
+
+    if (salaryPayment) {
+      // Edit salary payment - update netAmount (not amount)
+      salaryPayment.netAmount = Number(amount);
+      salaryPayment.notes = `${salaryPayment.notes || ''}\n[OVERRIDE] ${reason}`.trim();
+      return await this.salaryPaymentRepo.save(salaryPayment);
+    }
+
+    throw new NotFoundException('Transaction not found');
   }
 }
 

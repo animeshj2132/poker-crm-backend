@@ -465,14 +465,22 @@ export class ClubsService {
       // 25. Delete players
       await manager.query('DELETE FROM players WHERE club_id = $1', [clubId]);
       
-      // 26. Delete staff
-      await manager.query('DELETE FROM staff WHERE club_id = $1', [clubId]);
+      // 26. Delete staff (KEEP SUPER_ADMIN and ADMIN roles)
+      await manager.query(`
+        DELETE FROM staff 
+        WHERE club_id = $1 
+        AND role NOT IN ('SUPER_ADMIN', 'ADMIN')
+      `, [clubId]);
       
       // 27. Delete audit logs (keep the factory reset log that was created before this)
       await manager.query('DELETE FROM audit_logs WHERE club_id = $1 AND action_type != $2', [clubId, 'factory_reset']);
       
-      // 28. Delete user club roles
-      await manager.query('DELETE FROM user_club_roles WHERE club_id = $1', [clubId]);
+      // 28. Delete user club roles (KEEP SUPER_ADMIN and ADMIN roles)
+      await manager.query(`
+        DELETE FROM user_club_roles 
+        WHERE club_id = $1 
+        AND role NOT IN ('SUPER_ADMIN', 'ADMIN')
+      `, [clubId]);
     });
     } catch (error) {
       console.error('Factory reset error:', error);
