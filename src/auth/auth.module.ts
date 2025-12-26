@@ -8,6 +8,7 @@ import { ClubsModule } from '../clubs/clubs.module';
 import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
+import { Staff } from '../clubs/entities/staff.entity';
 import { FinancialTransaction } from '../clubs/entities/financial-transaction.entity';
 import { WaitlistEntry } from '../clubs/entities/waitlist-entry.entity';
 import { Table } from '../clubs/entities/table.entity';
@@ -21,6 +22,7 @@ import { ApiKeyAuthGuard } from './api-key.guard';
       UserTenantRole,
       UserClubRole,
       Player,
+      Staff,
       FinancialTransaction,
       WaitlistEntry,
       Table,
