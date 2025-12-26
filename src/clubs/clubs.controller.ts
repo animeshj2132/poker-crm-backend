@@ -8416,11 +8416,13 @@ export class ClubsController {
    */
   @Delete(':id/fnb/menu/:itemId')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
+  @HttpCode(HttpStatus.OK)
   async deleteMenuItem(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return await this.fnbEnhancedService.deleteMenuItem(clubId, itemId);
+    await this.fnbEnhancedService.deleteMenuItem(clubId, itemId);
+    return { success: true, message: 'Menu item deleted successfully' };
   }
 
   /**
@@ -9339,7 +9341,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/payroll/salary
    */
   @Post(':clubId/payroll/salary')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async processSalary(
@@ -9428,7 +9430,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/salary/:paymentId
    */
   @Get(':clubId/payroll/salary/:paymentId')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getSalaryPaymentById(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9467,7 +9469,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/dealers
    */
   @Get(':clubId/payroll/dealers')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getDealersForPayroll(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9490,7 +9492,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/tips/settings
    */
   @Get(':clubId/payroll/tips/settings')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.DEALER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getTipSettings(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9537,7 +9539,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/payroll/tips/settings
    */
   @Post(':clubId/payroll/tips/settings')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async updateTipSettings(
@@ -9560,7 +9562,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/payroll/tips
    */
   @Post(':clubId/payroll/tips')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async processDealerTips(
@@ -9582,7 +9584,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/tips?page=1&limit=10&search=&startDate=&endDate=&dealerId=&status=
    */
   @Get(':clubId/payroll/tips')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.DEALER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getDealerTips(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9645,7 +9647,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/tips/:dealerId/summary?startDate=&endDate=
    */
   @Get(':clubId/payroll/tips/:dealerId/summary')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getDealerTipsSummary(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9671,7 +9673,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/payroll/cashout
    */
   @Post(':clubId/payroll/cashout')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async processDealerCashout(
@@ -9693,7 +9695,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/payroll/cashout?page=1&limit=10&search=&startDate=&endDate=&dealerId=
    */
   @Get(':clubId/payroll/cashout')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getDealerCashouts(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9805,7 +9807,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/bonuses/staff
    */
   @Post(':clubId/bonuses/staff')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async processStaffBonus(
@@ -9827,7 +9829,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/bonuses/staff
    */
   @Get(':clubId/bonuses/staff')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.DEALER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER, ClubRole.STAFF, ClubRole.DEALER)
   @UseGuards(RolesGuard)
   async getStaffBonuses(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9890,7 +9892,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/bonuses/staff/list
    */
   @Get(':clubId/bonuses/staff/list')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getStaffForBonus(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9912,7 +9914,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/financial-overrides/transactions
    */
   @Get(':clubId/financial-overrides/transactions')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.DEALER, ClubRole.AFFILIATE)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.AFFILIATE)
   @UseGuards(RolesGuard)
   async getAllTransactionsForOverrides(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -9987,7 +9989,7 @@ export class ClubsController {
    * PUT /api/clubs/:clubId/financial-overrides/transactions/:transactionId/edit
    */
   @Put(':clubId/financial-overrides/transactions/:transactionId/edit')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async editTransaction(
@@ -9997,10 +9999,12 @@ export class ClubsController {
     @Headers('x-user-id') userId?: string,
   ) {
     try {
-      const transaction = await this.financialTransactionsService.editTransaction(
+      // Use the financial overrides service to edit ANY transaction type
+      const transaction = await this.financialOverridesService.editAnyTransaction(
         transactionId,
         clubId,
-        editTransactionDto,
+        editTransactionDto.amount,
+        editTransactionDto.reason,
         userId,
       );
       return { success: true, transaction };
@@ -10015,7 +10019,7 @@ export class ClubsController {
    * POST /api/clubs/:clubId/financial-overrides/transactions/:transactionId/cancel
    */
   @Post(':clubId/financial-overrides/transactions/:transactionId/cancel')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async cancelTransactionOverride(

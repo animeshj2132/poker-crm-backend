@@ -102,9 +102,21 @@ export class StorageService {
    * Create signed upload URL for specific bucket
    */
   private async createSignedUploadUrlForBucket(bucket: string, path: string) {
-    const { data, error } = await this.client.storage.from(bucket).createSignedUploadUrl(path);
-    if (error) throw error;
-    return { signedUrl: data.signedUrl, path, publicUrl: this.getPublicUrlForBucket(bucket, path) };
+    const { data, error } = await this.client.storage
+      .from(bucket)
+      .createSignedUploadUrl(path, {
+        upsert: false,
+      });
+    if (error) {
+      this.logger.error(`Failed to create signed upload URL for ${bucket}/${path}:`, error);
+      throw error;
+    }
+    return { 
+      signedUrl: data.signedUrl, 
+      path: data.path || path, 
+      token: data.token,
+      publicUrl: this.getPublicUrlForBucket(bucket, data.path || path) 
+    };
   }
 }
 
