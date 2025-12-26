@@ -5,20 +5,29 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { ChatSession, ChatSessionType, ChatSessionStatus } from '../clubs/entities/chat-session.entity';
+import { ChatMessage, MessageSenderType } from '../clubs/entities/chat-message.entity';
+import { Club } from '../clubs/club.entity';
 
 @Injectable()
 export class PlayerChatService {
   constructor(
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
+    @InjectRepository(ChatSession)
+    private readonly sessionRepo: Repository<ChatSession>,
+    @InjectRepository(ChatMessage)
+    private readonly messageRepo: Repository<ChatMessage>,
+    @InjectRepository(Club)
+    private readonly clubRepo: Repository<Club>,
     private readonly clubsService: ClubsService,
   ) {}
 
   /**
-   * Get chat history (from Supabase gre_chat_messages table via real-time)
+   * Get chat history from unified chat system
    */
   async getChatHistory(
     playerId: string,
@@ -45,14 +54,49 @@ export class PlayerChatService {
         throw new NotFoundException('Player not found');
       }
 
-      // Return empty array - messages are handled by Supabase real-time
-      // Frontend uses Supabase client to subscribe to gre_chat_messages table
+      // Find player's chat session
+      const session = await this.sessionRepo.findOne({
+        where: {
+          club: { id: clubId },
+          player: { id: playerId },
+          sessionType: ChatSessionType.PLAYER
+        }
+      });
+
+      if (!session) {
+        return {
+          messages: [],
+          total: 0,
+          limit,
+          offset
+        };
+      }
+
+      // Get messages for this session
+      const messages = await this.messageRepo.find({
+        where: { session: { id: session.id } },
+        relations: ['senderStaff', 'senderPlayer'],
+        order: { createdAt: 'ASC' },
+        take: limit,
+        skip: offset
+      });
+
+      const total = await this.messageRepo.count({
+        where: { session: { id: session.id } }
+      });
+
       return {
-        messages: [],
-        total: 0,
+        messages: messages.map(msg => ({
+          id: msg.id,
+          message: msg.message,
+          sender: msg.senderType === MessageSenderType.PLAYER ? 'player' : 'staff',
+          sender_name: msg.senderName,
+          timestamp: msg.createdAt.toISOString(),
+          isFromStaff: msg.senderType === MessageSenderType.STAFF
+        })),
+        total,
         limit,
-        offset,
-        note: 'Chat messages are handled via Supabase real-time. Use frontend Supabase client to subscribe.',
+        offset
       };
     } catch (err) {
       console.error('Get chat history error:', err);
@@ -68,9 +112,9 @@ export class PlayerChatService {
   }
 
   /**
-   * Send message (stored in Supabase gre_chat_messages table)
+   * Send message from player - creates/updates session and stores message
    */
-  async sendMessage(playerId: string, clubId: string, message: string) {
+  async sendMessage(playerId: string, clubId: string, message: string, playerName?: string) {
     try {
       // Validate UUIDs
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -94,13 +138,55 @@ export class PlayerChatService {
         throw new NotFoundException('Player not found');
       }
 
-      // Return success - actual message insertion happens via Supabase client in frontend
-      // This maintains the existing real-time architecture
+      const club = await this.clubRepo.findOne({ where: { id: clubId } });
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Find or create chat session for this player
+      let session = await this.sessionRepo.findOne({
+        where: {
+          club: { id: clubId },
+          player: { id: playerId },
+          sessionType: ChatSessionType.PLAYER,
+          status: Not(ChatSessionStatus.CLOSED)
+        },
+        relations: ['player', 'club']
+      });
+
+      // Create session if it doesn't exist
+      if (!session) {
+        session = this.sessionRepo.create({
+          club,
+          player,
+          sessionType: ChatSessionType.PLAYER,
+          subject: message.substring(0, 100), // Use first 100 chars as subject
+          status: ChatSessionStatus.OPEN
+        });
+        session = await this.sessionRepo.save(session);
+      } else {
+        // Update last message time
+        session.lastMessageAt = new Date();
+        await this.sessionRepo.save(session);
+      }
+
+      // Create message
+      const chatMessage = this.messageRepo.create({
+        session,
+        senderType: MessageSenderType.PLAYER,
+        senderPlayer: player,
+        senderName: playerName || player.name,
+        message: message,
+        isRead: false // Staff messages are unread by default
+      });
+
+      const savedMessage = await this.messageRepo.save(chatMessage);
+
       return {
         success: true,
-        message: 'Message sent successfully',
-        timestamp: new Date().toISOString(),
-        note: 'Message should be inserted via Supabase client for real-time delivery',
+        messageId: savedMessage.id,
+        sessionId: session.id,
+        timestamp: savedMessage.createdAt.toISOString(),
       };
     } catch (err) {
       console.error('Send message error:', err);
@@ -116,7 +202,7 @@ export class PlayerChatService {
   }
 
   /**
-   * Get active chat session
+   * Get active chat session from unified chat system
    */
   async getActiveSession(playerId: string, clubId: string) {
     try {
@@ -138,16 +224,42 @@ export class PlayerChatService {
         throw new NotFoundException('Player not found');
       }
 
-      // Return session info - actual session is managed via Supabase gre_chat_sessions
+      // Find active session
+      const session = await this.sessionRepo.findOne({
+        where: {
+          club: { id: clubId },
+          player: { id: playerId },
+          sessionType: ChatSessionType.PLAYER,
+          status: Not(ChatSessionStatus.CLOSED)
+        },
+        relations: ['player', 'club', 'assignedStaff']
+      });
+
+      if (!session) {
+        return {
+          session: null,
+          status: 'none'
+        };
+      }
+
+      if (!session.player) {
+        throw new NotFoundException('Player not found in session');
+      }
+
       return {
         session: {
-          playerId,
-          clubId,
-          playerName: player.name,
-          status: 'active',
-          createdAt: new Date().toISOString(),
+          id: session.id,
+          playerId: session.player.id,
+          clubId: session.club.id,
+          playerName: session.player.name,
+          subject: session.subject,
+          status: session.status,
+          assignedStaffId: session.assignedStaff?.id,
+          assignedStaffName: session.assignedStaff?.name,
+          createdAt: session.createdAt.toISOString(),
+          lastMessageAt: session.lastMessageAt.toISOString()
         },
-        note: 'Chat sessions are managed via Supabase gre_chat_sessions table',
+        status: session.status === ChatSessionStatus.CLOSED ? 'closed' : 'active'
       };
     } catch (err) {
       console.error('Get active session error:', err);

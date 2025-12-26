@@ -451,17 +451,38 @@ export class ChatService {
       ) {
         throw new ForbiddenException('You are not part of this chat session');
       }
+      
+      // Staff chat - create staff message
+      const message = this.messageRepo.create({
+        session,
+        senderType: MessageSenderType.STAFF,
+        senderStaff: sender,
+        senderName: sender.name,
+        message: dto.message,
+        isRead: false
+      });
+
+      return await this.messageRepo.save(message);
+    } else if (session.sessionType === ChatSessionType.PLAYER) {
+      // Player chat - staff is replying to player
+      // Verify staff has access (any staff with player chat access can reply)
+      const message = this.messageRepo.create({
+        session,
+        senderType: MessageSenderType.STAFF,
+        senderStaff: sender,
+        senderName: sender.name,
+        message: dto.message,
+        isRead: false // Player messages are unread by default
+      });
+
+      // Update session last message time
+      session.lastMessageAt = new Date();
+      await this.sessionRepo.save(session);
+
+      return await this.messageRepo.save(message);
+    } else {
+      throw new BadRequestException('Invalid session type');
     }
-
-    const message = this.messageRepo.create({
-      session,
-      senderType: MessageSenderType.STAFF,
-      senderStaff: sender,
-      senderName: sender.name,
-      message: dto.message
-    });
-
-    return await this.messageRepo.save(message);
   }
 
   async getSessionMessages(
@@ -473,7 +494,7 @@ export class ChatService {
   ): Promise<{ messages: ChatMessage[], total: number, page: number, totalPages: number }> {
     const session = await this.sessionRepo.findOne({
       where: { id: sessionId, club: { id: clubId } },
-      relations: ['staffInitiator', 'staffRecipient']
+      relations: ['staffInitiator', 'staffRecipient', 'player']
     });
 
     if (!session) {
@@ -504,6 +525,9 @@ export class ChatService {
       ) {
         throw new ForbiddenException('You do not have access to this chat');
       }
+    } else if (session.sessionType === ChatSessionType.PLAYER) {
+      // For player chat, any staff with access can view (no restriction)
+      // Access is already verified by the role guard
     }
 
     const query = this.messageRepo.createQueryBuilder('message')
@@ -519,18 +543,34 @@ export class ChatService {
       .take(limit)
       .getMany();
 
-    // Mark messages as read
-    await this.messageRepo.update(
-      {
-        session: { id: sessionId },
-        isRead: false,
-        senderStaff: { id: Not(staffId) }
-      },
-      {
-        isRead: true,
-        readAt: new Date()
-      }
-    );
+    // Mark messages as read (only mark player messages as read when staff views, or staff messages when player views)
+    if (session.sessionType === ChatSessionType.PLAYER) {
+      // For player chat: mark player messages as read when staff views
+      await this.messageRepo.update(
+        {
+          session: { id: sessionId },
+          isRead: false,
+          senderType: MessageSenderType.PLAYER
+        },
+        {
+          isRead: true,
+          readAt: new Date()
+        }
+      );
+    } else {
+      // For staff chat: mark other staff's messages as read
+      await this.messageRepo.update(
+        {
+          session: { id: sessionId },
+          isRead: false,
+          senderStaff: { id: Not(staffId) }
+        },
+        {
+          isRead: true,
+          readAt: new Date()
+        }
+      );
+    }
 
     return {
       messages,

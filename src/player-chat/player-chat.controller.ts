@@ -63,6 +63,7 @@ export class PlayerChatController {
       playerId.trim(),
       clubId.trim(),
       body.message.trim(),
+      body.playerName || undefined
     );
   }
 
