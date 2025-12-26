@@ -2597,6 +2597,164 @@ export class ClubsController {
     }
   }
 
+  @Post(':id/push-notifications/:notificationId/send')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
+  @HttpCode(HttpStatus.OK)
+  async sendPushNotification(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only send notifications for your assigned club');
+      }
+
+      return await this.pushNotificationsService.sendNotification(notificationId, clubId);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to send push notification: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Get(':id/notifications/inbox')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.HR, ClubRole.FNB, ClubRole.GRE)
+  async getNotificationInbox(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('recipientType') recipientType?: 'staff' | 'player'
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only access notifications for your assigned club');
+      }
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+
+      const type = recipientType || 'staff';
+      return await this.pushNotificationsService.getInboxNotifications(clubId, userId, type);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get notifications: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Get(':id/notifications/unread-count')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.HR, ClubRole.FNB, ClubRole.GRE)
+  async getUnreadNotificationCount(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('recipientType') recipientType?: 'staff' | 'player'
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only access notifications for your assigned club');
+      }
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+
+      const type = recipientType || 'staff';
+      const count = await this.pushNotificationsService.getUnreadCount(clubId, userId, type);
+      return { unreadCount: count };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get unread count: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/notifications/:notificationId/mark-read')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.HR, ClubRole.FNB, ClubRole.GRE)
+  @HttpCode(HttpStatus.OK)
+  async markNotificationAsRead(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
+    @Body() body?: { recipientType?: 'staff' | 'player' }
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only mark notifications for your assigned club');
+      }
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+
+      const type = body?.recipientType || 'staff';
+      return await this.pushNotificationsService.markAsRead(clubId, notificationId, userId, type);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to mark notification as read: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Post(':id/notifications/mark-all-read')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.HR, ClubRole.FNB, ClubRole.GRE)
+  @HttpCode(HttpStatus.OK)
+  async markAllNotificationsAsRead(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body?: { recipientType?: 'staff' | 'player' }
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      if (headerClubId && headerClubId !== clubId) {
+        throw new ForbiddenException('You can only mark notifications for your assigned club');
+      }
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+
+      const type = body?.recipientType || 'staff';
+      return await this.pushNotificationsService.markAllAsRead(clubId, userId, type);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to mark all notifications as read: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   @Post(':id/push-notifications/upload-url')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   async createPushNotificationUploadUrl(

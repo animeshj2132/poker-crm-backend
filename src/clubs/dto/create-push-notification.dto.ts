@@ -32,6 +32,11 @@ export class CreatePushNotificationDto {
   customPlayerIds?: string[];
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customStaffIds?: string[];
+
+  @IsOptional()
   @IsEnum(NotificationType)
   notificationType?: NotificationType;
 

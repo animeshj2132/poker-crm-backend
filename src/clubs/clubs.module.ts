@@ -13,6 +13,7 @@ import { CreditRequest } from './entities/credit-request.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { VipProduct } from './entities/vip-product.entity';
 import { PushNotification } from './entities/push-notification.entity';
+import { NotificationReadStatus } from './entities/notification-read-status.entity';
 import { ClubSettings } from './entities/club-settings.entity';
 import { AuditLog } from './entities/audit-log.entity';
 import { WaitlistEntry } from './entities/waitlist-entry.entity';
@@ -78,6 +79,7 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
       FinancialTransaction,
       VipProduct,
       PushNotification,
+      NotificationReadStatus,
       ClubSettings,
       AuditLog,
       WaitlistEntry,

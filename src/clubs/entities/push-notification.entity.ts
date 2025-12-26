@@ -17,6 +17,14 @@ export enum NotificationTargetType {
   WAITLIST_PLAYERS = 'waitlist_players',
   CUSTOM_GROUP = 'custom_group',
   ALL_STAFF = 'all_staff',
+  STAFF_ADMIN = 'staff_admin',
+  STAFF_MANAGER = 'staff_manager',
+  STAFF_CASHIER = 'staff_cashier',
+  STAFF_DEALER = 'staff_dealer',
+  STAFF_HR = 'staff_hr',
+  STAFF_FNB = 'staff_fnb',
+  STAFF_GRE = 'staff_gre',
+  STAFF_CUSTOM = 'staff_custom',
 }
 
 export enum NotificationType {
@@ -46,6 +54,9 @@ export class PushNotification {
 
   @Column({ type: 'jsonb', nullable: true, name: 'custom_player_ids' })
   customPlayerIds!: string[] | null; // For custom_group target type
+
+  @Column({ type: 'jsonb', nullable: true, name: 'custom_staff_ids' })
+  customStaffIds!: string[] | null; // For staff_custom target type
 
   @Column({ type: 'varchar', default: NotificationType.PLAYER, name: 'notification_type' })
   notificationType!: NotificationType; // 'player' or 'staff'
