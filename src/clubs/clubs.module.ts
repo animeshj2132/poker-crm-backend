@@ -5,6 +5,7 @@ import { ClubsService } from './clubs.service';
 import { ClubsController } from './clubs.controller';
 import { Tenant } from '../tenants/tenant.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
+import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UsersModule } from '../users/users.module';
 import { StorageModule } from '../storage/storage.module';
 import { Staff } from './entities/staff.entity';
@@ -71,6 +72,7 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
       Club,
       Tenant,
       UserClubRole,
+      UserTenantRole,
       Staff,
       CreditRequest,
       FinancialTransaction,

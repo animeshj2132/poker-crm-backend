@@ -10018,6 +10018,26 @@ export class ClubsController {
   }
 
   /**
+   * Get all chatable users for a club (staff + Super Admin + Admin users)
+   * GET /api/clubs/:clubId/chat/chatable-users
+   */
+  @Get(':clubId/chat/chatable-users')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
+  @UseGuards(RolesGuard)
+  async getChatableUsers(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    try {
+      const users = await this.chatService.getChatableUsers(clubId, tenantId);
+      return { success: true, users };
+    } catch (error) {
+      console.error('Error in getChatableUsers:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get staff chat sessions
    * GET /api/clubs/:clubId/chat/staff/sessions
    */
@@ -10136,6 +10156,22 @@ export class ClubsController {
     @Body() dto: UpdateChatSessionDto,
   ) {
     const session = await this.chatService.updateChatSession(clubId, sessionId, dto);
+    return { success: true, session };
+  }
+
+  /**
+   * Archive chat session (one-sided deletion)
+   * DELETE /api/clubs/:clubId/chat/sessions/:sessionId
+   */
+  @Delete(':clubId/chat/sessions/:sessionId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.FNB, ClubRole.STAFF, ClubRole.DEALER)
+  @UseGuards(RolesGuard)
+  async archiveChatSession(
+    @Param('clubId', ParseUUIDPipe) clubId: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Headers('x-user-id') userId?: string,
+  ) {
+    const session = await this.chatService.archiveChatSession(clubId, sessionId, userId || '');
     return { success: true, session };
   }
 

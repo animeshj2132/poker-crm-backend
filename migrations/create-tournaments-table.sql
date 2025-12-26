@@ -60,3 +60,4 @@ COMMENT ON COLUMN tournaments.status IS 'Tournament status: scheduled, active, c
 COMMENT ON COLUMN tournament_players.finishing_position IS 'Final position in tournament (1 = winner)';
 COMMENT ON COLUMN tournament_players.prize_amount IS 'Prize money won by player';
 
+

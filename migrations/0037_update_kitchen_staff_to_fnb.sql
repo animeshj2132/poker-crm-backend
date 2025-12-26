@@ -8,3 +8,4 @@ WHERE role = 'Kitchen Staff';
 -- Also update any user_club_roles that might have been created with the old mapping
 -- Note: This assumes the mapping was already correct in the service, but we're ensuring consistency
 
+

@@ -31,3 +31,4 @@ COMMENT ON COLUMN rake_collections.chip_denomination IS 'Chip denominations used
 COMMENT ON COLUMN rake_collections.total_rake_amount IS 'Total rake amount collected in INR';
 COMMENT ON COLUMN rake_collections.collected_by IS 'User ID of the manager who collected the rake';
 
+
