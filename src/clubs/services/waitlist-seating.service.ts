@@ -276,7 +276,16 @@ export class WaitlistSeatingService {
       minBuyIn: data.minBuyIn || null,
       maxBuyIn: data.maxBuyIn || null,
       notes: data.notes || null,
-      status: TableStatus.AVAILABLE
+      status: TableStatus.AVAILABLE,
+      // Rummy-specific fields (nullable, so poker tables are unaffected)
+      rummyVariant: (data as any).rummyVariant || null,
+      pointsValue: (data as any).pointsValue || null,
+      numberOfDeals: (data as any).numberOfDeals || null,
+      dropPoints: (data as any).dropPoints || null,
+      maxPoints: (data as any).maxPoints || null,
+      dealDuration: (data as any).dealDuration || null,
+      entryFee: (data as any).entryFee || null,
+      minPlayers: (data as any).minPlayers || null,
     });
 
     const savedTable = await this.tableRepo.save(table);
@@ -317,6 +326,15 @@ export class WaitlistSeatingService {
     notes?: string;
     reservedFor?: string;
     reservedUntil?: Date;
+    // Rummy-specific fields
+    rummyVariant?: string;
+    pointsValue?: number;
+    numberOfDeals?: number;
+    dropPoints?: number;
+    maxPoints?: number;
+    dealDuration?: number;
+    entryFee?: number;
+    minPlayers?: number;
   }) {
     const table = await this.getTable(clubId, tableId);
 
@@ -354,6 +372,16 @@ export class WaitlistSeatingService {
     if (data.notes !== undefined) table.notes = data.notes || null;
     if (data.reservedFor !== undefined) table.reservedFor = data.reservedFor || null;
     if (data.reservedUntil !== undefined) table.reservedUntil = data.reservedUntil || null;
+
+    // Update rummy-specific fields if provided
+    if (data.rummyVariant !== undefined) table.rummyVariant = data.rummyVariant || null;
+    if (data.pointsValue !== undefined) table.pointsValue = data.pointsValue || null;
+    if (data.numberOfDeals !== undefined) table.numberOfDeals = data.numberOfDeals || null;
+    if (data.dropPoints !== undefined) table.dropPoints = data.dropPoints || null;
+    if (data.maxPoints !== undefined) table.maxPoints = data.maxPoints || null;
+    if (data.dealDuration !== undefined) table.dealDuration = data.dealDuration || null;
+    if (data.entryFee !== undefined) table.entryFee = data.entryFee || null;
+    if (data.minPlayers !== undefined) table.minPlayers = data.minPlayers || null;
 
     const savedTable = await this.tableRepo.save(table);
     

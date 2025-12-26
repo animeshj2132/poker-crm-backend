@@ -21,7 +21,8 @@ export enum TableType {
   CASH = 'CASH',
   TOURNAMENT = 'TOURNAMENT',
   HIGH_STAKES = 'HIGH_STAKES',
-  PRIVATE = 'PRIVATE'
+  PRIVATE = 'PRIVATE',
+  RUMMY = 'RUMMY'
 }
 
 @Entity({ name: 'tables' })
@@ -62,6 +63,31 @@ export class Table {
 
   @Column({ name: 'reserved_until', type: 'timestamp', nullable: true })
   reservedUntil!: Date | null;
+
+  // Rummy-specific fields (nullable, so poker tables are unaffected)
+  @Column({ name: 'rummy_variant', type: 'varchar', length: 100, nullable: true })
+  rummyVariant!: string | null;
+
+  @Column({ name: 'points_value', type: 'decimal', precision: 10, scale: 2, nullable: true })
+  pointsValue!: number | null;
+
+  @Column({ name: 'number_of_deals', type: 'int', nullable: true })
+  numberOfDeals!: number | null;
+
+  @Column({ name: 'drop_points', type: 'int', nullable: true })
+  dropPoints!: number | null;
+
+  @Column({ name: 'max_points', type: 'int', nullable: true })
+  maxPoints!: number | null;
+
+  @Column({ name: 'deal_duration', type: 'int', nullable: true })
+  dealDuration!: number | null;
+
+  @Column({ name: 'entry_fee', type: 'decimal', precision: 10, scale: 2, nullable: true })
+  entryFee!: number | null;
+
+  @Column({ name: 'min_players', type: 'int', nullable: true })
+  minPlayers!: number | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;

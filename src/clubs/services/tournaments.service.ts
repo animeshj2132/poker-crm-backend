@@ -89,43 +89,57 @@ export class TournamentsService {
       ? dto.custom_clock_pause_rules
       : dto.clock_pause_rules;
 
+    // Store poker-specific fields in structure JSONB if they exist, otherwise use basic columns
+    // For rummy tournaments, use basic columns + rummy fields
+    const structureData = dto.rummy_variant ? null : {
+      tournament_type: tournamentType,
+      entry_fee: dto.entry_fee || 0,
+      starting_chips: dto.starting_chips,
+      blind_structure: blindStructure,
+      number_of_levels: dto.number_of_levels || 15,
+      minutes_per_level: dto.minutes_per_level || 15,
+      break_structure: breakStructure,
+      break_duration: dto.break_duration || 10,
+      late_registration: dto.late_registration || 60,
+      payout_structure: payoutStructure,
+      seat_draw_method: seatDrawMethod || 'Random',
+      clock_pause_rules: clockPauseRules || 'Standard',
+      allow_rebuys: dto.allow_rebuys || false,
+      allow_addon: dto.allow_addon || false,
+      allow_reentry: dto.allow_reentry || false,
+      bounty_amount: dto.bounty_amount || 0,
+    };
+
     const query = `
       INSERT INTO tournaments (
-        club_id, tournament_id, name, tournament_type, buy_in, entry_fee,
-        starting_chips, blind_structure, number_of_levels, minutes_per_level,
-        break_structure, break_duration, late_registration, payout_structure,
-        seat_draw_method, clock_pause_rules, allow_rebuys, allow_addon, 
-        allow_reentry, bounty_amount, max_players, start_time, status, created_by
+        club_id, name, buy_in, prize_pool, max_players, start_time, status, structure,
+        rummy_variant, number_of_deals, points_per_deal, drop_points, max_points,
+        deal_duration, min_players
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19, $20, $21, $22, 'scheduled', $23
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
       ) RETURNING *
     `;
 
+    // Set default start_time if not provided (required field)
+    const startTime = dto.start_time || new Date(Date.now() + 24 * 60 * 60 * 1000); // Default to tomorrow if not provided
+
     const values = [
       clubId,
-      tournamentId,
       dto.name,
-      tournamentType,
       dto.buy_in,
-      dto.entry_fee || 0,
-      dto.starting_chips,
-      blindStructure,
-      dto.number_of_levels || 15,
-      dto.minutes_per_level || 15,
-      breakStructure,
-      dto.break_duration || 10,
-      dto.late_registration || 60,
-      payoutStructure,
-      seatDrawMethod || 'Random',
-      clockPauseRules || 'Standard',
-      dto.allow_rebuys || false,
-      dto.allow_addon || false,
-      dto.allow_reentry || false,
-      dto.bounty_amount || 0,
+      dto.prize_pool || 0,
       dto.max_players || 100,
-      dto.start_time || null,
-      userId,
+      startTime,
+      'scheduled',
+      structureData ? JSON.stringify(structureData) : null,
+      // Rummy-specific fields
+      dto.rummy_variant || null,
+      dto.number_of_deals || null,
+      dto.points_per_deal || null,
+      dto.drop_points || null,
+      dto.max_points || null,
+      dto.deal_duration || null,
+      dto.min_players || null,
     ];
 
     const result = await this.dataSource.query(query, values);
@@ -251,6 +265,44 @@ export class TournamentsService {
       values.push(dto.status);
     }
 
+    // Rummy-specific fields (nullable, so poker tournaments are unaffected)
+    if (dto.rummy_variant !== undefined) {
+      updates.push(`rummy_variant = $${paramIndex++}`);
+      values.push(dto.rummy_variant || null);
+    }
+    if (dto.number_of_deals !== undefined) {
+      updates.push(`number_of_deals = $${paramIndex++}`);
+      values.push(dto.number_of_deals || null);
+    }
+    if (dto.points_per_deal !== undefined) {
+      updates.push(`points_per_deal = $${paramIndex++}`);
+      values.push(dto.points_per_deal || null);
+    }
+    if (dto.drop_points !== undefined) {
+      updates.push(`drop_points = $${paramIndex++}`);
+      values.push(dto.drop_points || null);
+    }
+    if (dto.max_points !== undefined) {
+      updates.push(`max_points = $${paramIndex++}`);
+      values.push(dto.max_points || null);
+    }
+    if (dto.deal_duration !== undefined) {
+      updates.push(`deal_duration = $${paramIndex++}`);
+      values.push(dto.deal_duration || null);
+    }
+    if (dto.prize_pool !== undefined) {
+      updates.push(`prize_pool = $${paramIndex++}`);
+      values.push(dto.prize_pool || null);
+    }
+    if (dto.min_players !== undefined) {
+      updates.push(`min_players = $${paramIndex++}`);
+      values.push(dto.min_players || null);
+    }
+
+    if (updates.length === 0) {
+      throw new BadRequestException('No fields to update');
+    }
+
     updates.push(`updated_at = NOW()`);
     values.push(clubId, tournamentId);
 
@@ -373,32 +425,56 @@ export class TournamentsService {
     // Verify tournament exists
     await this.getTournamentById(clubId, tournamentId);
 
-    const query = `
+    // First try tournament_players table
+    const query1 = `
       SELECT 
         p.id,
         p.player_id,
         p.name,
         p.email,
-        p.mobile,
+        p.phone_number as mobile,
         tp.registered_at,
         tp.seat_number,
         tp.table_number,
         tp.finishing_position,
         tp.prize_amount,
         tp.is_active,
-        tr.status as registration_status
-      FROM players p
-      LEFT JOIN tournament_players tp ON p.id = tp.player_id AND tp.tournament_id = $2
-      LEFT JOIN tournament_registrations tr ON p.id = tr.player_id AND tr.tournament_id = $2
-      WHERE p.club_id = $1 
-        AND (tp.player_id IS NOT NULL OR tr.player_id IS NOT NULL)
+        'registered' as registration_status
+      FROM tournament_players tp
+      INNER JOIN players p ON p.id = tp.player_id
+      WHERE tp.tournament_id = $1 AND p.club_id = $2
       ORDER BY 
         CASE WHEN tp.finishing_position IS NOT NULL THEN tp.finishing_position ELSE 9999 END,
-        tr.registered_at DESC
+        tp.registered_at DESC
     `;
 
-    const result = await this.dataSource.query(query, [clubId, tournamentId]);
-    return result;
+    let result = await this.dataSource.query(query1, [tournamentId, clubId]);
+    
+    // If no results, try tournament_registrations table
+    if (!result || result.length === 0) {
+      const query2 = `
+        SELECT 
+          p.id,
+          p.player_id,
+          p.name,
+          p.email,
+          p.phone_number as mobile,
+          tr.registered_at,
+          NULL as seat_number,
+          NULL as table_number,
+          NULL as finishing_position,
+          NULL as prize_amount,
+          true as is_active,
+          tr.status as registration_status
+        FROM tournament_registrations tr
+        INNER JOIN players p ON p.id = tr.player_id
+        WHERE tr.tournament_id = $1 AND p.club_id = $2
+        ORDER BY tr.registered_at DESC
+      `;
+      result = await this.dataSource.query(query2, [tournamentId, clubId]);
+    }
+
+    return result || [];
   }
 
   // Get tournament winners

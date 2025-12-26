@@ -3911,6 +3911,15 @@ export class ClubsController {
             minBuyIn: table.minBuyIn ? Number(table.minBuyIn) : null,
             maxBuyIn: table.maxBuyIn ? Number(table.maxBuyIn) : null,
             notes: table.notes || null,
+            // Rummy-specific fields (nullable, so poker tables are unaffected)
+            rummyVariant: table.rummyVariant || null,
+            pointsValue: table.pointsValue ? Number(table.pointsValue) : null,
+            numberOfDeals: table.numberOfDeals || null,
+            dropPoints: table.dropPoints || null,
+            maxPoints: table.maxPoints || null,
+            dealDuration: table.dealDuration || null,
+            entryFee: table.entryFee ? Number(table.entryFee) : null,
+            minPlayers: table.minPlayers || null,
             createdAt: table.createdAt,
             updatedAt: table.updatedAt
           };
@@ -8817,6 +8826,7 @@ export class ClubsController {
         videoUrl: club.videoUrl,
         skinColor: club.skinColor,
         gradient: club.gradient,
+        rummyEnabled: club.rummyEnabled || false,
         tenant: {
           id: club.tenant.id,
           name: club.tenant.name
@@ -8915,6 +8925,33 @@ export class ClubsController {
     }
   }
 
+  /**
+   * Update club rummy enabled status
+   * PUT /api/clubs/:id/rummy-enabled
+   */
+  @Put(':id/rummy-enabled')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async updateClubRummyEnabled(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { rummyEnabled: boolean }
+  ) {
+    try {
+      const club = await this.clubsService.updateClubRummyEnabled(clubId, body.rummyEnabled);
+      
+      return {
+        success: true,
+        club: {
+          id: club.id,
+          name: club.name,
+          rummyEnabled: club.rummyEnabled
+        }
+      };
+    } catch (error) {
+      console.error('Error in updateClubRummyEnabled:', error);
+      throw error;
+    }
+  }
+
   // =========================================================================
   // TOURNAMENTS
   // =========================================================================
@@ -8924,6 +8961,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/tournaments
    */
   @Get(':clubId/tournaments')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   async getTournaments(@Param('clubId', new ParseUUIDPipe()) clubId: string) {
     try {
       const tournaments = await this.tournamentsService.getTournaments(clubId);
@@ -8939,6 +8977,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/tournaments/:tournamentId
    */
   @Get(':clubId/tournaments/:tournamentId')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
   async getTournamentById(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,

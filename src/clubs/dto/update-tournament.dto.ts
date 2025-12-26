@@ -107,5 +107,38 @@ export class UpdateTournamentDto {
   @IsOptional()
   @IsString()
   custom_clock_pause_rules?: string;
+
+  // Rummy-specific fields (optional)
+  @IsOptional()
+  @IsString()
+  rummy_variant?: string;
+
+  @IsOptional()
+  @IsNumber()
+  number_of_deals?: number;
+
+  @IsOptional()
+  @IsNumber()
+  points_per_deal?: number;
+
+  @IsOptional()
+  @IsNumber()
+  drop_points?: number;
+
+  @IsOptional()
+  @IsNumber()
+  max_points?: number;
+
+  @IsOptional()
+  @IsNumber()
+  deal_duration?: number;
+
+  @IsOptional()
+  @IsNumber()
+  prize_pool?: number;
+
+  @IsOptional()
+  @IsNumber()
+  min_players?: number;
 }
 
