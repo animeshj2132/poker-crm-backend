@@ -548,6 +548,40 @@ export class ClubsController {
     }
   }
 
+  /**
+   * PUBLIC ENDPOINT: Get club branding information (no auth required)
+   * This endpoint is used by the player portal to fetch club branding (logo, colors, etc.)
+   * Returns only public branding information, no sensitive data
+   */
+  @Get(':id/branding')
+  async getClubBranding(
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Return only public branding information
+      return {
+        id: club.id,
+        name: club.name,
+        code: club.code,
+        logoUrl: club.logoUrl,
+        videoUrl: club.videoUrl,
+        skinColor: club.skinColor,
+        gradient: club.gradient,
+        termsAndConditions: club.termsAndConditions,
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get club branding: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   @Get(':id')
   @UseGuards(RolesGuard)
   @Roles(TenantRole.SUPER_ADMIN, GlobalRole.MASTER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.STAFF, ClubRole.AFFILIATE, ClubRole.CASHIER, ClubRole.GRE, ClubRole.FNB, ClubRole.DEALER)
