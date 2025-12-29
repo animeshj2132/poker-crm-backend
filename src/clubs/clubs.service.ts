@@ -465,21 +465,21 @@ export class ClubsService {
       // 25. Delete players
       await manager.query('DELETE FROM players WHERE club_id = $1', [clubId]);
       
-      // 26. Delete staff (KEEP SUPER_ADMIN and ADMIN roles)
+      // 26. Delete staff (KEEP Super Admin and Admin roles)
       await manager.query(`
         DELETE FROM staff 
         WHERE club_id = $1 
-        AND role NOT IN ('SUPER_ADMIN', 'ADMIN')
+        AND role NOT IN ('Super Admin', 'Admin')
       `, [clubId]);
       
       // 27. Delete audit logs (keep the factory reset log that was created before this)
       await manager.query('DELETE FROM audit_logs WHERE club_id = $1 AND action_type != $2', [clubId, 'factory_reset']);
       
-      // 28. Delete user club roles (KEEP SUPER_ADMIN and ADMIN roles)
+      // 28. Delete user club roles (KEEP ADMIN role only - SUPER_ADMIN is tenant-level, not in this table)
       await manager.query(`
         DELETE FROM user_club_roles 
         WHERE club_id = $1 
-        AND role NOT IN ('SUPER_ADMIN', 'ADMIN')
+        AND role != 'ADMIN'
       `, [clubId]);
     });
     } catch (error) {

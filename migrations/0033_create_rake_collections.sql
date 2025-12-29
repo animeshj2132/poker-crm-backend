@@ -32,3 +32,7 @@ COMMENT ON COLUMN rake_collections.total_rake_amount IS 'Total rake amount colle
 COMMENT ON COLUMN rake_collections.collected_by IS 'User ID of the manager who collected the rake';
 
 
+
+
+
+

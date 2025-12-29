@@ -12,3 +12,7 @@ CREATE INDEX IF NOT EXISTS idx_clubs_rummy_enabled ON clubs(rummy_enabled) WHERE
 -- Add comment for documentation
 COMMENT ON COLUMN clubs.rummy_enabled IS 'When enabled, the club will show Rummy-specific features in staff and player portals';
 
+
+
+
+

@@ -61,3 +61,7 @@ COMMENT ON COLUMN tournament_players.finishing_position IS 'Final position in to
 COMMENT ON COLUMN tournament_players.prize_amount IS 'Prize money won by player';
 
 
+
+
+
+

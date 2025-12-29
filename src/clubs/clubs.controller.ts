@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Request, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Req, Request, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
@@ -343,7 +343,8 @@ export class ClubsController {
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async create(
     @Headers('x-tenant-id') tenantId: string,
-    @Body() dto: CreateClubDto
+    @Body() dto: CreateClubDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID
@@ -370,7 +371,38 @@ export class ClubsController {
         throw new BadRequestException('Club name cannot exceed 200 characters');
       }
 
-      return await this.clubsService.create(tenantId.trim(), dto.name.trim());
+      const club = await this.clubsService.create(tenantId.trim(), dto.name.trim());
+      
+      // Audit log: Create club (tenant-level operation)
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && club) {
+          const user = await this.usersService.findById(userId);
+          
+          await this.auditLogsService.logAction({
+            clubId: club.id,
+            staffId: userId,
+            staffName: user?.displayName || user?.email || 'Unknown',
+            staffRole: 'SUPER_ADMIN',
+            actionType: 'club_created',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Created club: ${dto.name.trim()} (Tenant: ${tenantId.trim()})`,
+            targetType: 'club',
+            targetId: club.id,
+            targetName: dto.name.trim(),
+            metadata: { 
+              clubName: dto.name.trim(),
+              tenantId: tenantId.trim()
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club creation:', auditError);
+      }
+      
+      return club;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ConflictException) {
@@ -384,7 +416,8 @@ export class ClubsController {
   @Roles(TenantRole.SUPER_ADMIN)
   async createClubLogoUploadUrl(
     @Headers('x-tenant-id') tenantId: string,
-    @Param('id', new ParseUUIDPipe()) id: string
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID
@@ -402,7 +435,40 @@ export class ClubsController {
       await this.clubsService.validateClubBelongsToTenant(id, tenantId.trim());
 
       const path = `tenants/${tenantId.trim()}/clubs/${id}/logo.png`;
-      return await this.storageService.createSignedUploadUrl(path);
+      const uploadUrl = await this.storageService.createSignedUploadUrl(path);
+      
+      // Audit log: Create club logo upload URL
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(id);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId: id,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'SUPER_ADMIN',
+            actionType: 'club_logo_upload_url_created',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Created logo upload URL for club ${club.name}`,
+            targetType: 'club',
+            targetId: id,
+            targetName: club.name,
+            metadata: { 
+              clubName: club.name,
+              tenantId: tenantId.trim()
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for logo upload URL creation:', auditError);
+      }
+      
+      return uploadUrl;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -419,7 +485,9 @@ export class ClubsController {
   async assignAdmin(
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: AssignAdminDto
+    @Body() dto: AssignAdminDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID
@@ -464,6 +532,37 @@ export class ClubsController {
       }
 
       await this.usersService.assignClubRole(user.id, clubId, ClubRole.ADMIN);
+      
+      // Audit log: Create admin
+      try {
+        if (userId) {
+          const actorUser = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === actorUser?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || actorUser?.displayName || actorUser?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'admin_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Assigned admin role to ${dto.email}${dto.displayName ? ` (${dto.displayName})` : ''}`,
+            targetType: 'user',
+            targetId: user.id,
+            targetName: dto.displayName || dto.email,
+            metadata: { 
+              email: dto.email,
+              displayName: dto.displayName
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for admin assignment:', auditError);
+      }
+      
       return { message: 'Admin assigned successfully', userId: user.id };
     } catch (e) {
       // Re-throw known exceptions
@@ -513,7 +612,9 @@ export class ClubsController {
   async removeAdmin(
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('userId', new ParseUUIDPipe()) userId: string
+    @Param('userId', new ParseUUIDPipe()) userId: string,
+    @Headers('x-user-id') actorUserId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID
@@ -536,8 +637,37 @@ export class ClubsController {
       // Edge case: Validate club belongs to tenant
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
 
-      // Note: removeClubRole will handle the case where the role doesn't exist
+      // Audit log: Delete admin (before removal)
+      try {
+        if (actorUserId) {
+          const actorUser = await this.usersService.findById(actorUserId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === actorUserId || s.email === actorUser?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || actorUserId,
+            staffName: staff?.name || actorUser?.displayName || actorUser?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'admin_deleted',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Removed admin role from ${targetUser.displayName || targetUser.email}`,
+            targetType: 'user',
+            targetId: targetUser.id,
+            targetName: targetUser.displayName || targetUser.email,
+            metadata: { 
+              email: targetUser.email,
+              displayName: targetUser.displayName
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for admin removal:', auditError);
+      }
 
+      // Note: removeClubRole will handle the case where the role doesn't exist
       await this.usersService.removeClubRole(userId, clubId, ClubRole.ADMIN);
     } catch (e) {
       // Re-throw known exceptions
@@ -668,8 +798,10 @@ export class ClubsController {
   async createClubUser(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateClubUserDto
+    @Body() dto: CreateClubUserDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate email format
@@ -723,6 +855,38 @@ export class ClubsController {
         clubId,
         dto.role
       );
+
+      // Audit log: Create club user
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'club_user_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `${result.isExistingUser ? 'Assigned' : 'Created'} user ${dto.email} with role ${dto.role}${result.roleAlreadyAssigned ? ' (role already assigned)' : ''}`,
+            targetType: 'user',
+            targetId: result.user.id,
+            targetName: result.user.displayName || dto.email,
+            metadata: { 
+              email: dto.email,
+              role: dto.role,
+              isExistingUser: result.isExistingUser,
+              roleAlreadyAssigned: result.roleAlreadyAssigned
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club user creation:', auditError);
+      }
 
       return {
         message: result.roleAlreadyAssigned 
@@ -1038,8 +1202,10 @@ export class ClubsController {
   async createStaff(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateStaffDto
+    @Body() dto: CreateStaffDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate all required fields
@@ -1089,6 +1255,37 @@ export class ClubsController {
         panDocumentUrl: dto.panDocumentUrl,
         customRoleName: dto.customRoleName,
       }, 'system'); // createdBy can be enhanced later
+
+      // Audit log: Create staff
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'staff_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Created staff member ${result.name} with role ${result.role}${dto.email ? ` (${dto.email})` : ''}`,
+            targetType: 'staff',
+            targetId: result.id,
+            targetName: result.name,
+            metadata: { 
+              email: dto.email,
+              role: dto.role,
+              employeeId: dto.employeeId
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff creation:', auditError);
+      }
       
       return { success: true, staff: result, tempPassword: result.tempPasswordPlainText };
     } catch (e) {
@@ -1106,9 +1303,11 @@ export class ClubsController {
   async updateStaff(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
-    @Body() dto: UpdateStaffDto
+    @Body() dto: UpdateStaffDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate at least one field is provided
@@ -1160,6 +1359,51 @@ export class ClubsController {
         panDocumentUrl: dto.panDocumentUrl,
         customRoleName: dto.customRoleName,
       });
+
+      // Audit log: Update staff
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.name !== undefined && dto.name !== existingStaff.name) {
+            changes.push(`name: ${existingStaff.name} → ${dto.name}`);
+          }
+          if (dto.email !== undefined && dto.email !== existingStaff.email) {
+            changes.push(`email: ${existingStaff.email || 'null'} → ${dto.email || 'null'}`);
+          }
+          if (dto.phone !== undefined && dto.phone !== existingStaff.phone) {
+            changes.push(`phone: ${existingStaff.phone || 'null'} → ${dto.phone || 'null'}`);
+          }
+          if (dto.employeeId !== undefined) {
+            changes.push('employeeId updated');
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'staff_updated',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Updated staff member ${existingStaff.name}: ${changes.join(', ')}`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              changes: changes,
+              previousName: existingStaff.name,
+              previousEmail: existingStaff.email
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff update:', auditError);
+      }
       
       return { success: true, staff: updated };
     } catch (e) {
@@ -1177,8 +1421,10 @@ export class ClubsController {
   async removeStaff(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('staffId', new ParseUUIDPipe()) staffId: string
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate club exists
@@ -1201,6 +1447,37 @@ export class ClubsController {
       const existingStaff = await this.staffService.findOne(staffId, clubId);
       if (!existingStaff) {
         throw new NotFoundException('Staff member not found');
+      }
+
+      // Audit log: Delete staff (before deletion)
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'staff_deleted',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Deleted staff member ${existingStaff.name} (${existingStaff.role})${existingStaff.email ? ` (${existingStaff.email})` : ''}`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              email: existingStaff.email,
+              role: existingStaff.role,
+              employeeId: existingStaff.employeeId
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff deletion:', auditError);
       }
 
       await this.staffService.remove(staffId, clubId);
@@ -1227,9 +1504,42 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Headers('x-user-id') userId: string,
     @Body() dto: CreateStaffDto,
+    @Req() req?: Request
   ) {
     try {
       const staff = await this.staffManagementService.createStaff(clubId, dto, userId);
+      
+      // Audit log: Create staff member (new)
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_member_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Created staff member ${staff.name} with role ${staff.role}${dto.email ? ` (${dto.email})` : ''}`,
+            targetType: 'staff',
+            targetId: staff.id,
+            targetName: staff.name,
+            metadata: { 
+              email: dto.email,
+              role: dto.role,
+              employeeId: dto.employeeId
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff member creation:', auditError);
+      }
+      
       return { success: true, staff, message: 'Staff member created successfully' };
     } catch (error) {
       console.error('Error in createStaffMember:', error);
@@ -1293,9 +1603,60 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
     @Body() dto: Partial<CreateStaffDto>,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing staff for audit log
+      const existingStaff = await this.staffManagementService.getStaffById(clubId, staffId);
+      
       const staff = await this.staffManagementService.updateStaff(clubId, staffId, dto);
+      
+      // Audit log: Update staff member
+      try {
+        if (userId && existingStaff) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.name !== undefined && dto.name !== existingStaff.name) {
+            changes.push(`name: ${existingStaff.name} → ${dto.name}`);
+          }
+          if (dto.email !== undefined && dto.email !== existingStaff.email) {
+            changes.push(`email: ${existingStaff.email || 'null'} → ${dto.email || 'null'}`);
+          }
+          if (dto.phone !== undefined && dto.phone !== existingStaff.phone) {
+            changes.push(`phone: ${existingStaff.phone || 'null'} → ${dto.phone || 'null'}`);
+          }
+          if (dto.role !== undefined && dto.role !== existingStaff.role) {
+            changes.push(`role: ${existingStaff.role} → ${dto.role}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_member_updated',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Updated staff member ${existingStaff.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              changes: changes,
+              previousName: existingStaff.name,
+              previousEmail: existingStaff.email
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff member update:', auditError);
+      }
+      
       return { success: true, staff, message: 'Staff member updated successfully' };
     } catch (error) {
       console.error('Error in updateStaffMember:', error);
@@ -1314,9 +1675,45 @@ export class ClubsController {
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
     @Headers('x-user-id') userId: string,
     @Body() dto: SuspendStaffDto,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing staff for audit log
+      const existingStaff = await this.staffManagementService.getStaffById(clubId, staffId);
+      
       const staff = await this.staffManagementService.suspendStaff(clubId, staffId, dto.reason, userId);
+      
+      // Audit log: Suspend staff member
+      try {
+        if (userId && existingStaff) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_member_suspended',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Suspended staff member ${existingStaff.name} (${existingStaff.role}) - Reason: ${dto.reason}`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              email: existingStaff.email,
+              role: existingStaff.role,
+              reason: dto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff member suspension:', auditError);
+      }
+      
       return { success: true, staff, message: 'Staff member suspended successfully' };
     } catch (error) {
       console.error('Error in suspendStaffMember:', error);
@@ -1332,9 +1729,45 @@ export class ClubsController {
   async reactivateStaffMember(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing staff for audit log
+      const existingStaff = await this.staffManagementService.getStaffById(clubId, staffId);
+      
       const staff = await this.staffManagementService.reactivateStaff(clubId, staffId);
+      
+      // Audit log: Reactivate staff member
+      try {
+        if (userId && existingStaff) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_member_reactivated',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Reactivated staff member ${existingStaff.name} (${existingStaff.role})`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              email: existingStaff.email,
+              role: existingStaff.role
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff member reactivation:', auditError);
+      }
+      
       return { success: true, staff, message: 'Staff member reactivated successfully' };
     } catch (error) {
       console.error('Error in reactivateStaffMember:', error);
@@ -1350,9 +1783,46 @@ export class ClubsController {
   async deleteStaffMember(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing staff for audit log (before deletion)
+      const existingStaff = await this.staffManagementService.getStaffById(clubId, staffId);
+      
       const result = await this.staffManagementService.deleteStaff(clubId, staffId);
+      
+      // Audit log: Delete staff member
+      try {
+        if (userId && existingStaff) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_member_deleted',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Deleted staff member ${existingStaff.name} (${existingStaff.role})${existingStaff.email ? ` (${existingStaff.email})` : ''}`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              email: existingStaff.email,
+              role: existingStaff.role,
+              employeeId: existingStaff.employeeId
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff member deletion:', auditError);
+      }
+      
       return { success: true, message: result.message };
     } catch (error) {
       console.error('Error in deleteStaffMember:', error);
@@ -1368,9 +1838,45 @@ export class ClubsController {
   async resetStaffMemberPassword(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing staff for audit log
+      const existingStaff = await this.staffManagementService.getStaffById(clubId, staffId);
+      
       const result = await this.staffManagementService.resetStaffPassword(clubId, staffId);
+      
+      // Audit log: Reset staff password
+      try {
+        if (userId && existingStaff) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const actorStaff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: actorStaff?.id || userId,
+            staffName: actorStaff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: actorStaff?.role || 'Admin',
+            actionType: 'staff_password_reset',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Reset password for staff member ${existingStaff.name} (${existingStaff.role})`,
+            targetType: 'staff',
+            targetId: existingStaff.id,
+            targetName: existingStaff.name,
+            metadata: { 
+              email: existingStaff.email,
+              role: existingStaff.role
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff password reset:', auditError);
+      }
+      
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in resetStaffMemberPassword:', error);
@@ -1433,7 +1939,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateCreditRequestDto
+    @Body() dto: CreateCreditRequestDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate required fields
@@ -1477,12 +1984,47 @@ export class ClubsController {
         throw new ForbiddenException('You can only create credit requests for your assigned club');
       }
 
-      return await this.creditRequestsService.create(clubId, {
+      const creditRequest = await this.creditRequestsService.create(clubId, {
         playerId: dto.playerId.trim(),
         playerName: dto.playerName.trim(),
         amount: amount,
         notes: dto.notes?.trim() || undefined
       });
+      
+      // Audit log: Create credit request
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_request_created',
+            actionCategory: ActionCategory.CREDIT,
+            description: `Created credit request for ${dto.playerName.trim()} - Amount: ₹${amount.toLocaleString('en-IN')}${dto.notes ? `, Notes: ${dto.notes.trim()}` : ''}`,
+            targetType: 'credit_request',
+            targetId: creditRequest.id,
+            targetName: dto.playerName.trim(),
+            metadata: { 
+              playerId: dto.playerId.trim(),
+              playerName: dto.playerName.trim(),
+              amount: amount,
+              notes: dto.notes?.trim()
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for credit request creation:', auditError);
+      }
+      
+      return creditRequest;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -1498,9 +2040,11 @@ export class ClubsController {
   async approveCreditRequest(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto?: ApproveCreditDto
+    @Body() dto?: ApproveCreditDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId
@@ -1635,6 +2179,39 @@ export class ClubsController {
         throw new BadRequestException('Credit request approval failed. Please try again.');
       }
 
+      // Audit log: Approve credit request
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_request_approved',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Approved credit request of ₹${creditRequest.amount} for player ${creditRequest.playerName}${creditLimit ? ` with limit ₹${creditLimit}` : ''}`,
+            targetType: 'player',
+            targetId: creditRequest.playerId,
+            targetName: creditRequest.playerName,
+            metadata: { 
+              requestId: requestId,
+              amount: creditRequest.amount,
+              creditLimit: creditLimit || approvedRequest.limit,
+              previousLimit: creditRequest.limit
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for credit approval:', auditError);
+        // Don't fail the request if audit logging fails
+      }
+
       return approvedRequest;
     } catch (e) {
       // Re-throw known exceptions
@@ -1650,8 +2227,10 @@ export class ClubsController {
   async denyCreditRequest(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('requestId', new ParseUUIDPipe()) requestId: string
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId
@@ -1760,6 +2339,36 @@ export class ClubsController {
         throw new BadRequestException('Credit request denial failed. Please try again.');
       }
 
+      // Audit log: Deny credit request
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_request_denied',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Denied credit request of ₹${creditRequest.amount} for player ${creditRequest.playerName}`,
+            targetType: 'player',
+            targetId: creditRequest.playerId,
+            targetName: creditRequest.playerName,
+            metadata: { 
+              requestId: requestId,
+              amount: creditRequest.amount
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for credit denial:', auditError);
+      }
+
       return deniedRequest;
     } catch (e) {
       // Re-throw known exceptions
@@ -1776,9 +2385,11 @@ export class ClubsController {
   async updateCreditVisibility(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: UpdateCreditVisibilityDto
+    @Body() dto: UpdateCreditVisibilityDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID if provided
@@ -1823,7 +2434,40 @@ export class ClubsController {
         throw new NotFoundException('Credit request not found');
       }
 
-      return await this.creditRequestsService.updateVisibility(requestId, clubId, dto.visible);
+      const updatedRequest = await this.creditRequestsService.updateVisibility(requestId, clubId, dto.visible);
+
+      // Audit log: Update credit visibility
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_visibility_updated',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `${dto.visible ? 'Made' : 'Hidden'} credit request of ₹${creditRequest.amount} ${dto.visible ? 'visible' : 'invisible'} to player ${creditRequest.playerName}`,
+            targetType: 'player',
+            targetId: creditRequest.playerId,
+            targetName: creditRequest.playerName,
+            metadata: { 
+              requestId: requestId,
+              amount: creditRequest.amount,
+              visible: dto.visible
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for credit visibility update:', auditError);
+      }
+
+      return updatedRequest;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -1839,9 +2483,11 @@ export class ClubsController {
   async updateCreditLimit(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: UpdateCreditLimitDto
+    @Body() dto: UpdateCreditLimitDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant ID if provided
@@ -1895,7 +2541,41 @@ export class ClubsController {
         throw new BadRequestException(`Cannot update limit. Credit request must be approved. Current status: ${creditRequest.status}`);
       }
 
-      return await this.creditRequestsService.updateLimit(requestId, clubId, limit);
+      const previousLimit = creditRequest.limit;
+      const updatedRequest = await this.creditRequestsService.updateLimit(requestId, clubId, limit);
+
+      // Audit log: Update credit limit
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_limit_updated',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Updated credit limit for player ${creditRequest.playerName} from ₹${previousLimit} to ₹${limit}`,
+            targetType: 'player',
+            targetId: creditRequest.playerId,
+            targetName: creditRequest.playerName,
+            metadata: { 
+              requestId: requestId,
+              previousLimit: previousLimit,
+              newLimit: limit
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for credit limit update:', auditError);
+      }
+
+      return updatedRequest;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -1919,7 +2599,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('playerId', new ParseUUIDPipe()) playerId: string,
-    @Body() dto: { creditLimit: number }
+    @Body() dto: { creditLimit: number },
+    @Req() req?: Request
   ) {
     try {
       // Validate club exists
@@ -1965,6 +2646,36 @@ export class ClubsController {
 
       await this.playersRepo.save(player);
 
+      // Audit log: Enable credit for player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'credit_enabled',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Enabled credit for player ${player.name} with limit ₹${dto.creditLimit}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              creditLimit: dto.creditLimit,
+              kycStatus: kycStatus
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for enable credit:', auditError);
+      }
+
       return {
         message: 'Credit feature enabled successfully',
         player: {
@@ -1993,9 +2704,11 @@ export class ClubsController {
   async updatePlayerCreditLimit(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('playerId', new ParseUUIDPipe()) playerId: string,
-    @Body() dto: { creditLimit: number }
+    @Body() dto: { creditLimit: number },
+    @Req() req?: Request
   ) {
     try {
       // Validate club exists
@@ -2033,8 +2746,39 @@ export class ClubsController {
       }
 
       // Update credit limit
+      const previousLimit = (player as any).creditLimit || 0;
       (player as any).creditLimit = dto.creditLimit;
       await this.playersRepo.save(player);
+
+      // Audit log: Update player credit limit
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_credit_limit_updated',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Updated credit limit for player ${player.name} from ₹${previousLimit} to ₹${dto.creditLimit}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              previousLimit: previousLimit,
+              newLimit: dto.creditLimit
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player credit limit update:', auditError);
+      }
 
       return {
         message: 'Credit limit updated successfully',
@@ -2104,8 +2848,10 @@ export class ClubsController {
   async createTransaction(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateTransactionDto
+    @Body() dto: CreateTransactionDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate required fields
@@ -2154,11 +2900,45 @@ export class ClubsController {
         }
       }
 
-      return await this.financialTransactionsService.create(clubId, {
+      const transaction = await this.financialTransactionsService.create(clubId, {
         ...dto,
         playerName: dto.playerName.trim(),
         amount: amount
       });
+
+      // Audit log: Create transaction
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'transaction_created',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Created ${dto.type} transaction of ₹${amount} for player ${dto.playerName.trim()}`,
+            targetType: 'player',
+            targetId: transaction.playerId || dto.playerId,
+            targetName: dto.playerName.trim(),
+            metadata: { 
+              transactionId: transaction.id,
+              type: dto.type,
+              amount: amount,
+              status: transaction.status
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for transaction creation:', auditError);
+      }
+
+      return transaction;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -2174,9 +2954,11 @@ export class ClubsController {
   async updateTransaction(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
-    @Body() dto: UpdateTransactionDto
+    @Body() dto: UpdateTransactionDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate at least one field is provided
@@ -2246,11 +3028,59 @@ export class ClubsController {
         }
       }
 
-      return await this.financialTransactionsService.update(transactionId, clubId, {
+      const previousAmount = transaction.amount;
+      const previousStatus = transaction.status;
+      const updatedTransaction = await this.financialTransactionsService.update(transactionId, clubId, {
         amount: dto.amount,
         notes: dto.notes?.trim(),
         status: dto.status
       });
+
+      // Audit log: Update transaction
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.amount !== undefined && dto.amount !== previousAmount) {
+            changes.push(`amount: ₹${previousAmount} → ₹${dto.amount}`);
+          }
+          if (dto.status !== undefined && dto.status !== previousStatus) {
+            changes.push(`status: ${previousStatus} → ${dto.status}`);
+          }
+          if (dto.notes !== undefined) {
+            changes.push('notes updated');
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'transaction_updated',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Updated transaction ${transactionId} for player ${transaction.playerName}: ${changes.join(', ')}`,
+            targetType: 'player',
+            targetId: transaction.playerId,
+            targetName: transaction.playerName,
+            metadata: { 
+              transactionId: transactionId,
+              previousAmount: previousAmount,
+              newAmount: dto.amount,
+              previousStatus: previousStatus,
+              newStatus: dto.status
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for transaction update:', auditError);
+      }
+
+      return updatedTransaction;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -2265,8 +3095,10 @@ export class ClubsController {
   async cancelTransaction(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('transactionId', new ParseUUIDPipe()) transactionId: string
+    @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate club exists
@@ -2302,7 +3134,41 @@ export class ClubsController {
         throw new BadRequestException('Cannot cancel a completed transaction');
       }
 
-      return await this.financialTransactionsService.cancel(transactionId, clubId);
+      const cancelledTransaction = await this.financialTransactionsService.cancel(transactionId, clubId);
+
+      // Audit log: Cancel transaction
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'transaction_cancelled',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Cancelled ${transaction.type} transaction of ₹${transaction.amount} for player ${transaction.playerName}`,
+            targetType: 'player',
+            targetId: transaction.playerId,
+            targetName: transaction.playerName,
+            metadata: { 
+              transactionId: transactionId,
+              type: transaction.type,
+              amount: transaction.amount,
+              previousStatus: transaction.status
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for transaction cancellation:', auditError);
+      }
+
+      return cancelledTransaction;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -2359,7 +3225,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateVipProductDto
+    @Body() dto: CreateVipProductDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate request body
@@ -2410,7 +3277,7 @@ export class ClubsController {
         }
       }
 
-      return await this.vipProductsService.create(clubId, {
+      const product = await this.vipProductsService.create(clubId, {
         title: dto.title.trim(),
         points: points,
         description: dto.description?.trim() || undefined,
@@ -2418,6 +3285,41 @@ export class ClubsController {
         stock: dto.stock || 0,
         isActive: dto.isActive !== undefined ? dto.isActive : true,
       });
+      
+      // Audit log: Create VIP product
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'vip_product_created',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Created VIP product: ${dto.title.trim()} (Points: ${points}, Stock: ${dto.stock || 0})`,
+            targetType: 'vip_product',
+            targetId: product.id,
+            targetName: dto.title.trim(),
+            metadata: { 
+              title: dto.title.trim(),
+              points: points,
+              stock: dto.stock || 0,
+              isActive: dto.isActive !== undefined ? dto.isActive : true
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for VIP product creation:', auditError);
+      }
+      
+      return product;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
@@ -2434,12 +3336,64 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('productId', new ParseUUIDPipe()) productId: string,
-    @Body() dto: UpdateVipProductDto
+    @Body() dto: UpdateVipProductDto,
+    @Req() req?: Request
   ) {
     try {
       if (!tenantId) throw new BadRequestException('x-tenant-id header required');
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
-      return this.vipProductsService.update(productId, clubId, dto);
+      
+      // Get existing product for audit log
+      const existingProduct = await this.vipProductsService.findOne(productId, clubId);
+      
+      const product = await this.vipProductsService.update(productId, clubId, dto);
+      
+      // Audit log: Update VIP product
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && existingProduct) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.title !== undefined && dto.title !== existingProduct.title) {
+            changes.push(`title: ${existingProduct.title} → ${dto.title}`);
+          }
+          if (dto.points !== undefined && dto.points !== existingProduct.points) {
+            changes.push(`points: ${existingProduct.points} → ${dto.points}`);
+          }
+          if (dto.stock !== undefined && dto.stock !== existingProduct.stock) {
+            changes.push(`stock: ${existingProduct.stock} → ${dto.stock}`);
+          }
+          if (dto.isActive !== undefined && dto.isActive !== existingProduct.isActive) {
+            changes.push(`isActive: ${existingProduct.isActive} → ${dto.isActive}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'SUPER_ADMIN',
+            actionType: 'vip_product_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated VIP product ${existingProduct.title}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'vip_product',
+            targetId: productId,
+            targetName: existingProduct.title,
+            metadata: { 
+              changes: changes,
+              productTitle: existingProduct.title
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for VIP product update:', auditError);
+      }
+      
+      return product;
     } catch (e) {
       throw e;
     }
@@ -2451,12 +3405,49 @@ export class ClubsController {
   async removeVipProduct(
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('productId', new ParseUUIDPipe()) productId: string
+    @Param('productId', new ParseUUIDPipe()) productId: string,
+    @Req() req?: Request
   ) {
     try {
       if (!tenantId) throw new BadRequestException('x-tenant-id header required');
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      
+      // Get existing product for audit log (before deletion)
+      const existingProduct = await this.vipProductsService.findOne(productId, clubId);
+      
       await this.vipProductsService.remove(productId, clubId);
+      
+      // Audit log: Delete VIP product
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && existingProduct) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'SUPER_ADMIN',
+            actionType: 'vip_product_deleted',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Deleted VIP product: ${existingProduct.title} (Points: ${existingProduct.points}, Stock: ${existingProduct.stock})`,
+            targetType: 'vip_product',
+            targetId: productId,
+            targetName: existingProduct.title,
+            metadata: { 
+              productTitle: existingProduct.title,
+              points: existingProduct.points,
+              stock: existingProduct.stock
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for VIP product deletion:', auditError);
+      }
     } catch (e) {
       throw e;
     }
@@ -2540,7 +3531,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreatePushNotificationDto
+    @Body() dto: CreatePushNotificationDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2554,11 +3546,44 @@ export class ClubsController {
         throw new ForbiddenException('You can only create notifications for your assigned club');
       }
 
-      return await this.pushNotificationsService.create(clubId, {
+      const notification = await this.pushNotificationsService.create(clubId, {
         ...dto,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
         createdBy: userId || undefined,
       });
+      
+      // Audit log: Create push notification
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'push_notification_created',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Created push notification: ${dto.title || 'Untitled'}${dto.scheduledAt ? ` (Scheduled: ${new Date(dto.scheduledAt).toLocaleString()})` : ''}`,
+            targetType: 'push_notification',
+            targetId: notification.id,
+            targetName: dto.title || 'Untitled',
+            metadata: { 
+              title: dto.title,
+              scheduledAt: dto.scheduledAt,
+              targetType: dto.targetType
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for push notification creation:', auditError);
+      }
+      
+      return notification;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
         throw e;
@@ -2575,7 +3600,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
-    @Body() dto: UpdatePushNotificationDto
+    @Body() dto: UpdatePushNotificationDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2589,10 +3615,54 @@ export class ClubsController {
         throw new ForbiddenException('You can only update notifications for your assigned club');
       }
 
-      return await this.pushNotificationsService.update(notificationId, clubId, {
+      // Get existing notification for audit log
+      const existingNotification = await this.pushNotificationsService.findOne(notificationId, clubId);
+      
+      const notification = await this.pushNotificationsService.update(notificationId, clubId, {
         ...dto,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
       });
+      
+      // Audit log: Update push notification
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && existingNotification) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.title !== undefined && dto.title !== existingNotification.title) {
+            changes.push(`title: ${existingNotification.title} → ${dto.title}`);
+          }
+          if (dto.scheduledAt !== undefined) {
+            changes.push(`scheduledAt: ${existingNotification.scheduledAt ? new Date(existingNotification.scheduledAt).toLocaleString() : 'N/A'} → ${new Date(dto.scheduledAt).toLocaleString()}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'push_notification_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated push notification ${existingNotification.title || 'Untitled'}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'push_notification',
+            targetId: notificationId,
+            targetName: existingNotification.title || 'Untitled',
+            metadata: { 
+              changes: changes,
+              notificationTitle: existingNotification.title
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for push notification update:', auditError);
+      }
+      
+      return notification;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -2608,7 +3678,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('notificationId', new ParseUUIDPipe()) notificationId: string
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2622,7 +3693,41 @@ export class ClubsController {
         throw new ForbiddenException('You can only delete notifications for your assigned club');
       }
 
+      // Get existing notification for audit log (before deletion)
+      const existingNotification = await this.pushNotificationsService.findOne(notificationId, clubId);
+      
       await this.pushNotificationsService.remove(notificationId, clubId);
+      
+      // Audit log: Delete push notification
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && existingNotification) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'push_notification_deleted',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Deleted push notification: ${existingNotification.title || 'Untitled'}`,
+            targetType: 'push_notification',
+            targetId: notificationId,
+            targetName: existingNotification.title || 'Untitled',
+            metadata: { 
+              notificationTitle: existingNotification.title,
+              scheduledAt: existingNotification.scheduledAt
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for push notification deletion:', auditError);
+      }
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -2638,7 +3743,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('notificationId', new ParseUUIDPipe()) notificationId: string
+    @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2652,7 +3758,43 @@ export class ClubsController {
         throw new ForbiddenException('You can only send notifications for your assigned club');
       }
 
-      return await this.pushNotificationsService.sendNotification(notificationId, clubId);
+      // Get notification for audit log
+      const notification = await this.pushNotificationsService.findOne(notificationId, clubId);
+      
+      const result = await this.pushNotificationsService.sendNotification(notificationId, clubId);
+      
+      // Audit log: Send push notification
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId && notification) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'push_notification_sent',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Sent push notification: ${notification.title || 'Untitled'}`,
+            targetType: 'push_notification',
+            targetId: notificationId,
+            targetName: notification.title || 'Untitled',
+            metadata: { 
+              notificationTitle: notification.title,
+              targetType: notification.targetType
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for push notification send:', auditError);
+      }
+      
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -2733,7 +3875,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('notificationId', new ParseUUIDPipe()) notificationId: string,
-    @Body() body?: { recipientType?: 'staff' | 'player' }
+    @Body() body?: { recipientType?: 'staff' | 'player' },
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2748,7 +3891,39 @@ export class ClubsController {
       }
 
       const type = body?.recipientType || 'staff';
-      return await this.pushNotificationsService.markAsRead(clubId, notificationId, userId, type);
+      const result = await this.pushNotificationsService.markAsRead(clubId, notificationId, userId, type);
+      
+      // Audit log: Mark notification as read
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'notification_marked_read',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Marked notification as read (ID: ${notificationId}, Type: ${type})`,
+            targetType: 'push_notification',
+            targetId: notificationId,
+            targetName: `Notification ${notificationId}`,
+            metadata: { 
+              notificationId: notificationId,
+              recipientType: type
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for mark notification as read:', auditError);
+      }
+      
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -2765,7 +3940,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() body?: { recipientType?: 'staff' | 'player' }
+    @Body() body?: { recipientType?: 'staff' | 'player' },
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -2780,7 +3956,38 @@ export class ClubsController {
       }
 
       const type = body?.recipientType || 'staff';
-      return await this.pushNotificationsService.markAllAsRead(clubId, userId, type);
+      const result = await this.pushNotificationsService.markAllAsRead(clubId, userId, type);
+      
+      // Audit log: Mark all notifications as read
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'all_notifications_marked_read',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Marked all notifications as read (Type: ${type})`,
+            targetType: 'push_notification',
+            targetId: 'all',
+            targetName: `All ${type} notifications`,
+            metadata: { 
+              recipientType: type
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for mark all notifications as read:', auditError);
+      }
+      
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -2970,8 +4177,10 @@ export class ClubsController {
   async createWaitlistEntry(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateWaitlistEntryDto
+    @Body() dto: CreateWaitlistEntryDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate required fields
@@ -3000,7 +4209,7 @@ export class ClubsController {
         throw new ForbiddenException('You can only create waitlist entries for your assigned club');
       }
 
-      return await this.waitlistSeatingService.createWaitlistEntry(clubId, {
+      const waitlistEntry = await this.waitlistSeatingService.createWaitlistEntry(clubId, {
         playerName: dto.playerName.trim(),
         playerId: dto.playerId?.trim(),
         phoneNumber: dto.phoneNumber?.trim(),
@@ -3010,6 +4219,41 @@ export class ClubsController {
         notes: dto.notes?.trim(),
         tableType: dto.tableType?.trim()
       });
+
+      // Audit log: Create waitlist entry
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'waitlist_entry_created',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Created waitlist entry for ${dto.playerName}${dto.partySize ? ` (Party: ${dto.partySize})` : ''}${dto.tableType ? ` - Table Type: ${dto.tableType}` : ''}`,
+            targetType: 'waitlist',
+            targetId: waitlistEntry.id,
+            targetName: dto.playerName,
+            metadata: { 
+              playerName: dto.playerName,
+              playerId: dto.playerId,
+              partySize: dto.partySize,
+              priority: dto.priority,
+              tableType: dto.tableType
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for waitlist entry creation:', auditError);
+      }
+
+      return waitlistEntry;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -3219,9 +4463,11 @@ export class ClubsController {
   async updateWaitlistEntry(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('entryId', new ParseUUIDPipe()) entryId: string,
-    @Body() dto: UpdateWaitlistEntryDto
+    @Body() dto: UpdateWaitlistEntryDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and entryId
@@ -3349,6 +4595,47 @@ export class ClubsController {
         throw new BadRequestException('Update operation failed. Entry ID mismatch.');
       }
 
+      // Audit log: Update waitlist entry
+      try {
+        if (userId && existingEntry) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.partySize !== undefined && dto.partySize !== existingEntry.partySize) {
+            changes.push(`partySize: ${existingEntry.partySize} → ${dto.partySize}`);
+          }
+          if (dto.priority !== undefined && dto.priority !== existingEntry.priority) {
+            changes.push(`priority: ${existingEntry.priority} → ${dto.priority}`);
+          }
+          if (dto.notes !== undefined) {
+            changes.push('notes updated');
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'waitlist_entry_updated',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Updated waitlist entry for ${existingEntry.playerName}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'waitlist',
+            targetId: existingEntry.id,
+            targetName: existingEntry.playerName,
+            metadata: { 
+              changes: changes,
+              playerName: existingEntry.playerName
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for waitlist entry update:', auditError);
+      }
+
       return updatedEntry;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -3364,8 +4651,10 @@ export class ClubsController {
   async cancelWaitlistEntry(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('entryId', new ParseUUIDPipe()) entryId: string
+    @Param('entryId', new ParseUUIDPipe()) entryId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and entryId
@@ -3474,6 +4763,37 @@ export class ClubsController {
         throw new NotFoundException('Waitlist entry not found or cancellation failed');
       }
 
+      // Audit log: Cancel waitlist entry
+      try {
+        if (userId && entry) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'waitlist_entry_cancelled',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Cancelled waitlist entry for ${entry.playerName}${entry.partySize ? ` (Party: ${entry.partySize})` : ''}`,
+            targetType: 'waitlist',
+            targetId: entry.id,
+            targetName: entry.playerName,
+            metadata: { 
+              playerName: entry.playerName,
+              partySize: entry.partySize,
+              priority: entry.priority
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for waitlist entry cancellation:', auditError);
+      }
+
       return cancelledEntry;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
@@ -3489,8 +4809,10 @@ export class ClubsController {
   async deleteWaitlistEntry(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('entryId', new ParseUUIDPipe()) entryId: string
+    @Param('entryId', new ParseUUIDPipe()) entryId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and entryId
@@ -3584,6 +4906,37 @@ export class ClubsController {
         console.log(`Deleting already cancelled waitlist entry: ${entryId}`);
       }
 
+      // Audit log: Delete waitlist entry (before deletion)
+      try {
+        if (userId && entry) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'waitlist_entry_deleted',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Deleted waitlist entry for ${entry.playerName}${entry.partySize ? ` (Party: ${entry.partySize})` : ''}`,
+            targetType: 'waitlist',
+            targetId: entry.id,
+            targetName: entry.playerName,
+            metadata: { 
+              playerName: entry.playerName,
+              partySize: entry.partySize,
+              status: entry.status
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for waitlist entry deletion:', auditError);
+      }
+
       // Edge case: Error handling for delete operation
       try {
       await this.waitlistSeatingService.deleteWaitlistEntry(clubId, entryId);
@@ -3612,7 +4965,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('entryId', new ParseUUIDPipe()) entryId: string,
-    @Body() dto: AssignSeatDto
+    @Body() dto: AssignSeatDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId, entryId, and tableId
@@ -3768,6 +5122,38 @@ export class ClubsController {
         throw new BadRequestException('Seat assignment failed. Entry was not properly seated.');
       }
 
+      // Audit log: Assign seat
+      try {
+        if (userId && entry && table) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'seat_assigned',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Assigned seat for ${entry.playerName} to Table ${table.tableNumber}${entry.partySize ? ` (Party: ${entry.partySize})` : ''}`,
+            targetType: 'waitlist',
+            targetId: entry.id,
+            targetName: entry.playerName,
+            metadata: { 
+              playerName: entry.playerName,
+              tableId: dto.tableId,
+              tableNumber: table.tableNumber,
+              partySize: entry.partySize
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for seat assignment:', auditError);
+      }
+
       return assignedEntry;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
@@ -3783,8 +5169,10 @@ export class ClubsController {
   async unseatPlayer(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('entryId', new ParseUUIDPipe()) entryId: string
+    @Param('entryId', new ParseUUIDPipe()) entryId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and entryId
@@ -3898,6 +5286,36 @@ export class ClubsController {
         throw new BadRequestException('Unseat operation failed. Entry was not properly updated.');
       }
 
+      // Audit log: Unseat player
+      try {
+        if (userId && entry) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_unseated',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Unseated player ${entry.playerName} from Table ${entry.tableNumber || 'Unknown'}`,
+            targetType: 'waitlist',
+            targetId: entry.id,
+            targetName: entry.playerName,
+            metadata: { 
+              playerName: entry.playerName,
+              tableNumber: entry.tableNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player unseat:', auditError);
+      }
+
       return unseatedEntry;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof ConflictException) {
@@ -3914,8 +5332,10 @@ export class ClubsController {
   async createTable(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateTableDto
+    @Body() dto: CreateTableDto,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate required fields
@@ -3980,7 +5400,7 @@ export class ClubsController {
         throw new ForbiddenException('You can only create tables for your assigned club');
       }
 
-      return await this.waitlistSeatingService.createTable(clubId, {
+      const table = await this.waitlistSeatingService.createTable(clubId, {
         tableNumber: dto.tableNumber,
         tableType: dto.tableType,
         maxSeats: dto.maxSeats,
@@ -3988,6 +5408,41 @@ export class ClubsController {
         maxBuyIn: dto.maxBuyIn,
         notes: dto.notes
       });
+
+      // Audit log: Create table
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'table_created',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Created table ${dto.tableNumber} (Type: ${dto.tableType}, Max Seats: ${dto.maxSeats}${dto.minBuyIn ? `, Min Buy-in: ₹${dto.minBuyIn}` : ''}${dto.maxBuyIn ? `, Max Buy-in: ₹${dto.maxBuyIn}` : ''})`,
+            targetType: 'table',
+            targetId: table.id,
+            targetName: `Table ${dto.tableNumber}`,
+            metadata: { 
+              tableNumber: dto.tableNumber,
+              tableType: dto.tableType,
+              maxSeats: dto.maxSeats,
+              minBuyIn: dto.minBuyIn,
+              maxBuyIn: dto.maxBuyIn
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for table creation:', auditError);
+      }
+
+      return table;
     } catch (e) {
       // Re-throw known exceptions
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -4254,16 +5709,68 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('tableId', new ParseUUIDPipe()) tableId: string,
-    @Body() dto: UpdateTableDto
+    @Body() dto: UpdateTableDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       if (!tenantId) throw new BadRequestException('x-tenant-id header required');
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      
+      // Get existing table for audit log
+      const existingTable = await this.waitlistSeatingService.getTable(clubId, tableId);
+      
       const updateData: any = { ...dto };
       if (dto.reservedUntil) {
         updateData.reservedUntil = new Date(dto.reservedUntil);
       }
-      return this.waitlistSeatingService.updateTable(clubId, tableId, updateData);
+      const updatedTable = await this.waitlistSeatingService.updateTable(clubId, tableId, updateData);
+
+      // Audit log: Update table
+      try {
+        if (userId && existingTable) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.status !== undefined && dto.status !== existingTable.status) {
+            changes.push(`status: ${existingTable.status} → ${dto.status}`);
+          }
+          if (dto.maxSeats !== undefined && dto.maxSeats !== existingTable.maxSeats) {
+            changes.push(`maxSeats: ${existingTable.maxSeats} → ${dto.maxSeats}`);
+          }
+          if (dto.minBuyIn !== undefined && dto.minBuyIn !== existingTable.minBuyIn) {
+            changes.push(`minBuyIn: ₹${existingTable.minBuyIn || 0} → ₹${dto.minBuyIn || 0}`);
+          }
+          if (dto.maxBuyIn !== undefined && dto.maxBuyIn !== existingTable.maxBuyIn) {
+            changes.push(`maxBuyIn: ₹${existingTable.maxBuyIn || 0} → ₹${dto.maxBuyIn || 0}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'table_updated',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Updated table ${existingTable.tableNumber}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'table',
+            targetId: existingTable.id,
+            targetName: `Table ${existingTable.tableNumber}`,
+            metadata: { 
+              changes: changes,
+              tableNumber: existingTable.tableNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for table update:', auditError);
+      }
+      
+      return updatedTable;
     } catch (e) {
       throw e;
     }
@@ -4275,8 +5782,10 @@ export class ClubsController {
   async deleteTable(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('tableId', new ParseUUIDPipe()) tableId: string
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and tableId
@@ -4359,6 +5868,37 @@ export class ClubsController {
         throw new ConflictException('Cannot delete table with active players. Please unseat all players first.');
       }
 
+      // Audit log: Delete table (before deletion)
+      try {
+        if (userId && table) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'table_deleted',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Deleted table ${table.tableNumber} (Type: ${table.tableType}, Max Seats: ${table.maxSeats})`,
+            targetType: 'table',
+            targetId: table.id,
+            targetName: `Table ${table.tableNumber}`,
+            metadata: { 
+              tableNumber: table.tableNumber,
+              tableType: table.tableType,
+              maxSeats: table.maxSeats
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for table deletion:', auditError);
+      }
+
       // Edge case: Error handling for delete operation
       try {
       await this.waitlistSeatingService.deleteTable(clubId, tableId);
@@ -4387,8 +5927,10 @@ export class ClubsController {
   async pauseTableSession(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('tableId', new ParseUUIDPipe()) tableId: string
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Req() req?: Request
   ) {
     try {
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -4465,6 +6007,37 @@ export class ClubsController {
         await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
       }
 
+      // Audit log: Pause session
+      try {
+        if (userId && table) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'session_paused',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Paused session for table ${table.tableNumber}`,
+            targetType: 'table',
+            targetId: table.id,
+            targetName: `Table ${table.tableNumber}`,
+            metadata: { 
+              tableNumber: table.tableNumber,
+              previousStatus: table.status,
+              newStatus: TableStatus.AVAILABLE
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for session pause:', auditError);
+      }
+
       return {
         message: 'Table session paused successfully',
         table: {
@@ -4492,8 +6065,10 @@ export class ClubsController {
   async resumeTableSession(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('tableId', new ParseUUIDPipe()) tableId: string
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Req() req?: Request
   ) {
     try {
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -4573,6 +6148,38 @@ export class ClubsController {
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
 
+      // Audit log: Resume session
+      try {
+        if (userId && table) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'session_resumed',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Resumed session for table ${table.tableNumber}${pausedElapsedSeconds > 0 ? ` (${pausedElapsedSeconds}s paused)` : ''}`,
+            targetType: 'table',
+            targetId: table.id,
+            targetName: `Table ${table.tableNumber}`,
+            metadata: { 
+              tableNumber: table.tableNumber,
+              previousStatus: table.status,
+              newStatus: TableStatus.OCCUPIED,
+              pausedElapsedSeconds
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for session resume:', auditError);
+      }
+
       return {
         message: 'Table session resumed successfully',
         table: {
@@ -4603,8 +6210,10 @@ export class ClubsController {
   async endTableSession(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('tableId', new ParseUUIDPipe()) tableId: string
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Req() req?: Request
   ) {
     try {
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -4670,6 +6279,38 @@ export class ClubsController {
       updatedNotes = updatedNotes.replace(/\|\s*\|/g, '|').replace(/^\|\s*|\s*\|$/g, '').trim();
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      // Audit log: End session
+      try {
+        if (userId && table) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'session_ended',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Ended session for table ${table.tableNumber} (Reset seats: ${table.currentSeats || 0} → 0)`,
+            targetType: 'table',
+            targetId: table.id,
+            targetName: `Table ${table.tableNumber}`,
+            metadata: { 
+              tableNumber: table.tableNumber,
+              previousStatus: table.status,
+              newStatus: TableStatus.CLOSED,
+              previousSeats: table.currentSeats || 0
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for session end:', auditError);
+      }
 
       return {
         message: 'Table session ended successfully',
@@ -5474,7 +7115,9 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('key') key: string,
-    @Body() dto: SetClubSettingDto
+    @Body() dto: SetClubSettingDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       if (!tenantId) throw new BadRequestException('x-tenant-id header required');
@@ -5482,7 +7125,44 @@ export class ClubsController {
         throw new BadRequestException('Setting key is required');
       }
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
-      return this.clubSettingsService.setSetting(clubId, key, dto.value);
+      
+      // Get existing setting value for audit log
+      const existingValue = await this.clubSettingsService.getSetting(clubId, key);
+      
+      const result = await this.clubSettingsService.setSetting(clubId, key, dto.value);
+      
+      // Audit log: Update setting
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'SUPER_ADMIN',
+            actionType: 'setting_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated setting '${key}': ${existingValue !== null ? existingValue : 'N/A'} → ${dto.value}`,
+            targetType: 'setting',
+            targetId: key,
+            targetName: key,
+            metadata: { 
+              key: key,
+              oldValue: existingValue,
+              newValue: dto.value
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for setting update:', auditError);
+      }
+      
+      return result;
     } catch (e) {
       throw e;
     }
@@ -5494,7 +7174,9 @@ export class ClubsController {
   async deleteSetting(
     @Headers('x-tenant-id') tenantId: string,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Param('key') key: string
+    @Param('key') key: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       if (!tenantId) throw new BadRequestException('x-tenant-id header required');
@@ -5502,9 +7184,43 @@ export class ClubsController {
         throw new BadRequestException('Setting key is required');
       }
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      
+      // Get existing setting value for audit log (before deletion)
+      const existingValue = await this.clubSettingsService.getSetting(clubId, key);
+      
       // Note: This would require a delete method in ClubSettingsService
-      // For now, we'll set it to null
+      // For now, we'll set it to empty string
       await this.clubSettingsService.setSetting(clubId, key, '');
+      
+      // Audit log: Delete setting
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'SUPER_ADMIN',
+            actionType: 'setting_deleted',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Deleted setting '${key}'${existingValue !== null ? ` (Previous value: ${existingValue})` : ''}`,
+            targetType: 'setting',
+            targetId: key,
+            targetName: key,
+            metadata: { 
+              key: key,
+              previousValue: existingValue
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for setting deletion:', auditError);
+      }
     } catch (e) {
       throw e;
     }
@@ -5523,7 +7239,8 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateAffiliateDto,
     @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-club-id') headerClubId?: string
+    @Headers('x-club-id') headerClubId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate required headers for Super Admin
@@ -5639,6 +7356,39 @@ export class ClubsController {
         dto.code,
         dto.commissionRate || 5.0
       );
+
+      // Audit log: Create affiliate
+      try {
+        const userId = (req as any)?.headers?.['x-user-id'] as string | undefined;
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'affiliate_created',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Created affiliate: ${dto.displayName?.trim() || dto.email.trim()} (Code: ${affiliate.code}, Commission: ${affiliate.commissionRate}%)`,
+            targetType: 'affiliate',
+            targetId: affiliate.id,
+            targetName: dto.displayName?.trim() || dto.email.trim(),
+            metadata: { 
+              email: dto.email.trim(),
+              displayName: dto.displayName?.trim(),
+              code: affiliate.code,
+              commissionRate: affiliate.commissionRate
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for affiliate creation:', auditError);
+      }
 
       return {
         id: affiliate.id,
@@ -5806,6 +7556,7 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() processAffiliatePaymentDto: ProcessAffiliatePaymentDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const transaction = await this.affiliatesService.processAffiliatePayment(
@@ -5813,6 +7564,38 @@ export class ClubsController {
         processAffiliatePaymentDto,
         userId
       );
+      
+      // Audit log: Process affiliate payment
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'affiliate_payment_processed',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Processed affiliate payment: ₹${processAffiliatePaymentDto.amount} for affiliate ${processAffiliatePaymentDto.affiliateId}${processAffiliatePaymentDto.notes ? ` (Notes: ${processAffiliatePaymentDto.notes})` : ''}`,
+            targetType: 'affiliate',
+            targetId: processAffiliatePaymentDto.affiliateId,
+            targetName: `Affiliate Payment`,
+            metadata: { 
+              affiliateId: processAffiliatePaymentDto.affiliateId,
+              amount: processAffiliatePaymentDto.amount,
+              notes: processAffiliatePaymentDto.notes
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for affiliate payment processing:', auditError);
+      }
+      
       return { success: true, transaction };
     } catch (error) {
       console.error('Error in processAffiliatePayment:', error);
@@ -6067,7 +7850,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-club-id') headerClubId?: string,
     @Headers('x-user-id') userId?: string,
-    @Body() dto?: { name?: string; commissionRate?: number }
+    @Body() dto?: { name?: string; commissionRate?: number },
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID format for clubId and affiliateId
@@ -6303,6 +8087,44 @@ export class ClubsController {
         console.warn(`Updated affiliate ${affiliateId} has invalid totalCommission: ${updatedAffiliate.totalCommission}`);
       }
 
+      // Audit log: Update affiliate
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.name !== undefined && dto.name !== null && dto.name.trim() !== affiliate.name) {
+            changes.push(`name: ${affiliate.name || 'N/A'} → ${dto.name.trim()}`);
+          }
+          if (dto.commissionRate !== undefined && dto.commissionRate !== null && (!userId || tenantId)) {
+            changes.push(`commissionRate: ${affiliate.commissionRate}% → ${dto.commissionRate}%`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'affiliate_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated affiliate ${affiliate.code || affiliateId}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'affiliate',
+            targetId: affiliateId,
+            targetName: affiliate.name || affiliate.code || 'Affiliate',
+            metadata: { 
+              changes: changes,
+              affiliateCode: affiliate.code
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for affiliate update:', auditError);
+      }
+
       return {
         id: updatedAffiliate.id,
         code: updatedAffiliate.code,
@@ -6425,7 +8247,9 @@ export class ClubsController {
   async createPlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreatePlayerDto,
-    @Headers('x-tenant-id') tenantId?: string
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant-id header if provided
@@ -6579,6 +8403,38 @@ export class ClubsController {
         dto.documentUrl?.trim(),
         dto.initialBalance
       );
+
+      // Audit log: Create player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_created',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Created new player ${player.name} (${player.email})${dto.affiliateCode ? ` via affiliate ${dto.affiliateCode}` : ''}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              phoneNumber: player.phoneNumber,
+              affiliateCode: dto.affiliateCode,
+              initialBalance: dto.initialBalance || 0
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player creation:', auditError);
+      }
 
       return {
         id: player.id,
@@ -7171,7 +9027,9 @@ export class ClubsController {
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Body() dto: ApprovePlayerDto,
     @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-club-id') headerClubId?: string
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID formats
@@ -7234,7 +9092,35 @@ export class ClubsController {
         }
       );
 
-      // TODO: Log action when audit service is updated
+      // Audit log: Approve player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_approved',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Approved player ${player.name} (${player.email}) - KYC verified`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              kycStatus: 'approved'
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player approval:', auditError);
+      }
 
       return {
         success: true,
@@ -7267,7 +9153,9 @@ export class ClubsController {
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Body() dto: RejectPlayerDto,
     @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-club-id') headerClubId?: string
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID formats
@@ -7330,7 +9218,36 @@ export class ClubsController {
         }
       );
 
-      // TODO: Log action when audit service is updated
+      // Audit log: Reject player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_rejected',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Rejected player ${player.name} (${player.email}) - Reason: ${dto.reason}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              reason: dto.reason,
+              kycStatus: 'rejected'
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player rejection:', auditError);
+      }
 
       return {
         success: true,
@@ -7364,7 +9281,9 @@ export class ClubsController {
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Body() dto: SuspendPlayerDto,
     @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-club-id') headerClubId?: string
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID formats
@@ -7441,7 +9360,37 @@ export class ClubsController {
         }
       );
 
-      // TODO: Log action when audit service is updated
+      // Audit log: Suspend player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_suspended',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `${dto.type === 'permanent' ? 'Permanently' : 'Temporarily'} suspended player ${player.name} (${player.email}) - Reason: ${dto.reason}${dto.duration ? ` for ${dto.duration} days` : ''}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              type: dto.type,
+              reason: dto.reason,
+              duration: dto.duration
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player suspension:', auditError);
+      }
 
       return {
         success: true,
@@ -7474,7 +9423,9 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-club-id') headerClubId?: string
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate UUID formats
@@ -7535,7 +9486,36 @@ export class ClubsController {
         }
       );
 
-      // TODO: Log action when audit service is updated
+      // Audit log: Unsuspend player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_unsuspended',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Unsuspended player ${player.name} (${player.email}) - Status changed to Active`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              previousStatus: 'Suspended',
+              newStatus: 'Active'
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player unsuspension:', auditError);
+      }
 
       return {
         success: true,
@@ -7650,7 +9630,9 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Body() dto: UpdatePlayerDto,
-    @Headers('x-tenant-id') tenantId?: string
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant-id header if provided
@@ -7854,6 +9836,55 @@ export class ClubsController {
       // Edge case: Validate saved player
       if (!savedPlayer || !savedPlayer.id) {
         throw new BadRequestException('Player update failed. Please try again.');
+      }
+
+      // Audit log: Update player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.name !== undefined && dto.name !== player.name) {
+            changes.push(`name: ${player.name} → ${dto.name}`);
+          }
+          if (dto.email !== undefined && dto.email !== player.email) {
+            changes.push(`email: ${player.email} → ${dto.email}`);
+          }
+          if (dto.phoneNumber !== undefined && dto.phoneNumber !== player.phoneNumber) {
+            changes.push(`phone: ${player.phoneNumber || 'null'} → ${dto.phoneNumber || 'null'}`);
+          }
+          if (dto.status !== undefined && dto.status !== player.status) {
+            changes.push(`status: ${player.status} → ${dto.status}`);
+          }
+          if (dto.notes !== undefined) {
+            changes.push('notes updated');
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'player_updated',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Updated player ${player.name} (${player.email}): ${changes.join(', ')}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              changes: changes,
+              previousName: player.name,
+              previousEmail: player.email,
+              previousStatus: player.status
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player update:', auditError);
       }
 
       return {
@@ -8193,7 +10224,9 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
     @Body() dto: CreateTransactionDto,
-    @Headers('x-tenant-id') tenantId?: string
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant-id header if provided
@@ -8275,6 +10308,37 @@ export class ClubsController {
         throw new BadRequestException('Transaction creation failed. Please try again.');
       }
 
+      // Audit log: Create player transaction
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'player_transaction_created',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Created ${dto.type} transaction of ₹${dto.amount} for player ${player.name}`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              transactionId: transaction.id,
+              type: dto.type,
+              amount: dto.amount
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player transaction creation:', auditError);
+      }
+
       return {
         id: transaction.id,
         type: transaction.type,
@@ -8302,7 +10366,9 @@ export class ClubsController {
   async activatePlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
-    @Headers('x-tenant-id') tenantId?: string
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant-id header if provided
@@ -8367,6 +10433,37 @@ export class ClubsController {
         throw new BadRequestException('Player activation failed. Please try again.');
       }
 
+      // Audit log: Activate player
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'player_activated',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Activated player ${player.name} (${player.email}) - Status changed to Active`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              previousStatus: player.status,
+              newStatus: 'Active'
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player activation:', auditError);
+      }
+
       return {
         id: savedPlayer.id,
         name: savedPlayer.name,
@@ -8392,7 +10489,9 @@ export class ClubsController {
   async deletePlayer(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('playerId', ParseUUIDPipe) playerId: string,
-    @Headers('x-tenant-id') tenantId?: string
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       // Edge case: Validate tenant-id header if provided
@@ -8472,6 +10571,37 @@ export class ClubsController {
         throw new ConflictException('Cannot delete player who is on waitlist or seated. Please remove from waitlist first.');
       }
 
+      // Audit log: Delete player (before deletion)
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'player_deleted',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Deleted player ${player.name} (${player.email})`,
+            targetType: 'player',
+            targetId: player.id,
+            targetName: player.name,
+            metadata: { 
+              email: player.email,
+              status: player.status,
+              phoneNumber: player.phoneNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player deletion:', auditError);
+      }
+
       // Edge case: Error handling for player deletion
       try {
         await this.playersRepo.remove(player);
@@ -8503,8 +10633,45 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateFnbOrderDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createOrder(clubId, dto);
+    const order = await this.fnbEnhancedService.createOrder(clubId, dto);
+    
+    // Audit log: Create FNB order
+    try {
+      if (userId && order) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const totalAmount = dto.items?.reduce((sum, item) => sum + (item.quantity * item.price), 0) || 0;
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created FNB order${dto.playerId ? ` for player ${dto.playerId}` : ''} - Total: ₹${totalAmount}${dto.items?.length ? ` (${dto.items.length} items)` : ''}`,
+          targetType: dto.playerId ? 'player' : 'order',
+          targetId: dto.playerId || order.id,
+          targetName: dto.playerId ? `Player ${dto.playerId}` : `Order ${order.id}`,
+          metadata: { 
+            orderId: order.id,
+            playerId: dto.playerId,
+            totalAmount: totalAmount,
+            itemCount: dto.items?.length || 0
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for FNB order creation:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8551,8 +10718,53 @@ export class ClubsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Body() dto: UpdateFnbOrderDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.updateOrderStatus(clubId, orderId, dto, userId || 'System');
+    // Get existing order for audit log
+    const existingOrder = await this.fnbEnhancedService.getOrder(clubId, orderId);
+    
+    const order = await this.fnbEnhancedService.updateOrderStatus(clubId, orderId, dto, userId || 'System');
+    
+    // Audit log: Update FNB order
+    try {
+      if (userId && existingOrder) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.status !== undefined && dto.status !== existingOrder.status) {
+          changes.push(`status: ${existingOrder.status} → ${dto.status}`);
+        }
+        if (dto.specialInstructions !== undefined) {
+          changes.push('specialInstructions updated');
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_updated',
+          actionCategory: ActionCategory.FNB,
+          description: `Updated FNB order ${orderId}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId,
+            changes: changes,
+            previousStatus: existingOrder.status
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for FNB order update:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8566,8 +10778,45 @@ export class ClubsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Body('reason') reason: string,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.cancelOrder(clubId, orderId, reason || 'Cancelled by admin', userId || 'System');
+    // Get existing order for audit log
+    const existingOrder = await this.fnbEnhancedService.getOrder(clubId, orderId);
+    
+    const order = await this.fnbEnhancedService.cancelOrder(clubId, orderId, reason || 'Cancelled by admin', userId || 'System');
+    
+    // Audit log: Cancel FNB order
+    try {
+      if (userId && existingOrder) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_cancelled',
+          actionCategory: ActionCategory.FNB,
+          description: `Cancelled FNB order ${orderId}${reason ? ` - Reason: ${reason}` : ''}`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId,
+            reason: reason || 'Cancelled by admin',
+            previousStatus: existingOrder.status
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for FNB order cancellation:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8579,8 +10828,43 @@ export class ClubsController {
   async createMenuItem(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateMenuItemDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createMenuItem(clubId, dto);
+    const menuItem = await this.fnbEnhancedService.createMenuItem(clubId, dto);
+    
+    // Audit log: Create menu item
+    try {
+      if (userId && menuItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'menu_item_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created menu item ${dto.name} - Price: ₹${dto.price}${dto.category ? ` (Category: ${dto.category})` : ''}`,
+          targetType: 'menu_item',
+          targetId: menuItem.id,
+          targetName: dto.name,
+          metadata: { 
+            itemName: dto.name,
+            price: dto.price,
+            category: dto.category
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for menu item creation:', auditError);
+    }
+    
+    return menuItem;
   }
 
   /**
@@ -8621,8 +10905,56 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateMenuItemDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.updateMenuItem(clubId, itemId, dto);
+    // Get existing menu item for audit log
+    const existingItem = await this.fnbEnhancedService.getMenuItem(clubId, itemId);
+    
+    const menuItem = await this.fnbEnhancedService.updateMenuItem(clubId, itemId, dto);
+    
+    // Audit log: Update menu item
+    try {
+      if (userId && existingItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.name !== undefined && dto.name !== existingItem.name) {
+          changes.push(`name: ${existingItem.name} → ${dto.name}`);
+        }
+        if (dto.price !== undefined && dto.price !== existingItem.price) {
+          changes.push(`price: ₹${existingItem.price} → ₹${dto.price}`);
+        }
+        if (dto.availability !== undefined && dto.availability !== existingItem.availability) {
+          changes.push(`availability: ${existingItem.availability} → ${dto.availability}`);
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'menu_item_updated',
+          actionCategory: ActionCategory.FNB,
+          description: `Updated menu item ${existingItem.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'menu_item',
+          targetId: itemId,
+          targetName: existingItem.name,
+          metadata: { 
+            changes: changes,
+            itemName: existingItem.name
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for menu item update:', auditError);
+    }
+    
+    return menuItem;
   }
 
   /**
@@ -8635,8 +10967,45 @@ export class ClubsController {
   async deleteMenuItem(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
+    // Get existing menu item for audit log (before deletion)
+    const existingItem = await this.fnbEnhancedService.getMenuItem(clubId, itemId);
+    
     await this.fnbEnhancedService.deleteMenuItem(clubId, itemId);
+    
+    // Audit log: Delete menu item
+    try {
+      if (userId && existingItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'menu_item_deleted',
+          actionCategory: ActionCategory.FNB,
+          description: `Deleted menu item ${existingItem.name} (Price: ₹${existingItem.price})`,
+          targetType: 'menu_item',
+          targetId: itemId,
+          targetName: existingItem.name,
+          metadata: { 
+            itemName: existingItem.name,
+            price: existingItem.price,
+            category: existingItem.category
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for menu item deletion:', auditError);
+    }
+    
     return { success: true, message: 'Menu item deleted successfully' };
   }
 
@@ -8661,8 +11030,44 @@ export class ClubsController {
   async createInventoryItem(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateInventoryItemDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createInventoryItem(clubId, dto);
+    const inventoryItem = await this.fnbEnhancedService.createInventoryItem(clubId, dto);
+    
+    // Audit log: Create inventory item
+    try {
+      if (userId && inventoryItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'inventory_item_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created inventory item ${dto.name} - Current Stock: ${dto.currentStock}${dto.unit ? ` ${dto.unit}` : ''}, Min Stock: ${dto.minStock}`,
+          targetType: 'inventory_item',
+          targetId: inventoryItem.id,
+          targetName: dto.name,
+          metadata: { 
+            itemName: dto.name,
+            currentStock: dto.currentStock,
+            minStock: dto.minStock,
+            unit: dto.unit
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for inventory item creation:', auditError);
+    }
+    
+    return inventoryItem;
   }
 
   /**
@@ -8701,8 +11106,56 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
     @Body() dto: UpdateInventoryItemDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.updateInventoryItem(clubId, itemId, dto);
+    // Get existing inventory item for audit log
+    const existingItem = await this.fnbEnhancedService.getInventoryItem(clubId, itemId);
+    
+    const inventoryItem = await this.fnbEnhancedService.updateInventoryItem(clubId, itemId, dto);
+    
+    // Audit log: Update inventory item
+    try {
+      if (userId && existingItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.name !== undefined && dto.name !== existingItem.name) {
+          changes.push(`name: ${existingItem.name} → ${dto.name}`);
+        }
+        if (dto.currentStock !== undefined && dto.currentStock !== existingItem.currentStock) {
+          changes.push(`currentStock: ${existingItem.currentStock} → ${dto.currentStock}`);
+        }
+        if (dto.minStock !== undefined && dto.minStock !== existingItem.minStock) {
+          changes.push(`minStock: ${existingItem.minStock} → ${dto.minStock}`);
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'inventory_item_updated',
+          actionCategory: ActionCategory.FNB,
+          description: `Updated inventory item ${existingItem.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'inventory_item',
+          targetId: itemId,
+          targetName: existingItem.name,
+          metadata: { 
+            changes: changes,
+            itemName: existingItem.name
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for inventory item update:', auditError);
+    }
+    
+    return inventoryItem;
   }
 
   /**
@@ -8714,8 +11167,47 @@ export class ClubsController {
   async deleteInventoryItem(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.deleteInventoryItem(clubId, itemId);
+    // Get existing inventory item for audit log (before deletion)
+    const existingItem = await this.fnbEnhancedService.getInventoryItem(clubId, itemId);
+    
+    const result = await this.fnbEnhancedService.deleteInventoryItem(clubId, itemId);
+    
+    // Audit log: Delete inventory item
+    try {
+      if (userId && existingItem) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'inventory_item_deleted',
+          actionCategory: ActionCategory.FNB,
+          description: `Deleted inventory item ${existingItem.name} (Current Stock: ${existingItem.currentStock}${existingItem.unit ? ` ${existingItem.unit}` : ''}, Min Stock: ${existingItem.minStock})`,
+          targetType: 'inventory_item',
+          targetId: itemId,
+          targetName: existingItem.name,
+          metadata: { 
+            itemName: existingItem.name,
+            currentStock: existingItem.currentStock,
+            minStock: existingItem.minStock,
+            unit: existingItem.unit
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for inventory item deletion:', auditError);
+    }
+    
+    return result;
   }
 
   /**
@@ -8751,8 +11243,43 @@ export class ClubsController {
   async createSupplier(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateSupplierDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createSupplier(clubId, dto);
+    const supplier = await this.fnbEnhancedService.createSupplier(clubId, dto);
+    
+    // Audit log: Create supplier
+    try {
+      if (userId && supplier) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'supplier_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created supplier ${dto.name}${dto.contact ? ` (Contact: ${dto.contact})` : ''}${dto.phone ? ` - Phone: ${dto.phone}` : ''}`,
+          targetType: 'supplier',
+          targetId: supplier.id,
+          targetName: dto.name,
+          metadata: { 
+            supplierName: dto.name,
+            contact: dto.contact,
+            phone: dto.phone
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for supplier creation:', auditError);
+    }
+    
+    return supplier;
   }
 
   /**
@@ -8791,8 +11318,56 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('supplierId', ParseUUIDPipe) supplierId: string,
     @Body() dto: UpdateSupplierDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.updateSupplier(clubId, supplierId, dto);
+    // Get existing supplier for audit log
+    const existingSupplier = await this.fnbEnhancedService.getSupplier(clubId, supplierId);
+    
+    const supplier = await this.fnbEnhancedService.updateSupplier(clubId, supplierId, dto);
+    
+    // Audit log: Update supplier
+    try {
+      if (userId && existingSupplier) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.name !== undefined && dto.name !== existingSupplier.name) {
+          changes.push(`name: ${existingSupplier.name} → ${dto.name}`);
+        }
+        if (dto.contact !== undefined && dto.contact !== existingSupplier.contact) {
+          changes.push(`contact: ${existingSupplier.contact || 'N/A'} → ${dto.contact || 'N/A'}`);
+        }
+        if (dto.phone !== undefined && dto.phone !== existingSupplier.phone) {
+          changes.push(`phone: ${existingSupplier.phone || 'N/A'} → ${dto.phone || 'N/A'}`);
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'supplier_updated',
+          actionCategory: ActionCategory.FNB,
+          description: `Updated supplier ${existingSupplier.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'supplier',
+          targetId: supplierId,
+          targetName: existingSupplier.name,
+          metadata: { 
+            changes: changes,
+            supplierName: existingSupplier.name
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for supplier update:', auditError);
+    }
+    
+    return supplier;
   }
 
   /**
@@ -8804,8 +11379,46 @@ export class ClubsController {
   async deleteSupplier(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('supplierId', ParseUUIDPipe) supplierId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.deleteSupplier(clubId, supplierId);
+    // Get existing supplier for audit log (before deletion)
+    const existingSupplier = await this.fnbEnhancedService.getSupplier(clubId, supplierId);
+    
+    const result = await this.fnbEnhancedService.deleteSupplier(clubId, supplierId);
+    
+    // Audit log: Delete supplier
+    try {
+      if (userId && existingSupplier) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'supplier_deleted',
+          actionCategory: ActionCategory.FNB,
+          description: `Deleted supplier ${existingSupplier.name}${existingSupplier.contact ? ` (Contact: ${existingSupplier.contact})` : ''}`,
+          targetType: 'supplier',
+          targetId: supplierId,
+          targetName: existingSupplier.name,
+          metadata: { 
+            supplierName: existingSupplier.name,
+            contact: existingSupplier.contact,
+            phone: existingSupplier.phone
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for supplier deletion:', auditError);
+    }
+    
+    return result;
   }
 
   /**
@@ -8849,8 +11462,45 @@ export class ClubsController {
   async createKitchenStation(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateKitchenStationDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createKitchenStation(clubId, dto);
+    const station = await this.fnbEnhancedService.createKitchenStation(clubId, dto);
+    
+    // Audit log: Create kitchen station
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'kitchen_station_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created kitchen station ${dto.stationName} (Station #${dto.stationNumber}${dto.chefName ? `, Chef: ${dto.chefName}` : ''})`,
+          targetType: 'kitchen_station',
+          targetId: station.id,
+          targetName: dto.stationName,
+          metadata: { 
+            stationName: dto.stationName,
+            stationNumber: dto.stationNumber,
+            chefName: dto.chefName,
+            chefId: dto.chefId,
+            isActive: dto.isActive ?? true
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for kitchen station creation:', auditError);
+    }
+    
+    return station;
   }
 
   /**
@@ -8889,8 +11539,60 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('stationId', ParseUUIDPipe) stationId: string,
     @Body() dto: UpdateKitchenStationDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.updateKitchenStation(clubId, stationId, dto);
+    // Get existing station for audit log
+    const existingStation = await this.fnbEnhancedService.getKitchenStation(clubId, stationId);
+    
+    const station = await this.fnbEnhancedService.updateKitchenStation(clubId, stationId, dto);
+    
+    // Audit log: Update kitchen station
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.stationName !== undefined && dto.stationName !== existingStation.stationName) {
+          changes.push(`name: ${existingStation.stationName} → ${dto.stationName}`);
+        }
+        if (dto.stationNumber !== undefined && dto.stationNumber !== existingStation.stationNumber) {
+          changes.push(`stationNumber: ${existingStation.stationNumber} → ${dto.stationNumber}`);
+        }
+        if (dto.chefName !== undefined && dto.chefName !== existingStation.chefName) {
+          changes.push(`chefName: ${existingStation.chefName || 'N/A'} → ${dto.chefName || 'N/A'}`);
+        }
+        if (dto.isActive !== undefined && dto.isActive !== existingStation.isActive) {
+          changes.push(`isActive: ${existingStation.isActive} → ${dto.isActive}`);
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'kitchen_station_updated',
+          actionCategory: ActionCategory.FNB,
+          description: `Updated kitchen station ${existingStation.stationName}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'kitchen_station',
+          targetId: stationId,
+          targetName: existingStation.stationName,
+          metadata: { 
+            changes: changes,
+            stationName: existingStation.stationName,
+            stationNumber: existingStation.stationNumber
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for kitchen station update:', auditError);
+    }
+    
+    return station;
   }
 
   /**
@@ -8902,8 +11604,48 @@ export class ClubsController {
   async deleteKitchenStation(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.deleteKitchenStation(clubId, stationId);
+    // Get existing station for audit log (before deletion)
+    const existingStation = await this.fnbEnhancedService.getKitchenStation(clubId, stationId);
+    
+    const result = await this.fnbEnhancedService.deleteKitchenStation(clubId, stationId);
+    
+    // Audit log: Delete kitchen station
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'kitchen_station_deleted',
+          actionCategory: ActionCategory.FNB,
+          description: `Deleted kitchen station ${existingStation.stationName} (Station #${existingStation.stationNumber}${existingStation.chefName ? `, Chef: ${existingStation.chefName}` : ''})`,
+          targetType: 'kitchen_station',
+          targetId: stationId,
+          targetName: existingStation.stationName,
+          metadata: { 
+            stationName: existingStation.stationName,
+            stationNumber: existingStation.stationNumber,
+            chefName: existingStation.chefName,
+            ordersCompleted: existingStation.ordersCompleted,
+            ordersPending: existingStation.ordersPending
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for kitchen station deletion:', auditError);
+    }
+    
+    return result;
   }
 
   /**
@@ -8930,8 +11672,41 @@ export class ClubsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Body() dto: AcceptRejectOrderDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.acceptOrder(clubId, orderId, { ...dto, isAccepted: true }, userId || 'System');
+    const order = await this.fnbEnhancedService.acceptOrder(clubId, orderId, { ...dto, isAccepted: true }, userId || 'System');
+    
+    // Audit log: Accept FNB order
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_accepted',
+          actionCategory: ActionCategory.FNB,
+          description: `Accepted FNB order ${orderId}${dto.stationId ? ` (Kitchen Station: ${dto.stationId})` : ''}`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId,
+            stationId: dto.stationId
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for FNB order acceptance:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8945,8 +11720,41 @@ export class ClubsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Body() dto: AcceptRejectOrderDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.rejectOrder(clubId, orderId, { ...dto, isAccepted: false }, userId || 'System');
+    const order = await this.fnbEnhancedService.rejectOrder(clubId, orderId, { ...dto, isAccepted: false }, userId || 'System');
+    
+    // Audit log: Reject FNB order
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_rejected',
+          actionCategory: ActionCategory.FNB,
+          description: `Rejected FNB order ${orderId}${dto.rejectedReason ? ` - Reason: ${dto.rejectedReason}` : ''}`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId,
+            rejectedReason: dto.rejectedReason
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for FNB order rejection:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8959,8 +11767,40 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.markOrderReady(clubId, orderId, userId || 'System');
+    const order = await this.fnbEnhancedService.markOrderReady(clubId, orderId, userId || 'System');
+    
+    // Audit log: Mark order ready
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_ready',
+          actionCategory: ActionCategory.FNB,
+          description: `Marked FNB order ${orderId} as ready`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for marking order ready:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8973,8 +11813,40 @@ export class ClubsController {
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('orderId', ParseUUIDPipe) orderId: string,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.markOrderDelivered(clubId, orderId, userId || 'System');
+    const order = await this.fnbEnhancedService.markOrderDelivered(clubId, orderId, userId || 'System');
+    
+    // Audit log: Mark order delivered
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'fnb_order_delivered',
+          actionCategory: ActionCategory.FNB,
+          description: `Marked FNB order ${orderId} as delivered`,
+          targetType: 'order',
+          targetId: orderId,
+          targetName: `Order ${orderId}`,
+          metadata: { 
+            orderId: orderId
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for marking order delivered:', auditError);
+    }
+    
+    return order;
   }
 
   /**
@@ -8986,8 +11858,41 @@ export class ClubsController {
   async createMenuCategory(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Body('categoryName') categoryName: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.createMenuCategory(clubId, categoryName);
+    const category = await this.fnbEnhancedService.createMenuCategory(clubId, categoryName);
+    
+    // Audit log: Create menu category
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'menu_category_created',
+          actionCategory: ActionCategory.FNB,
+          description: `Created menu category: ${categoryName}`,
+          targetType: 'menu_category',
+          targetId: category.id,
+          targetName: categoryName,
+          metadata: { 
+            categoryName: categoryName
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for menu category creation:', auditError);
+    }
+    
+    return category;
   }
 
   /**
@@ -9011,8 +11916,46 @@ export class ClubsController {
   async deleteMenuCategory(
     @Param('id', ParseUUIDPipe) clubId: string,
     @Param('categoryId', ParseUUIDPipe) categoryId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
-    return await this.fnbEnhancedService.deleteMenuCategory(clubId, categoryId);
+    // Get existing category for audit log (before deletion)
+    // Note: We need to get the category name before deletion
+    const categories = await this.fnbEnhancedService.getMenuCategories(clubId);
+    const existingCategory = categories.find(c => c.id === categoryId);
+    
+    const result = await this.fnbEnhancedService.deleteMenuCategory(clubId, categoryId);
+    
+    // Audit log: Delete menu category
+    try {
+      if (userId && existingCategory) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'menu_category_deleted',
+          actionCategory: ActionCategory.FNB,
+          description: `Deleted menu category: ${existingCategory.categoryName}`,
+          targetType: 'menu_category',
+          targetId: categoryId,
+          targetName: existingCategory.categoryName,
+          metadata: { 
+            categoryName: existingCategory.categoryName
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for menu category deletion:', auditError);
+    }
+    
+    return result;
   }
 
   // =========================================================================
@@ -9065,10 +12008,46 @@ export class ClubsController {
   @Roles(GlobalRole.MASTER_ADMIN)
   async updateClubStatus(
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() body: { status: string; reason?: string }
+    @Body() body: { status: string; reason?: string },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing club for audit log
+      const existingClub = await this.clubsService.findById(clubId);
+      
       const club = await this.clubsService.updateClubStatus(clubId, body.status, body.reason);
+      
+      // Audit log: Update club status
+      try {
+        if (userId && existingClub) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'MASTER_ADMIN',
+            actionType: 'club_status_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated club status: ${existingClub.status} → ${body.status}${body.reason ? ` (Reason: ${body.reason})` : ''}`,
+            targetType: 'club',
+            targetId: clubId,
+            targetName: existingClub.name,
+            metadata: { 
+              oldStatus: existingClub.status,
+              newStatus: body.status,
+              reason: body.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club status update:', auditError);
+      }
       
       return {
         success: true,
@@ -9094,10 +12073,54 @@ export class ClubsController {
   @Roles(GlobalRole.MASTER_ADMIN)
   async updateClubSubscription(
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: any
+    @Body() dto: any,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing club for audit log
+      const existingClub = await this.clubsService.findById(clubId);
+      
       const club = await this.clubsService.updateClubSubscription(clubId, dto);
+      
+      // Audit log: Update club subscription
+      try {
+        if (userId && existingClub) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.subscriptionPrice !== undefined && dto.subscriptionPrice !== existingClub.subscriptionPrice) {
+            changes.push(`subscriptionPrice: ${existingClub.subscriptionPrice || 'N/A'} → ${dto.subscriptionPrice}`);
+          }
+          if (dto.subscriptionStatus !== undefined && dto.subscriptionStatus !== existingClub.subscriptionStatus) {
+            changes.push(`subscriptionStatus: ${existingClub.subscriptionStatus || 'N/A'} → ${dto.subscriptionStatus}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'MASTER_ADMIN',
+            actionType: 'club_subscription_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated club subscription for ${existingClub.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'club',
+            targetId: clubId,
+            targetName: existingClub.name,
+            metadata: { 
+              changes: changes,
+              subscriptionPrice: dto.subscriptionPrice,
+              subscriptionStatus: dto.subscriptionStatus
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club subscription update:', auditError);
+      }
       
       return {
         success: true,
@@ -9123,10 +12146,45 @@ export class ClubsController {
   @Roles(GlobalRole.MASTER_ADMIN)
   async updateClubTerms(
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() body: { termsAndConditions: string }
+    @Body() body: { termsAndConditions: string },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing club for audit log
+      const existingClub = await this.clubsService.findById(clubId);
+      
       const club = await this.clubsService.updateClubTerms(clubId, body.termsAndConditions);
+      
+      // Audit log: Update club terms
+      try {
+        if (userId && existingClub) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'MASTER_ADMIN',
+            actionType: 'club_terms_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated terms and conditions for club ${existingClub.name}`,
+            targetType: 'club',
+            targetId: clubId,
+            targetName: existingClub.name,
+            metadata: { 
+              clubName: existingClub.name,
+              termsLength: body.termsAndConditions?.length || 0
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club terms update:', auditError);
+      }
       
       return {
         success: true,
@@ -9150,10 +12208,45 @@ export class ClubsController {
   @Roles(GlobalRole.MASTER_ADMIN)
   async updateClubRummyEnabled(
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() body: { rummyEnabled: boolean }
+    @Body() body: { rummyEnabled: boolean },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing club for audit log
+      const existingClub = await this.clubsService.findById(clubId);
+      
       const club = await this.clubsService.updateClubRummyEnabled(clubId, body.rummyEnabled);
+      
+      // Audit log: Update club rummy enabled
+      try {
+        if (userId && existingClub) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'MASTER_ADMIN',
+            actionType: 'club_rummy_enabled_updated',
+            actionCategory: ActionCategory.SYSTEM,
+            description: `Updated rummy enabled status for ${existingClub.name}: ${existingClub.rummyEnabled || false} → ${body.rummyEnabled}`,
+            targetType: 'club',
+            targetId: clubId,
+            targetName: existingClub.name,
+            metadata: { 
+              oldRummyEnabled: existingClub.rummyEnabled || false,
+              newRummyEnabled: body.rummyEnabled
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for club rummy enabled update:', auditError);
+      }
       
       return {
         success: true,
@@ -9218,9 +12311,43 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Headers('x-user-id') userId: string,
     @Body() dto: CreateTournamentDto,
+    @Req() req?: Request
   ) {
     try {
       const tournament = await this.tournamentsService.createTournament(clubId, userId, dto);
+      
+      // Audit log: Create tournament
+      try {
+        if (userId && tournament) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_created',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Created tournament ${dto.name} (Type: ${dto.tournament_type}, Buy-in: ₹${dto.buy_in}, Starting Chips: ${dto.starting_chips})`,
+            targetType: 'tournament',
+            targetId: tournament.id,
+            targetName: dto.name,
+            metadata: { 
+              tournamentType: dto.tournament_type,
+              buyIn: dto.buy_in,
+              startingChips: dto.starting_chips,
+              maxPlayers: dto.max_players
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament creation:', auditError);
+      }
+      
       return { success: true, tournament, message: 'Tournament created successfully' };
     } catch (error) {
       console.error('Error in createTournament:', error);
@@ -9238,9 +12365,56 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
     @Body() dto: UpdateTournamentDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing tournament for audit log
+      const existingTournament = await this.tournamentsService.getTournamentById(clubId, tournamentId);
+      
       const tournament = await this.tournamentsService.updateTournament(clubId, tournamentId, dto);
+      
+      // Audit log: Update tournament
+      try {
+        if (userId && existingTournament) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (dto.name !== undefined && dto.name !== existingTournament.name) {
+            changes.push(`name: ${existingTournament.name} → ${dto.name}`);
+          }
+          if (dto.buy_in !== undefined && dto.buy_in !== existingTournament.buy_in) {
+            changes.push(`buyIn: ₹${existingTournament.buy_in} → ₹${dto.buy_in}`);
+          }
+          if (dto.starting_chips !== undefined && dto.starting_chips !== existingTournament.starting_chips) {
+            changes.push(`startingChips: ${existingTournament.starting_chips} → ${dto.starting_chips}`);
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_updated',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Updated tournament ${existingTournament.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: existingTournament.name,
+            metadata: { 
+              changes: changes,
+              tournamentName: existingTournament.name
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament update:', auditError);
+      }
+      
       return { success: true, tournament, message: 'Tournament updated successfully' };
     } catch (error) {
       console.error('Error in updateTournament:', error);
@@ -9256,9 +12430,51 @@ export class ClubsController {
   async deleteTournament(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing tournament for audit log (before deletion)
+      let existingTournament;
+      try {
+        existingTournament = await this.tournamentsService.getTournamentById(clubId, tournamentId);
+      } catch (e) {
+        // Tournament might not exist, continue with deletion
+      }
+      
       const result = await this.tournamentsService.deleteTournament(clubId, tournamentId);
+      
+      // Audit log: Delete tournament
+      try {
+        if (userId && existingTournament) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_deleted',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Deleted tournament ${existingTournament.name} (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: existingTournament.name,
+            metadata: { 
+              tournamentName: existingTournament.name,
+              tournamentType: existingTournament.tournament_type,
+              buyIn: existingTournament.buy_in
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament deletion:', auditError);
+      }
+      
       return { success: true, message: result.message };
     } catch (error) {
       console.error('Error in deleteTournament:', error);
@@ -9274,9 +12490,46 @@ export class ClubsController {
   async startTournament(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing tournament for audit log
+      const existingTournament = await this.tournamentsService.getTournamentById(clubId, tournamentId);
+      
       const tournament = await this.tournamentsService.startTournament(clubId, tournamentId);
+      
+      // Audit log: Start tournament
+      try {
+        if (userId && existingTournament) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_started',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Started tournament ${existingTournament.name} (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: existingTournament.name,
+            metadata: { 
+              tournamentName: existingTournament.name,
+              tournamentType: existingTournament.tournament_type,
+              buyIn: existingTournament.buy_in
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament start:', auditError);
+      }
+      
       return { success: true, tournament, message: 'Tournament started successfully' };
     } catch (error) {
       console.error('Error in startTournament:', error);
@@ -9294,9 +12547,47 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
     @Body() dto: EndTournamentDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing tournament for audit log
+      const existingTournament = await this.tournamentsService.getTournamentById(clubId, tournamentId);
+      
       const tournament = await this.tournamentsService.endTournament(clubId, tournamentId, dto);
+      
+      // Audit log: End tournament
+      try {
+        if (userId && existingTournament) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const winnersCount = dto.winners && Array.isArray(dto.winners) ? dto.winners.length : 0;
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_ended',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Ended tournament ${existingTournament.name}${winnersCount > 0 ? ` with ${winnersCount} winner(s)` : ''}`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: existingTournament.name,
+            metadata: { 
+              tournamentName: existingTournament.name,
+              winnersCount: winnersCount
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament end:', auditError);
+      }
+      
       return { success: true, tournament, message: 'Tournament ended and winners updated successfully' };
     } catch (error) {
       console.error('Error in endTournament:', error);
@@ -9356,9 +12647,43 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() createShiftDto: CreateShiftDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const shift = await this.shiftManagementService.createShift(clubId, createShiftDto, userId);
+      
+      // Audit log: Create shift
+      try {
+        if (userId && shift) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'shift_created',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Created shift for ${createShiftDto.staffId} on ${createShiftDto.shiftDate}${createShiftDto.shiftStartTime ? ` (${createShiftDto.shiftStartTime} - ${createShiftDto.shiftEndTime})` : ''}`,
+            targetType: 'shift',
+            targetId: shift.id,
+            targetName: `Shift ${shift.id}`,
+            metadata: { 
+              staffId: createShiftDto.staffId,
+              shiftDate: createShiftDto.shiftDate,
+              shiftStartTime: createShiftDto.shiftStartTime,
+              shiftEndTime: createShiftDto.shiftEndTime
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for shift creation:', auditError);
+      }
+      
       return { success: true, shift };
     } catch (error) {
       console.error('Error in createShift:', error);
@@ -9455,9 +12780,65 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
     @Body() updateShiftDto: UpdateShiftDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing shift for audit log
+      const existingShift = await this.shiftManagementService.getShiftById(clubId, shiftId);
+      
       const shift = await this.shiftManagementService.updateShift(clubId, shiftId, updateShiftDto);
+      
+      // Audit log: Update shift
+      try {
+        if (userId && existingShift) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const changes: string[] = [];
+          if (updateShiftDto.shiftStartTime !== undefined) {
+            const existingStartTime = existingShift.shiftStartTime instanceof Date ? existingShift.shiftStartTime.toISOString() : existingShift.shiftStartTime;
+            if (updateShiftDto.shiftStartTime !== existingStartTime) {
+              changes.push(`startTime: ${existingStartTime} → ${updateShiftDto.shiftStartTime}`);
+            }
+          }
+          if (updateShiftDto.shiftEndTime !== undefined) {
+            const existingEndTime = existingShift.shiftEndTime instanceof Date ? existingShift.shiftEndTime.toISOString() : existingShift.shiftEndTime;
+            if (updateShiftDto.shiftEndTime !== existingEndTime) {
+              changes.push(`endTime: ${existingEndTime} → ${updateShiftDto.shiftEndTime}`);
+            }
+          }
+          if (updateShiftDto.shiftDate !== undefined) {
+            const existingDate = existingShift.shiftDate instanceof Date ? existingShift.shiftDate.toISOString().split('T')[0] : existingShift.shiftDate;
+            if (updateShiftDto.shiftDate !== existingDate) {
+              changes.push(`date: ${existingDate} → ${updateShiftDto.shiftDate}`);
+            }
+          }
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'shift_updated',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Updated shift ${shiftId}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            targetType: 'shift',
+            targetId: shiftId,
+            targetName: `Shift ${shiftId}`,
+            metadata: { 
+              changes: changes,
+              staffId: existingShift.staffId
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for shift update:', auditError);
+      }
+      
       return { success: true, shift };
     } catch (error) {
       console.error('Error in updateShift:', error);
@@ -9475,9 +12856,47 @@ export class ClubsController {
   async deleteShift(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get existing shift for audit log (before deletion)
+      const existingShift = await this.shiftManagementService.getShiftById(clubId, shiftId);
+      
       const result = await this.shiftManagementService.deleteShift(clubId, shiftId);
+      
+      // Audit log: Delete shift
+      try {
+        if (userId && existingShift) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'shift_deleted',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Deleted shift for ${existingShift.staffId} on ${existingShift.shiftDate instanceof Date ? existingShift.shiftDate.toISOString().split('T')[0] : existingShift.shiftDate}${existingShift.shiftStartTime ? ` (${existingShift.shiftStartTime instanceof Date ? existingShift.shiftStartTime.toISOString() : existingShift.shiftStartTime} - ${existingShift.shiftEndTime instanceof Date ? existingShift.shiftEndTime.toISOString() : existingShift.shiftEndTime})` : ''}`,
+            targetType: 'shift',
+            targetId: shiftId,
+            targetName: `Shift ${shiftId}`,
+            metadata: { 
+              staffId: existingShift.staffId,
+              shiftDate: existingShift.shiftDate instanceof Date ? existingShift.shiftDate.toISOString().split('T')[0] : existingShift.shiftDate,
+              shiftStartTime: existingShift.shiftStartTime instanceof Date ? existingShift.shiftStartTime.toISOString() : existingShift.shiftStartTime,
+              shiftEndTime: existingShift.shiftEndTime instanceof Date ? existingShift.shiftEndTime.toISOString() : existingShift.shiftEndTime
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for shift deletion:', auditError);
+      }
+      
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in deleteShift:', error);
@@ -9497,9 +12916,42 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() copyShiftDto: CopyShiftDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const result = await this.shiftManagementService.copyShifts(clubId, copyShiftDto, userId);
+      
+      // Audit log: Copy shifts
+      try {
+        if (userId && result) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'shifts_copied',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Copied ${result.copiedShifts?.length || 0} shifts to ${copyShiftDto.targetDates?.length || 0} target date(s)`,
+            targetType: 'shift',
+            targetId: 'multiple',
+            targetName: `Multiple Shifts`,
+            metadata: { 
+              shiftIds: copyShiftDto.shiftIds,
+              targetDates: copyShiftDto.targetDates,
+              copiedCount: result.copiedShifts?.length || 0
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for shift copy:', auditError);
+      }
+      
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in copyShifts:', error);
@@ -9537,9 +12989,42 @@ export class ClubsController {
   async deleteMultipleShifts(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() body: { shiftIds: string[] },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const result = await this.shiftManagementService.deleteMultipleShifts(clubId, body.shiftIds);
+      
+      // Audit log: Delete multiple shifts
+      try {
+        if (userId && result) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'shifts_deleted_multiple',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Deleted ${result.deletedCount || body.shiftIds.length} shifts`,
+            targetType: 'shift',
+            targetId: 'multiple',
+            targetName: `Multiple Shifts`,
+            metadata: { 
+              shiftIds: body.shiftIds,
+              deletedCount: result.deletedCount || body.shiftIds.length
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for multiple shift deletion:', auditError);
+      }
+      
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in deleteMultipleShifts:', error);
@@ -9563,9 +13048,42 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() processSalaryDto: ProcessSalaryDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const payment = await this.payrollService.processSalary(clubId, processSalaryDto, userId);
+      
+      // Audit log: Process salary
+      try {
+        if (userId && payment) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'salary_processed',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Processed salary payment of ₹${processSalaryDto.baseSalary} for staff ${processSalaryDto.staffId} (Period: ${processSalaryDto.payPeriod})`,
+            targetType: 'staff',
+            targetId: processSalaryDto.staffId,
+            targetName: `Staff ${processSalaryDto.staffId}`,
+            metadata: { 
+              staffId: processSalaryDto.staffId,
+              baseSalary: processSalaryDto.baseSalary,
+              payPeriod: processSalaryDto.payPeriod
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for salary processing:', auditError);
+      }
+      
       return { success: true, payment };
     } catch (error) {
       console.error('Error in processSalary:', error);
@@ -9762,9 +13280,43 @@ export class ClubsController {
     @Body() updateTipSettingsDto: UpdateTipSettingsDto,
     @Headers('x-user-id') userId?: string,
     @Query('dealerId') dealerId?: string,
+    @Req() req?: Request
   ) {
     try {
       const settings = await this.payrollService.updateTipSettings(clubId, updateTipSettingsDto, userId, dealerId);
+      
+      // Audit log: Create/Update tip settings
+      try {
+        if (userId && settings) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tip_settings_created',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Created/Updated tip settings${dealerId ? ` for dealer ${dealerId}` : ''} - Club Hold: ${updateTipSettingsDto.clubHoldPercentage}%, Dealer Share: ${updateTipSettingsDto.dealerSharePercentage}%, Floor Manager: ${updateTipSettingsDto.floorManagerPercentage}%`,
+            targetType: dealerId ? 'staff' : 'system',
+            targetId: dealerId || 'system',
+            targetName: dealerId ? `Dealer ${dealerId}` : 'Tip Settings',
+            metadata: { 
+              dealerId: dealerId,
+              clubHoldPercentage: updateTipSettingsDto.clubHoldPercentage,
+              dealerSharePercentage: updateTipSettingsDto.dealerSharePercentage,
+              floorManagerPercentage: updateTipSettingsDto.floorManagerPercentage
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tip settings update:', auditError);
+      }
+      
       return { success: true, settings };
     } catch (error) {
       console.error('Error in updateTipSettings:', error);
@@ -9784,9 +13336,46 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() processDealerTipsDto: ProcessDealerTipsDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const tips = await this.payrollService.processDealerTips(clubId, processDealerTipsDto, userId);
+      
+      // Audit log: Distribute tips
+      try {
+        if (userId && tips) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          const totalAmount = Array.isArray(tips) 
+            ? tips.reduce((sum, tip) => sum + (Number(tip.totalTips) || 0), 0)
+            : (Number(tips.totalTips) || 0);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tips_distributed',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Distributed tips totaling ₹${totalAmount}${processDealerTipsDto.dealerId ? ` to dealer ${processDealerTipsDto.dealerId}` : ' to dealers'}`,
+            targetType: processDealerTipsDto.dealerId ? 'staff' : 'system',
+            targetId: processDealerTipsDto.dealerId || 'multiple',
+            targetName: processDealerTipsDto.dealerId ? `Dealer ${processDealerTipsDto.dealerId}` : 'Multiple Dealers',
+            metadata: { 
+              dealerId: processDealerTipsDto.dealerId,
+              totalAmount: totalAmount,
+              tipCount: Array.isArray(tips) ? tips.length : 1
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tip distribution:', auditError);
+      }
+      
       return { success: true, tips };
     } catch (error) {
       console.error('Error in processDealerTips:', error);
@@ -9895,9 +13484,42 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Body() processDealerCashoutDto: ProcessDealerCashoutDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
       const cashout = await this.payrollService.processDealerCashout(clubId, processDealerCashoutDto, userId);
+      
+      // Audit log: Process cashout
+      try {
+        if (userId && cashout) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'cashout_processed',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Processed cashout of ₹${processDealerCashoutDto.amount} for dealer ${processDealerCashoutDto.dealerId} on ${processDealerCashoutDto.cashoutDate}`,
+            targetType: 'staff',
+            targetId: processDealerCashoutDto.dealerId,
+            targetName: `Dealer ${processDealerCashoutDto.dealerId}`,
+            metadata: { 
+              dealerId: processDealerCashoutDto.dealerId,
+              amount: processDealerCashoutDto.amount,
+              cashoutDate: processDealerCashoutDto.cashoutDate
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for cashout processing:', auditError);
+      }
+      
       return { success: true, cashout };
     } catch (error) {
       console.error('Error in processDealerCashout:', error);
@@ -9954,9 +13576,46 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Headers('x-user-id') userId: string,
     @Body() dto: CreatePlayerBonusDto,
+    @Req() req?: Request
   ) {
     try {
       const bonus = await this.bonusService.processPlayerBonus(clubId, dto, userId);
+      
+      // Audit log: Process player bonus
+      try {
+        if (userId && bonus) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          // Get player name for audit log
+          const player = await this.playersRepo.findOne({ where: { id: dto.playerId } });
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'player_bonus_processed',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Processed ${dto.bonusType} bonus of ₹${dto.bonusAmount} for player ${player?.name || dto.playerId}${dto.reason ? ` - Reason: ${dto.reason}` : ''}`,
+            targetType: 'player',
+            targetId: dto.playerId,
+            targetName: player?.name || dto.playerId,
+            metadata: { 
+              playerId: dto.playerId,
+              bonusType: dto.bonusType,
+              bonusAmount: dto.bonusAmount,
+              reason: dto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for player bonus processing:', auditError);
+      }
+      
       return { success: true, bonus };
     } catch (error) {
       console.error('Error in processPlayerBonus:', error);
@@ -10029,9 +13688,46 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Headers('x-user-id') userId: string,
     @Body() dto: CreateStaffBonusDto,
+    @Req() req?: Request
   ) {
     try {
       const bonus = await this.bonusService.processStaffBonus(clubId, dto, userId);
+      
+      // Audit log: Process staff bonus
+      try {
+        if (userId && bonus) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          // Get staff member name for audit log
+          const targetStaff = await this.staffService.findOne(dto.staffId, clubId);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'staff_bonus_processed',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Processed ${dto.bonusType} bonus of ₹${dto.bonusAmount} for staff ${targetStaff?.name || dto.staffId}${dto.reason ? ` - Reason: ${dto.reason}` : ''}`,
+            targetType: 'staff',
+            targetId: dto.staffId,
+            targetName: targetStaff?.name || dto.staffId,
+            metadata: { 
+              staffId: dto.staffId,
+              bonusType: dto.bonusType,
+              bonusAmount: dto.bonusAmount,
+              reason: dto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff bonus processing:', auditError);
+      }
+      
       return { success: true, bonus };
     } catch (error) {
       console.error('Error in processStaffBonus:', error);
@@ -10212,8 +13908,12 @@ export class ClubsController {
     @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
     @Body() editTransactionDto: EditTransactionDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get original transaction for audit log
+      const originalTransaction = await this.financialTransactionsService.findOne(transactionId, clubId);
+      
       // Use the financial overrides service to edit ANY transaction type
       const transaction = await this.financialOverridesService.editAnyTransaction(
         transactionId,
@@ -10222,6 +13922,40 @@ export class ClubsController {
         editTransactionDto.reason,
         userId,
       );
+
+      // Audit log: Edit transaction (override)
+      try {
+        if (userId && originalTransaction) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'transaction_edited_override',
+            actionCategory: ActionCategory.OVERRIDE,
+            description: `Edited ${originalTransaction.type} transaction of ₹${originalTransaction.amount} to ₹${editTransactionDto.amount} for player ${originalTransaction.playerName} (Override)`,
+            targetType: 'player',
+            targetId: originalTransaction.playerId,
+            targetName: originalTransaction.playerName,
+            metadata: { 
+              transactionId: transactionId,
+              type: originalTransaction.type,
+              previousAmount: originalTransaction.amount,
+              newAmount: editTransactionDto.amount,
+              reason: editTransactionDto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for transaction edit override:', auditError);
+      }
+
       return { success: true, transaction };
     } catch (error) {
       console.error('Error in editTransaction:', error);
@@ -10242,14 +13976,51 @@ export class ClubsController {
     @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
     @Body() cancelTransactionDto: CancelTransactionDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     try {
+      // Get original transaction for audit log
+      const originalTransaction = await this.financialTransactionsService.findOne(transactionId, clubId);
+      
       const transaction = await this.financialTransactionsService.cancelTransaction(
         transactionId,
         clubId,
         cancelTransactionDto,
         userId,
       );
+
+      // Audit log: Cancel transaction (override)
+      try {
+        if (userId && originalTransaction) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'transaction_cancelled_override',
+            actionCategory: ActionCategory.OVERRIDE,
+            description: `Cancelled ${originalTransaction.type} transaction of ₹${originalTransaction.amount} for player ${originalTransaction.playerName} (Override)`,
+            targetType: 'player',
+            targetId: originalTransaction.playerId,
+            targetName: originalTransaction.playerName,
+            metadata: { 
+              transactionId: transactionId,
+              type: originalTransaction.type,
+              amount: originalTransaction.amount,
+              reason: cancelTransactionDto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for transaction cancel override:', auditError);
+      }
+
       return { success: true, transaction };
     } catch (error) {
       console.error('Error in cancelTransactionOverride:', error);
@@ -10270,8 +14041,41 @@ export class ClubsController {
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Body() dto: CreateStaffChatSessionDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const session = await this.chatService.createStaffChatSession(clubId, userId || '', dto);
+    
+    // Audit log: Create staff chat session
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'chat_session_created_staff',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Created staff chat session with recipient ${dto.recipientStaffId}${dto.subject ? ` - Subject: ${dto.subject}` : ''}`,
+          targetType: 'chat_session',
+          targetId: session.id,
+          targetName: `Staff Chat Session`,
+          metadata: { 
+            sessionType: 'staff',
+            recipientStaffId: dto.recipientStaffId,
+            subject: dto.subject
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for staff chat session creation:', auditError);
+    }
+    
     return { success: true, session };
   }
 
@@ -10331,8 +14135,41 @@ export class ClubsController {
   async createPlayerChatSession(
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Body() dto: CreatePlayerChatSessionDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const session = await this.chatService.createPlayerChatSession(clubId, dto);
+    
+    // Audit log: Create player chat session
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'chat_session_created_player',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Created player chat session${dto.playerId ? ` for player ${dto.playerId}` : ''}`,
+          targetType: 'chat_session',
+          targetId: session.id,
+          targetName: `Player Chat Session`,
+          metadata: { 
+            sessionType: 'player',
+            playerId: dto.playerId
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for player chat session creation:', auditError);
+    }
+    
     return { success: true, session };
   }
 
@@ -10372,8 +14209,40 @@ export class ClubsController {
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Body() dto: SendMessageDto,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const message = await this.chatService.sendMessage(clubId, sessionId, userId || '', dto);
+    
+    // Audit log: Send chat message
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'chat_message_sent',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Sent chat message in session ${sessionId}${dto.message ? `: ${dto.message.substring(0, 50)}${dto.message.length > 50 ? '...' : ''}` : ''}`,
+          targetType: 'chat_message',
+          targetId: message.id,
+          targetName: `Chat Message`,
+          metadata: { 
+            sessionId: sessionId,
+            hasMessage: !!dto.message
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for chat message send:', auditError);
+    }
+    
     return { success: true, message };
   }
 
@@ -10412,8 +14281,49 @@ export class ClubsController {
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Body() dto: UpdateChatSessionDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const session = await this.chatService.updateChatSession(clubId, sessionId, dto);
+    
+    // Audit log: Update chat session
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        const changes: string[] = [];
+        if (dto.status !== undefined) {
+          changes.push(`status: ${dto.status}`);
+        }
+        if (dto.assignedStaffId !== undefined) {
+          changes.push(`assignedStaffId: ${dto.assignedStaffId}`);
+        }
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'chat_session_updated',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Updated chat session ${sessionId}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+          targetType: 'chat_session',
+          targetId: sessionId,
+          targetName: `Chat Session ${sessionId}`,
+          metadata: { 
+            sessionId: sessionId,
+            changes: changes
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for chat session update:', auditError);
+    }
+    
     return { success: true, session };
   }
 
@@ -10428,8 +14338,39 @@ export class ClubsController {
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const session = await this.chatService.archiveChatSession(clubId, sessionId, userId || '');
+    
+    // Audit log: Archive chat session
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'chat_session_archived',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Archived chat session ${sessionId}`,
+          targetType: 'chat_session',
+          targetId: sessionId,
+          targetName: `Chat Session ${sessionId}`,
+          metadata: { 
+            sessionId: sessionId
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for chat session archive:', auditError);
+    }
+    
     return { success: true, session };
   }
 
@@ -10461,8 +14402,42 @@ export class ClubsController {
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Body() dto: GenerateReportDto,
     @Res() res: any,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
   ) {
     const buffer = await this.reportsService.generateReport(clubId, dto);
+    
+    // Audit log: Generate report
+    try {
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const allStaff = await this.staffService.findAll(clubId);
+        const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+        
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: staff?.id || userId,
+          staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+          staffRole: staff?.role || 'Admin',
+          actionType: 'report_generated',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Generated ${dto.reportType} report (Format: ${dto.format}${dto.startDate && dto.endDate ? `, Date Range: ${dto.startDate} to ${dto.endDate}` : ''})`,
+          targetType: 'report',
+          targetId: `report_${Date.now()}`,
+          targetName: `${dto.reportType} Report`,
+          metadata: { 
+            reportType: dto.reportType,
+            format: dto.format,
+            startDate: dto.startDate,
+            endDate: dto.endDate
+          },
+          ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+          userAgent: (req as any)?.headers?.['user-agent'] || undefined
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to create audit log for report generation:', auditError);
+    }
     
     const filename = `${dto.reportType}_report_${new Date().toISOString().split('T')[0]}.${dto.format === 'excel' ? 'xlsx' : 'pdf'}`;
     const contentType = dto.format === 'excel' 
@@ -10524,7 +14499,7 @@ export class ClubsController {
    * WARNING: This is destructive and irreversible
    */
   @Post(':clubId/system/factory-reset')
-  @Roles(ClubRole.SUPER_ADMIN)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
   @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   @HttpCode(HttpStatus.OK)
@@ -10564,23 +14539,28 @@ export class ClubsController {
       throw new UnauthorizedException('Invalid password');
     }
 
+    // Get staff member to determine actual role
+    const allStaff = await this.staffService.findAll(clubId);
+    const staff = allStaff.find(s => s.userId === userId || s.email === user.email);
+    const staffRole = staff?.role || 'Super Admin';
+
     // Log the factory reset action
     await this.auditLogsService.logAction({
       clubId,
-      staffId: userId,
+      staffId: staff?.id || userId,
       staffName: user.displayName || user.email,
-      staffRole: 'SUPER_ADMIN',
+      staffRole: staffRole,
       actionType: 'factory_reset',
       actionCategory: ActionCategory.SYSTEM,
-      description: `FACTORY RESET: All club data wiped by ${user.displayName || user.email}`,
+      description: `FACTORY RESET: All club data wiped by ${user.displayName || user.email} (${staffRole})`,
     });
 
-    // Execute factory reset - delete all data
+    // Execute factory reset - delete all data (preserves SUPER_ADMIN and ADMIN accounts)
     await this.clubsService.factoryReset(clubId);
 
     return {
       success: true,
-      message: 'Factory reset completed successfully. All club data has been wiped.',
+      message: 'Factory reset completed successfully. All club data has been wiped. Admin and Super Admin accounts have been preserved.',
       clubId,
       resetAt: new Date().toISOString(),
     };
@@ -10626,7 +14606,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateRakeCollectionDto
+    @Body() dto: CreateRakeCollectionDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10642,6 +14623,38 @@ export class ClubsController {
         throw new BadRequestException('x-user-id header is required');
       }
       const collection = await this.rakeCollectionService.createRakeCollection(clubId, dto, userId);
+      
+      // Audit log: Create rake collection
+      try {
+        if (userId && collection) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'rake_collection_created',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Created rake collection for Table ${dto.tableId} - Amount: ₹${dto.totalRakeAmount}${dto.notes ? ` (${dto.notes})` : ''}`,
+            targetType: 'table',
+            targetId: dto.tableId,
+            targetName: `Table ${dto.tableId}`,
+            metadata: { 
+              tableId: dto.tableId,
+              totalRakeAmount: dto.totalRakeAmount,
+              notes: dto.notes
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for rake collection creation:', auditError);
+      }
+      
       return collection;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -10749,7 +14762,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: ApproveBuyOutDto
+    @Body() dto: ApproveBuyOutDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10764,7 +14778,45 @@ export class ClubsController {
       if (!userId) {
         throw new BadRequestException('x-user-id header is required');
       }
+      
+      // Get request details for audit log
+      const buyOutRequest = await this.buyOutRequestService.getPendingBuyOutRequests(clubId);
+      const request = buyOutRequest.find(r => r.id === requestId);
+      
       const result = await this.buyOutRequestService.approveBuyOutRequest(clubId, requestId, dto, userId);
+      
+      // Audit log: Approve buyout request
+      try {
+        if (userId && request) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'buyout_request_approved',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Approved buyout request of ₹${result.amount} for player ${request.playerName} (Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''})`,
+            targetType: 'player',
+            targetId: request.playerId,
+            targetName: request.playerName,
+            metadata: { 
+              requestId: requestId,
+              amount: result.amount,
+              tableNumber: request.tableNumber,
+              seatNumber: request.seatNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for buyout approval:', auditError);
+      }
+      
       return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -10783,7 +14835,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: RejectBuyOutDto
+    @Body() dto: RejectBuyOutDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10798,7 +14851,45 @@ export class ClubsController {
       if (!userId) {
         throw new BadRequestException('x-user-id header is required');
       }
+      
+      // Get request details for audit log
+      const buyOutRequest = await this.buyOutRequestService.getPendingBuyOutRequests(clubId);
+      const request = buyOutRequest.find(r => r.id === requestId);
+      
       const result = await this.buyOutRequestService.rejectBuyOutRequest(clubId, requestId, dto, userId);
+      
+      // Audit log: Reject buyout request
+      try {
+        if (userId && request) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'buyout_request_rejected',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Rejected buyout request for player ${request.playerName} (Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''}) - Reason: ${dto.reason}`,
+            targetType: 'player',
+            targetId: request.playerId,
+            targetName: request.playerName,
+            metadata: { 
+              requestId: requestId,
+              reason: dto.reason,
+              tableNumber: request.tableNumber,
+              seatNumber: request.seatNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for buyout rejection:', auditError);
+      }
+      
       return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -10849,7 +14940,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: ApproveBuyInDto
+    @Body() dto: ApproveBuyInDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10864,7 +14956,45 @@ export class ClubsController {
       if (!userId) {
         throw new BadRequestException('x-user-id header is required');
       }
+      
+      // Get request details for audit log
+      const buyInRequest = await this.buyInRequestService.getPendingBuyInRequests(clubId);
+      const request = buyInRequest.find(r => r.id === requestId);
+      
       const result = await this.buyInRequestService.approveBuyInRequest(clubId, requestId, dto, userId);
+      
+      // Audit log: Approve buyin request
+      try {
+        if (userId && request) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'buyin_request_approved',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Approved buyin request of ₹${result.amount} for player ${request.playerName} (Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''})`,
+            targetType: 'player',
+            targetId: request.playerId,
+            targetName: request.playerName,
+            metadata: { 
+              requestId: requestId,
+              amount: result.amount,
+              tableNumber: request.tableNumber,
+              seatNumber: request.seatNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for buyin approval:', auditError);
+      }
+      
       return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -10883,7 +15013,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Body() dto: RejectBuyInDto
+    @Body() dto: RejectBuyInDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10898,7 +15029,45 @@ export class ClubsController {
       if (!userId) {
         throw new BadRequestException('x-user-id header is required');
       }
+      
+      // Get request details for audit log
+      const buyInRequest = await this.buyInRequestService.getPendingBuyInRequests(clubId);
+      const request = buyInRequest.find(r => r.id === requestId);
+      
       const result = await this.buyInRequestService.rejectBuyInRequest(clubId, requestId, dto, userId);
+      
+      // Audit log: Reject buyin request
+      try {
+        if (userId && request) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'buyin_request_rejected',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Rejected buyin request for player ${request.playerName} (Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''}) - Reason: ${dto.reason}`,
+            targetType: 'player',
+            targetId: request.playerId,
+            targetName: request.playerName,
+            metadata: { 
+              requestId: requestId,
+              reason: dto.reason,
+              tableNumber: request.tableNumber,
+              seatNumber: request.seatNumber
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for buyin rejection:', auditError);
+      }
+      
       return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -10984,7 +15153,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() dto: CreateAttendanceDto
+    @Body() dto: CreateAttendanceDto,
+    @Req() req?: Request
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -10997,6 +15167,39 @@ export class ClubsController {
         }
       }
       const record = await this.attendanceTrackingService.createAttendanceRecord(clubId, dto, userId || '');
+      
+      // Audit log: Record attendance
+      try {
+        if (userId && record) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'attendance_recorded',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Recorded attendance for staff ${dto.staffId} on ${dto.date}${dto.loginTime ? ` (Login: ${dto.loginTime}${dto.logoutTime ? `, Logout: ${dto.logoutTime}` : ''})` : ''}`,
+            targetType: 'staff',
+            targetId: dto.staffId,
+            targetName: `Staff ${dto.staffId}`,
+            metadata: { 
+              staffId: dto.staffId,
+              date: dto.date,
+              loginTime: dto.loginTime,
+              logoutTime: dto.logoutTime
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for attendance recording:', auditError);
+      }
+      
       return { success: true, record };
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {

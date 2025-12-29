@@ -6,6 +6,7 @@ import { User } from './user.entity';
 import { UserClubRole } from './user-club-role.entity';
 import { UserTenantRole } from './user-tenant-role.entity';
 import { Club } from '../clubs/club.entity';
+import { Staff } from '../clubs/entities/staff.entity';
 import { ClubRole, TenantRole } from '../common/rbac/roles';
 
 @Injectable()
@@ -14,7 +15,8 @@ export class UsersService {
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
-    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>
+    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
+    @InjectRepository(Staff) private readonly staffRepo: Repository<Staff>
   ) {}
 
   async findByEmail(email: string, includePassword = false) {
@@ -98,6 +100,17 @@ export class UsersService {
       passwordHash,
       mustResetPassword: false
     });
+
+    // Also update staff.tempPassword flag if this user is a staff member
+    try {
+      const staff = await this.staffRepo.findOne({ where: { email: email.trim() } });
+      if (staff && staff.tempPassword) {
+        await this.staffRepo.update(staff.id, { tempPassword: false });
+      }
+    } catch (staffUpdateError) {
+      // Log error but don't fail the password reset
+      console.error('Failed to update staff tempPassword flag:', staffUpdateError);
+    }
 
     return {
       success: true,

@@ -30,3 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_players_credit_enabled ON public.players(credit_e
 
 
 
+
+
+
+
