@@ -1150,6 +1150,7 @@ export class AuthService {
       // Edge case: Hash new password
       const saltRounds = 12;
       player.passwordHash = await bcrypt.hash(newPassword.trim(), saltRounds);
+      player.mustResetPassword = false; // Reset flag after successful password change
 
       await this.playersRepo.save(player);
 

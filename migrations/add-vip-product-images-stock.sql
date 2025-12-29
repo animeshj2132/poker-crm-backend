@@ -19,3 +19,7 @@ COMMENT ON COLUMN vip_products.is_active IS 'Whether product is active and avail
 
 
 
+
+
+
+
