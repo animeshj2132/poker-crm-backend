@@ -138,6 +138,19 @@ export class ClubsService {
     });
   }
 
+  /**
+   * Update club details (for Master Admin)
+   */
+  async updateClub(clubId: string, updates: Partial<Club>) {
+    const club = await this.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    Object.assign(club, updates);
+    return this.clubsRepo.save(club);
+  }
+
   async validateClubBelongsToTenant(clubId: string, tenantId: string) {
     const club = await this.findById(clubId);
     if (!club) throw new NotFoundException('Club not found');

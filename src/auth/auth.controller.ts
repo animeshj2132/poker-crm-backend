@@ -8,6 +8,7 @@ import { PlayerSignupDto } from './dto/player-signup.dto';
 import { UpdatePlayerProfileDto } from './dto/update-player-profile.dto';
 import { ChangePlayerPasswordDto } from './dto/change-player-password.dto';
 import { ChangeStaffPasswordDto } from './dto/change-staff-password.dto';
+import { PlayerResetPasswordDto } from './dto/player-reset-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -179,6 +180,32 @@ export class AuthController {
       dto.lastName,
       dto.phoneNumber,
       dto.nickname
+    );
+  }
+
+  /**
+   * Reset player password (first-time password reset for players with mustResetPassword flag)
+   * POST /api/auth/player/reset-password
+   */
+  @Post('player/reset-password')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async resetPlayerPassword(@Body() dto?: PlayerResetPasswordDto) {
+    if (!dto) {
+      throw new BadRequestException('Request body is required');
+    }
+    if (!dto.email || !dto.email.trim()) {
+      throw new BadRequestException('Email is required');
+    }
+    if (!dto.newPassword || !dto.newPassword.trim()) {
+      throw new BadRequestException('New password is required');
+    }
+    if (!dto.clubCode || !dto.clubCode.trim()) {
+      throw new BadRequestException('Club code is required');
+    }
+    return this.authService.resetPlayerPassword(
+      dto.email.trim(),
+      dto.newPassword.trim(),
+      dto.clubCode.trim()
     );
   }
 

@@ -66,6 +66,9 @@ import { BuyInRequest } from './entities/buyin-request.entity';
 import { BuyInRequestService } from './services/buyin-request.service';
 import { AttendanceTracking } from './entities/attendance-tracking.entity';
 import { AttendanceTrackingService } from './services/attendance-tracking.service';
+import { LeavePolicy } from './entities/leave-policy.entity';
+import { LeaveApplication } from './entities/leave-application.entity';
+import { LeaveManagementService } from './services/leave-management.service';
 
 @Module({
   imports: [
@@ -106,7 +109,9 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
       RakeCollection,
       BuyOutRequest,
       BuyInRequest,
-      AttendanceTracking
+      AttendanceTracking,
+      LeavePolicy,
+      LeaveApplication
     ]),
     UsersModule,
     StorageModule,
@@ -137,7 +142,8 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
     RakeCollectionService,
     BuyOutRequestService,
     BuyInRequestService,
-    AttendanceTrackingService
+    AttendanceTrackingService,
+    LeaveManagementService
   ],
   controllers: [ClubsController],
   exports: [
@@ -165,7 +171,8 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
     RakeCollectionService,
     BuyOutRequestService,
     BuyInRequestService,
-    AttendanceTrackingService
+    AttendanceTrackingService,
+    LeaveManagementService
   ]
 })
 export class ClubsModule {}

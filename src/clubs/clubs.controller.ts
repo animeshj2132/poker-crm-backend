@@ -2,6 +2,7 @@ import { BadRequestException, Body, ConflictException, Controller, Delete, Forbi
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
+import { UpdateClubDetailsDto } from './dto/update-club-details.dto';
 import { ClubsService } from './clubs.service';
 import { UsersService } from '../users/users.service';
 import { RolesGuard } from '../common/rbac/roles.guard';
@@ -112,6 +113,11 @@ import { ApproveBuyInDto } from './dto/approve-buyin.dto';
 import { RejectBuyInDto } from './dto/reject-buyin.dto';
 import { AttendanceTrackingService } from './services/attendance-tracking.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
+import { LeaveManagementService } from './services/leave-management.service';
+import { CreateLeavePolicyDto } from './dto/create-leave-policy.dto';
+import { UpdateLeavePolicyDto } from './dto/update-leave-policy.dto';
+import { CreateLeaveApplicationDto } from './dto/create-leave-application.dto';
+import { ApproveRejectLeaveDto } from './dto/approve-reject-leave.dto';
 
 @Controller('clubs')
 export class ClubsController {
@@ -143,6 +149,7 @@ export class ClubsController {
     private readonly buyOutRequestService: BuyOutRequestService,
     private readonly buyInRequestService: BuyInRequestService,
     private readonly attendanceTrackingService: AttendanceTrackingService,
+    private readonly leaveManagementService: LeaveManagementService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -3695,7 +3702,7 @@ export class ClubsController {
 
       // Get existing notification for audit log (before deletion)
       const existingNotification = await this.pushNotificationsService.findOne(notificationId, clubId);
-      
+
       await this.pushNotificationsService.remove(notificationId, clubId);
       
       // Audit log: Delete push notification
@@ -12001,6 +12008,60 @@ export class ClubsController {
   }
 
   /**
+   * Update club details (Master Admin only)
+   * PUT /api/clubs/:id/master-admin/details
+   */
+  @Put(':id/master-admin/details')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateClubDetails(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: UpdateClubDetailsDto
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Update only provided fields
+      if (dto.name !== undefined) club.name = dto.name;
+      if (dto.description !== undefined) club.description = dto.description;
+      if (dto.logoUrl !== undefined) club.logoUrl = dto.logoUrl;
+      if (dto.videoUrl !== undefined) club.videoUrl = dto.videoUrl;
+      if (dto.skinColor !== undefined) club.skinColor = dto.skinColor;
+      if (dto.gradient !== undefined) club.gradient = dto.gradient;
+
+      const updatedClub = await this.clubsService.updateClub(clubId, {
+        name: dto.name,
+        description: dto.description,
+        logoUrl: dto.logoUrl,
+        videoUrl: dto.videoUrl,
+        skinColor: dto.skinColor,
+        gradient: dto.gradient,
+      });
+
+      return {
+        message: 'Club details updated successfully',
+        club: {
+          id: updatedClub.id,
+          name: updatedClub.name,
+          description: updatedClub.description,
+          logoUrl: updatedClub.logoUrl,
+          videoUrl: updatedClub.videoUrl,
+          skinColor: updatedClub.skinColor,
+          gradient: updatedClub.gradient,
+        }
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException(`Failed to update club details: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Update club status (active/suspended/killed)
    * PUT /api/clubs/:id/status
    */
@@ -12961,19 +13022,46 @@ export class ClubsController {
 
   /**
    * Get all dealers for shift assignment
-   * GET /api/clubs/:clubId/shifts/dealers
+   * GET /api/clubs/:clubId/shifts-dealers
+   * Optional query param: date (YYYY-MM-DD) to filter out dealers on leave
    */
   @Get(':clubId/shifts-dealers')
   @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
   @UseGuards(RolesGuard)
   async getDealersForShifts(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('date') date?: string,
   ) {
     try {
-      const dealers = await this.shiftManagementService.getDealers(clubId);
+      const dateObj = date ? new Date(date) : undefined;
+      const dealers = await this.shiftManagementService.getDealers(clubId, dateObj);
       return { success: true, dealers };
     } catch (error) {
       console.error('Error in getDealersForShifts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get available dealers for a specific date (have shift and not on leave)
+   * GET /api/clubs/:clubId/shifts/available-dealers
+   */
+  @Get(':clubId/shifts/available-dealers')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getAvailableDealersForDate(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('date') date: string,
+  ) {
+    try {
+      if (!date) {
+        throw new BadRequestException('Date parameter is required');
+      }
+      const dateObj = new Date(date);
+      const dealers = await this.shiftManagementService.getAvailableDealersForDate(clubId, dateObj);
+      return { success: true, dealers };
+    } catch (error) {
+      console.error('Error in getAvailableDealersForDate:', error);
       throw error;
     }
   }
@@ -15206,6 +15294,637 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to create attendance record: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // ========== LEAVE MANAGEMENT ==========
+
+  /**
+   * Create leave policy for a role
+   * POST /api/clubs/:id/leave-policies
+   */
+  @Post(':id/leave-policies')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createLeavePolicy(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: CreateLeavePolicyDto,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      const policy = await this.leaveManagementService.createLeavePolicy(clubId, dto, userId);
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'leave_policy_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Created leave policy for role ${dto.role}: ${dto.leavesPerYear} leaves per year`,
+            targetType: 'leave_policy',
+            targetId: policy.id,
+            targetName: `${dto.role} Policy`,
+            metadata: { role: dto.role, leavesPerYear: dto.leavesPerYear },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave policy creation:', auditError);
+      }
+      
+      return { success: true, policy };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create leave policy: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get all leave policies for a club
+   * GET /api/clubs/:id/leave-policies
+   */
+  @Get(':id/leave-policies')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR, ClubRole.MANAGER)
+  async getLeavePolicies(
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      return await this.leaveManagementService.getLeavePolicies(clubId);
+    } catch (e) {
+      throw new BadRequestException(`Failed to get leave policies: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Update leave policy
+   * PUT /api/clubs/:id/leave-policies/:role
+   */
+  @Put(':id/leave-policies/:role')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateLeavePolicy(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('role') role: StaffRole,
+    @Body() dto: UpdateLeavePolicyDto,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      const policy = await this.leaveManagementService.updateLeavePolicy(clubId, role, dto, userId);
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'leave_policy_updated',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Updated leave policy for role ${role}: ${dto.leavesPerYear} leaves per year`,
+            targetType: 'leave_policy',
+            targetId: policy.id,
+            targetName: `${role} Policy`,
+            metadata: { role, leavesPerYear: dto.leavesPerYear },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave policy update:', auditError);
+      }
+      
+      return { success: true, policy };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to update leave policy: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Delete leave policy
+   * DELETE /api/clubs/:id/leave-policies/:role
+   */
+  @Delete(':id/leave-policies/:role')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteLeavePolicy(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('role') role: StaffRole,
+    @Req() req?: Request
+  ) {
+    try {
+      // Get policy info before deletion for audit log
+      const policy = await this.leaveManagementService.getLeavePolicyByRole(clubId, role);
+      
+      await this.leaveManagementService.deleteLeavePolicy(clubId, role);
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'leave_policy_deleted',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Deleted leave policy for role ${role}`,
+            targetType: 'leave_policy',
+            targetId: policy?.id || 'unknown',
+            targetName: `${role} Policy`,
+            metadata: { role, leavesPerYear: policy?.leavesPerYear },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave policy deletion:', auditError);
+      }
+    } catch (e) {
+      if (e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to delete leave policy: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Create leave application
+   * POST /api/clubs/:id/leave-applications
+   */
+  @Post(':id/leave-applications')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.FNB, ClubRole.STAFF)
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createLeaveApplication(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: CreateLeaveApplicationDto,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      // Get staff ID from user ID
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const application = await this.leaveManagementService.createLeaveApplication(clubId, staff.id, dto);
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff.id,
+            staffName: staff.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff.role,
+            actionType: 'leave_application_created',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Applied for leave from ${dto.startDate} to ${dto.endDate} (${application.numberOfDays} days)`,
+            targetType: 'leave_application',
+            targetId: application.id,
+            targetName: `Leave Application`,
+            metadata: { 
+              startDate: dto.startDate,
+              endDate: dto.endDate,
+              numberOfDays: application.numberOfDays,
+              reason: dto.reason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave application:', auditError);
+      }
+      
+      return { success: true, application };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to create leave application: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get staff's own leave applications
+   * GET /api/clubs/:id/leave-applications/my-leaves
+   */
+  @Get(':id/leave-applications/my-leaves')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.FNB, ClubRole.STAFF)
+  async getMyLeaveApplications(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('status') status?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const filters: any = {};
+      if (status) filters.status = status;
+      if (startDate) filters.startDate = startDate;
+      if (endDate) filters.endDate = endDate;
+      if (page) filters.page = parseInt(page, 10);
+      if (limit) filters.limit = parseInt(limit, 10);
+      
+      return await this.leaveManagementService.getStaffLeaveApplications(clubId, staff.id, filters);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get leave applications: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get leave balance
+   * GET /api/clubs/:id/leave-applications/balance
+   */
+  @Get(':id/leave-applications/balance')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.FNB, ClubRole.STAFF)
+  async getLeaveBalance(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      return await this.leaveManagementService.getLeaveBalance(clubId, staff.id);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get leave balance: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get pending leave applications for approval
+   * GET /api/clubs/:id/leave-applications/pending
+   */
+  @Get(':id/leave-applications/pending')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  async getPendingLeaveApplications(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      return await this.leaveManagementService.getPendingLeaveApplications(clubId, staff.role, staff.id);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get pending leave applications: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get leave applications for approval with filters and pagination
+   * GET /api/clubs/:id/leave-applications/for-approval
+   */
+  @Get(':id/leave-applications/for-approval')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  async getLeaveApplicationsForApproval(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('status') status?: string,
+    @Query('role') role?: StaffRole,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const filters: any = {};
+      if (status) filters.status = status;
+      if (role) filters.role = role;
+      if (startDate) filters.startDate = startDate;
+      if (endDate) filters.endDate = endDate;
+      if (search) filters.search = search;
+      if (page) filters.page = parseInt(page, 10);
+      if (limit) filters.limit = parseInt(limit, 10);
+      
+      return await this.leaveManagementService.getLeaveApplicationsForApproval(
+        clubId,
+        staff.role,
+        staff.id,
+        filters
+      );
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get leave applications: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Approve leave application
+   * POST /api/clubs/:id/leave-applications/:applicationId/approve
+   */
+  @Post(':id/leave-applications/:applicationId/approve')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async approveLeaveApplication(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('applicationId', new ParseUUIDPipe()) applicationId: string,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const application = await this.leaveManagementService.approveLeaveApplication(
+        clubId,
+        applicationId,
+        staff.id,
+        staff.role
+      );
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff.id,
+            staffName: staff.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff.role,
+            actionType: 'leave_application_approved',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Approved leave application for ${application.staff.name} (${application.numberOfDays} days)`,
+            targetType: 'leave_application',
+            targetId: application.id,
+            targetName: `Leave Application`,
+            metadata: { 
+              applicantStaffId: application.staffId,
+              applicantStaffName: application.staff.name,
+              numberOfDays: application.numberOfDays
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave approval:', auditError);
+      }
+      
+      return { success: true, application };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to approve leave application: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Reject leave application
+   * POST /api/clubs/:id/leave-applications/:applicationId/reject
+   */
+  @Post(':id/leave-applications/:applicationId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async rejectLeaveApplication(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('applicationId', new ParseUUIDPipe()) applicationId: string,
+    @Body() dto: ApproveRejectLeaveDto,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const application = await this.leaveManagementService.rejectLeaveApplication(
+        clubId,
+        applicationId,
+        staff.id,
+        staff.role,
+        dto
+      );
+      
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff.id,
+            staffName: staff.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff.role,
+            actionType: 'leave_application_rejected',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Rejected leave application for ${application.staff.name}${dto.rejectionReason ? `: ${dto.rejectionReason}` : ''}`,
+            targetType: 'leave_application',
+            targetId: application.id,
+            targetName: `Leave Application`,
+            metadata: { 
+              applicantStaffId: application.staffId,
+              applicantStaffName: application.staff.name,
+              rejectionReason: dto.rejectionReason
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave rejection:', auditError);
+      }
+      
+      return { success: true, application };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to reject leave application: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Cancel leave application (by employee)
+   * POST /api/clubs/:id/leave-applications/:applicationId/cancel
+   */
+  @Post(':id/leave-applications/:applicationId/cancel')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.GRE, ClubRole.CASHIER, ClubRole.DEALER, ClubRole.FNB, ClubRole.STAFF)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async cancelLeaveApplication(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('applicationId', new ParseUUIDPipe()) applicationId: string,
+    @Req() req?: Request
+  ) {
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
+      
+      const user = await this.usersService.findById(userId);
+      const allStaff = await this.staffService.findAll(clubId);
+      const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+      
+      if (!staff) {
+        throw new NotFoundException('Staff member not found');
+      }
+      
+      const result = await this.leaveManagementService.cancelLeaveApplication(
+        clubId,
+        applicationId,
+        staff.id
+      );
+      
+      const application = result.application;
+      const previousStatus = result.previousStatus;
+      
+      // Audit log
+      try {
+        if (userId) {
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff.id,
+            staffName: staff.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff.role,
+            actionType: 'leave_application_cancelled',
+            actionCategory: ActionCategory.STAFF_MANAGEMENT,
+            description: `Cancelled own leave application from ${application.startDate.toLocaleDateString()} to ${application.endDate.toLocaleDateString()} (${application.numberOfDays} days)`,
+            targetType: 'leave_application',
+            targetId: application.id,
+            targetName: `Leave Application`,
+            metadata: { 
+              startDate: application.startDate,
+              endDate: application.endDate,
+              numberOfDays: application.numberOfDays,
+              previousStatus: previousStatus
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for leave cancellation:', auditError);
+      }
+      
+      return { success: true, application };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to cancel leave application: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 }

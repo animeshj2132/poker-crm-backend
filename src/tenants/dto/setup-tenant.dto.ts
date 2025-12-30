@@ -12,11 +12,11 @@ export class SetupTenantDto {
   @MaxLength(500)
   clubDescription?: string;
 
-  // Club branding
-  @IsOptional()
+  // Club branding - Logo URL is MANDATORY
+  @IsNotEmpty()
   @IsUrl({ require_tld: false }, { message: 'logoUrl must be a URL' })
   @MaxLength(2048)
-  logoUrl?: string;
+  logoUrl!: string;
 
   @IsOptional()
   @IsUrl({ require_tld: false }, { message: 'videoUrl must be a URL' })

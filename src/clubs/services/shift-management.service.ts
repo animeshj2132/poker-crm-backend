@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { Shift } from '../entities/shift.entity';
 import { Staff, StaffRole, StaffStatus } from '../entities/staff.entity';
+import { LeaveApplication, LeaveStatus } from '../entities/leave-application.entity';
 import { CreateShiftDto } from '../dto/create-shift.dto';
 import { UpdateShiftDto } from '../dto/update-shift.dto';
 import { CopyShiftDto } from '../dto/copy-shift.dto';
@@ -14,6 +15,8 @@ export class ShiftManagementService {
     private shiftRepo: Repository<Shift>,
     @InjectRepository(Staff)
     private staffRepo: Repository<Staff>,
+    @InjectRepository(LeaveApplication)
+    private leaveApplicationRepo: Repository<LeaveApplication>,
   ) {}
 
   // Create a new shift
@@ -25,6 +28,23 @@ export class ShiftManagementService {
 
     if (!staff) {
       throw new NotFoundException('Staff member not found');
+    }
+
+    // Check if staff has an approved leave for the shift date
+    const shiftDate = new Date(createShiftDto.shiftDate);
+    const approvedLeave = await this.leaveApplicationRepo.findOne({
+      where: {
+        staffId: createShiftDto.staffId,
+        status: LeaveStatus.APPROVED,
+        startDate: LessThanOrEqual(shiftDate),
+        endDate: MoreThanOrEqual(shiftDate),
+      },
+    });
+
+    if (approvedLeave) {
+      throw new BadRequestException(
+        `Cannot create shift because dealer is on leave`
+      );
     }
 
     // Validate that shift end time is after start time
@@ -107,6 +127,39 @@ export class ShiftManagementService {
     }
 
     const shifts = await queryBuilder.getMany();
+    
+    // Check for approved leaves and add leave information to shifts
+    if (shifts.length > 0) {
+      const staffIds = [...new Set(shifts.map(s => s.staffId))];
+      
+      // Get all approved leaves for these staff members
+      const approvedLeaves = await this.leaveApplicationRepo.find({
+        where: staffIds.map(sid => ({
+          staffId: sid,
+          status: LeaveStatus.APPROVED,
+        })),
+      });
+
+      // Add leave information to shifts
+      return shifts.map(shift => {
+        const leave = approvedLeaves.find(l => 
+          l.staffId === shift.staffId &&
+          l.startDate <= shift.shiftDate &&
+          l.endDate >= shift.shiftDate
+        );
+        
+        return {
+          ...shift,
+          onLeave: !!leave,
+          leaveInfo: leave ? {
+            startDate: leave.startDate,
+            endDate: leave.endDate,
+            reason: leave.reason,
+          } : null,
+        };
+      });
+    }
+    
     return shifts;
   }
 
@@ -190,11 +243,31 @@ export class ShiftManagementService {
     }
 
     const copiedShifts: Shift[] = [];
+    const skippedShifts: Array<{ staffId: string; date: Date; reason: string }> = [];
 
     // Copy each shift to each target date
     for (const sourceShift of sourceShifts) {
       for (const targetDate of targetDates) {
         const targetDateObj = new Date(targetDate);
+        
+        // Check if staff has an approved leave for this target date
+        const approvedLeave = await this.leaveApplicationRepo.findOne({
+          where: {
+            staffId: sourceShift.staffId,
+            status: LeaveStatus.APPROVED,
+            startDate: LessThanOrEqual(targetDateObj),
+            endDate: MoreThanOrEqual(targetDateObj),
+          },
+        });
+
+        if (approvedLeave) {
+          skippedShifts.push({
+            staffId: sourceShift.staffId,
+            date: targetDateObj,
+            reason: `Staff has approved leave from ${approvedLeave.startDate.toLocaleDateString()} to ${approvedLeave.endDate.toLocaleDateString()}`,
+          });
+          continue; // Skip this shift copy
+        }
         
         // Calculate time difference from source shift date to target date
         const sourceDateObj = new Date(sourceShift.shiftDate);
@@ -236,17 +309,25 @@ export class ShiftManagementService {
       }
     }
 
-    return {
+    const result = {
       message: `Successfully copied ${copiedShifts.length} shifts`,
       copiedShifts: await this.shiftRepo.find({
         where: copiedShifts.map(s => ({ id: s.id })),
         relations: ['staff'],
       }),
+      skippedShifts: skippedShifts.length > 0 ? skippedShifts : undefined,
     };
+
+    if (skippedShifts.length > 0) {
+      result.message += `. Skipped ${skippedShifts.length} shifts due to approved leaves`;
+    }
+
+    return result;
   }
 
   // Get dealers for shift assignment
-  async getDealers(clubId: string) {
+  // Optionally filter by date to exclude dealers on leave
+  async getDealers(clubId: string, date?: Date) {
     const dealers = await this.staffRepo.find({
       where: {
         club: { id: clubId },
@@ -258,7 +339,69 @@ export class ShiftManagementService {
       },
     });
 
+    // If date is provided, filter out dealers on leave
+    if (date) {
+      const dealersOnLeave = await this.leaveApplicationRepo.find({
+        where: {
+          clubId,
+          status: LeaveStatus.APPROVED,
+          startDate: LessThanOrEqual(date),
+          endDate: MoreThanOrEqual(date),
+        },
+        relations: ['staff'],
+      });
+
+      const dealerIdsOnLeave = new Set(
+        dealersOnLeave.map(leave => leave.staffId)
+      );
+
+      return dealers.filter(dealer => !dealerIdsOnLeave.has(dealer.id));
+    }
+
     return dealers;
+  }
+
+  // Get dealers available for a specific date (not on leave and have a shift)
+  async getAvailableDealersForDate(clubId: string, date: Date) {
+    // Get all active dealers
+    const allDealers = await this.getDealers(clubId);
+    
+    // Get dealers on leave for this date
+    const dealersOnLeave = await this.leaveApplicationRepo.find({
+      where: {
+        clubId,
+        status: LeaveStatus.APPROVED,
+        startDate: LessThanOrEqual(date),
+        endDate: MoreThanOrEqual(date),
+      },
+      relations: ['staff'],
+    });
+
+    const dealerIdsOnLeave = new Set(
+      dealersOnLeave.map(leave => leave.staffId)
+    );
+
+    // Get dealers with shifts on this date
+    const shiftsOnDate = await this.shiftRepo.find({
+      where: {
+        clubId,
+        shiftDate: date,
+        isOffDay: false,
+      },
+      relations: ['staff'],
+    });
+
+    const dealerIdsWithShifts = new Set(
+      shiftsOnDate.map(shift => shift.staffId)
+    );
+
+    // Return dealers who:
+    // 1. Are not on leave
+    // 2. Have a shift on this date
+    return allDealers.filter(dealer => 
+      !dealerIdsOnLeave.has(dealer.id) && 
+      dealerIdsWithShifts.has(dealer.id)
+    );
   }
 
   // Delete multiple shifts
