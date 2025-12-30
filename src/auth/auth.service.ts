@@ -1100,13 +1100,16 @@ export class AuthService {
   /**
    * Reset player password (for first-time password reset)
    * This is used when a player is created with mustResetPassword=true
-   * and needs to set a new password without knowing the temporary password
+   * Requires current/temporary password for security verification
    */
-  async resetPlayerPassword(email: string, newPassword: string, clubCode: string) {
+  async resetPlayerPassword(email: string, currentPassword: string, newPassword: string, clubCode: string) {
     try {
       // Validate inputs
       if (!email || typeof email !== 'string' || !email.trim()) {
         throw new BadRequestException('Email is required');
+      }
+      if (!currentPassword || typeof currentPassword !== 'string' || !currentPassword.trim()) {
+        throw new BadRequestException('Current password is required');
       }
       if (!newPassword || typeof newPassword !== 'string' || !newPassword.trim()) {
         throw new BadRequestException('New password is required');
@@ -1120,6 +1123,9 @@ export class AuthService {
       if (newPassword.trim().length > 100) {
         throw new BadRequestException('New password cannot exceed 100 characters');
       }
+      if (currentPassword.trim() === newPassword.trim()) {
+        throw new BadRequestException('New password must be different from current password');
+      }
 
       // Find club by code
       const club = await this.clubsRepo.findOne({
@@ -1127,7 +1133,8 @@ export class AuthService {
       });
 
       if (!club) {
-        throw new NotFoundException('Club not found');
+        // Don't reveal if club exists - security best practice
+        throw new UnauthorizedException('Invalid credentials');
       }
 
       // Find player by email and club
@@ -1140,12 +1147,30 @@ export class AuthService {
       });
 
       if (!player) {
-        throw new NotFoundException('Player not found in this club');
+        // Don't reveal if player exists - security best practice
+        throw new UnauthorizedException('Invalid credentials');
+      }
+
+      // SECURITY: Verify player belongs to this club
+      if (player.club.id !== club.id) {
+        console.error(`SECURITY ALERT: Cross-club password reset attempt for player ${player.id}`);
+        throw new UnauthorizedException('Invalid credentials');
+      }
+
+      // Check if password is set
+      if (!player.passwordHash) {
+        throw new BadRequestException('Account not set up properly. Please contact support.');
       }
 
       // Only allow reset if mustResetPassword is true
       if (!player.mustResetPassword) {
         throw new BadRequestException('Password reset not required. Use change password instead.');
+      }
+
+      // SECURITY: Verify current/temporary password
+      const isValid = await bcrypt.compare(currentPassword.trim(), player.passwordHash);
+      if (!isValid) {
+        throw new UnauthorizedException('Current password is incorrect');
       }
 
       // Hash new password
@@ -1158,7 +1183,7 @@ export class AuthService {
       return { success: true, message: 'Password reset successfully' };
     } catch (err) {
       console.error('Reset player password error:', err);
-      if (err instanceof BadRequestException || err instanceof NotFoundException) {
+      if (err instanceof BadRequestException || err instanceof NotFoundException || err instanceof UnauthorizedException) {
         throw err;
       }
       throw new BadRequestException('Failed to reset password');

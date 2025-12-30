@@ -186,6 +186,7 @@ export class AuthController {
   /**
    * Reset player password (first-time password reset for players with mustResetPassword flag)
    * POST /api/auth/player/reset-password
+   * Requires current/temporary password for security verification
    */
   @Post('player/reset-password')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
@@ -196,6 +197,9 @@ export class AuthController {
     if (!dto.email || !dto.email.trim()) {
       throw new BadRequestException('Email is required');
     }
+    if (!dto.currentPassword || !dto.currentPassword.trim()) {
+      throw new BadRequestException('Current password is required');
+    }
     if (!dto.newPassword || !dto.newPassword.trim()) {
       throw new BadRequestException('New password is required');
     }
@@ -204,6 +208,7 @@ export class AuthController {
     }
     return this.authService.resetPlayerPassword(
       dto.email.trim(),
+      dto.currentPassword.trim(),
       dto.newPassword.trim(),
       dto.clubCode.trim()
     );
