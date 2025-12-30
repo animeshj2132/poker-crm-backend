@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between } from 'typeorm';
+import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { AttendanceTracking, AttendanceStatus } from '../entities/attendance-tracking.entity';
 import { Staff } from '../entities/staff.entity';
+import { LeaveApplication, LeaveStatus } from '../entities/leave-application.entity';
 import { CreateAttendanceDto } from '../dto/create-attendance.dto';
 
 @Injectable()
@@ -12,6 +13,8 @@ export class AttendanceTrackingService {
     private attendanceRepo: Repository<AttendanceTracking>,
     @InjectRepository(Staff)
     private staffRepo: Repository<Staff>,
+    @InjectRepository(LeaveApplication)
+    private leaveApplicationRepo: Repository<LeaveApplication>,
   ) {}
 
   async getAttendanceRecords(
@@ -95,6 +98,23 @@ export class AttendanceTrackingService {
 
     if (!staff) {
       throw new NotFoundException('Staff member not found in this club');
+    }
+
+    // Check if staff has an approved leave for this date
+    const attendanceDate = new Date(dto.date);
+    const approvedLeave = await this.leaveApplicationRepo.findOne({
+      where: {
+        staffId: dto.staffId,
+        status: LeaveStatus.APPROVED,
+        startDate: LessThanOrEqual(attendanceDate),
+        endDate: MoreThanOrEqual(attendanceDate),
+      },
+    });
+
+    if (approvedLeave) {
+      throw new BadRequestException(
+        `Cannot log attendance as staff member was on leave that day`
+      );
     }
 
     // Check if attendance record already exists for this date

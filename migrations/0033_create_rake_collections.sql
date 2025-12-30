@@ -36,3 +36,4 @@ COMMENT ON COLUMN rake_collections.collected_by IS 'User ID of the manager who c
 
 
 
+

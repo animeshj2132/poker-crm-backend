@@ -6,6 +6,7 @@ import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
 import { Staff } from '../clubs/entities/staff.entity';
+import { Club } from '../clubs/club.entity';
 import { FinancialTransaction, TransactionStatus } from '../clubs/entities/financial-transaction.entity';
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../clubs/entities/table.entity';
@@ -33,6 +34,7 @@ export class AuthService {
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(Staff) private readonly staffRepo: Repository<Staff>,
+    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(WaitlistEntry) private readonly waitlistRepo: Repository<WaitlistEntry>,
     @InjectRepository(Table) private readonly tablesRepo: Repository<Table>
@@ -1096,7 +1098,76 @@ export class AuthService {
   }
 
   /**
-   * Change player password
+   * Reset player password (for first-time password reset)
+   * This is used when a player is created with mustResetPassword=true
+   * and needs to set a new password without knowing the temporary password
+   */
+  async resetPlayerPassword(email: string, newPassword: string, clubCode: string) {
+    try {
+      // Validate inputs
+      if (!email || typeof email !== 'string' || !email.trim()) {
+        throw new BadRequestException('Email is required');
+      }
+      if (!newPassword || typeof newPassword !== 'string' || !newPassword.trim()) {
+        throw new BadRequestException('New password is required');
+      }
+      if (!clubCode || typeof clubCode !== 'string' || !clubCode.trim()) {
+        throw new BadRequestException('Club code is required');
+      }
+      if (newPassword.trim().length < 8) {
+        throw new BadRequestException('New password must be at least 8 characters');
+      }
+      if (newPassword.trim().length > 100) {
+        throw new BadRequestException('New password cannot exceed 100 characters');
+      }
+
+      // Find club by code
+      const club = await this.clubsRepo.findOne({
+        where: { code: clubCode.trim() }
+      });
+
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Find player by email and club
+      const player = await this.playersRepo.findOne({
+        where: { 
+          email: email.trim().toLowerCase(),
+          club: { id: club.id }
+        },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found in this club');
+      }
+
+      // Only allow reset if mustResetPassword is true
+      if (!player.mustResetPassword) {
+        throw new BadRequestException('Password reset not required. Use change password instead.');
+      }
+
+      // Hash new password
+      const saltRounds = 12;
+      player.passwordHash = await bcrypt.hash(newPassword.trim(), saltRounds);
+      player.mustResetPassword = false; // Clear the flag
+
+      await this.playersRepo.save(player);
+
+      return { success: true, message: 'Password reset successfully' };
+    } catch (err) {
+      console.error('Reset player password error:', err);
+      if (err instanceof BadRequestException || err instanceof NotFoundException) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to reset password');
+    }
+  }
+
+  /**
+   * Change player password (for regular password changes)
+   * Requires current password verification
    */
   async changePlayerPassword(playerId: string, clubId: string, currentPassword: string, newPassword: string) {
     try {

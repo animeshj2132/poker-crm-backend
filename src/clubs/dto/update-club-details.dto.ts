@@ -1,21 +1,23 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
 
-export class CreateClubWithBrandingDto {
+/**
+ * DTO for Master Admin to update club details (name, branding)
+ */
+export class UpdateClubDetailsDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(120)
-  name!: string;
+  name?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
   description?: string;
 
-  // Branding fields - Logo URL is MANDATORY
-  @IsNotEmpty()
+  @IsOptional()
   @IsUrl({ require_tld: false }, { message: 'logoUrl must be a URL' })
   @MaxLength(2048)
-  logoUrl!: string;
+  logoUrl?: string;
 
   @IsOptional()
   @IsUrl({ require_tld: false }, { message: 'videoUrl must be a URL' })
