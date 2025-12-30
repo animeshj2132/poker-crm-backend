@@ -8452,6 +8452,7 @@ export class ClubsController {
         panCard: player.panCard,
         affiliateCode: player.affiliate?.code || null,
         status: player.status,
+        kycStatus: player.kycStatus || 'approved', // ✅ Include KYC status
         tempPassword: tempPassword, // Temporary password for first login
         createdAt: player.createdAt
       };
@@ -13044,13 +13045,13 @@ export class ClubsController {
 
   /**
    * Get available dealers for a specific date (have shift and not on leave)
-   * GET /api/clubs/:id/shifts/available-dealers
+   * GET /api/clubs/:clubId/shifts/available-dealers
    */
-  @Get(':id/shifts/available-dealers')
+  @Get(':clubId/shifts/available-dealers')
   @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
   @UseGuards(RolesGuard)
   async getAvailableDealersForDate(
-    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Query('date') date: string,
   ) {
     try {
