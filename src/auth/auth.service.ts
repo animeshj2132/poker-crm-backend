@@ -715,6 +715,7 @@ export class AuthService {
       // Edge case: Create player with error handling
       // Players created from player portal signup should NOT need password reset
       // (they set their own password during signup)
+      // ✅ Self-signup players get 'pending' KYC status (must complete verification)
       const player = this.playersRepo.create({
         club: club,
         name: fullName,
@@ -724,6 +725,7 @@ export class AuthService {
         passwordHash: passwordHash,
         affiliate: affiliate,
         status: 'Active',
+        kycStatus: 'pending', // ✅ Self-signup players need KYC verification
         mustResetPassword: false // Player portal signups set their own password
       });
 
