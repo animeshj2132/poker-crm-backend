@@ -12811,6 +12811,35 @@ export class ClubsController {
   }
 
   /**
+   * Get available dealers for a specific date (have shift and not on leave)
+   * GET /api/clubs/:clubId/shifts/available-dealers
+   * NOTE: This MUST come BEFORE @Get(':clubId/shifts/:shiftId') to avoid route conflicts
+   */
+  @Get(':clubId/shifts/available-dealers')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getAvailableDealersForDate(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('date') date: string,
+  ) {
+    try {
+      // Validate clubId
+      if (!clubId) {
+        throw new BadRequestException('Club ID is required');
+      }
+      if (!date) {
+        throw new BadRequestException('Date parameter is required');
+      }
+      const dateObj = new Date(date);
+      const dealers = await this.shiftManagementService.getAvailableDealersForDate(clubId, dateObj);
+      return { success: true, dealers };
+    } catch (error) {
+      console.error('Error in getAvailableDealersForDate:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get shift by ID
    * GET /api/clubs/:clubId/shifts/:shiftId
    */
@@ -13039,34 +13068,6 @@ export class ClubsController {
       return { success: true, dealers };
     } catch (error) {
       console.error('Error in getDealersForShifts:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get available dealers for a specific date (have shift and not on leave)
-   * GET /api/clubs/:clubId/shifts/available-dealers
-   */
-  @Get(':clubId/shifts/available-dealers')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
-  @UseGuards(RolesGuard)
-  async getAvailableDealersForDate(
-    @Param('clubId', new ParseUUIDPipe()) clubId: string,
-    @Query('date') date: string,
-  ) {
-    try {
-      // Validate clubId
-      if (!clubId) {
-        throw new BadRequestException('Club ID is required');
-      }
-      if (!date) {
-        throw new BadRequestException('Date parameter is required');
-      }
-      const dateObj = new Date(date);
-      const dealers = await this.shiftManagementService.getAvailableDealersForDate(clubId, dateObj);
-      return { success: true, dealers };
-    } catch (error) {
-      console.error('Error in getAvailableDealersForDate:', error);
       throw error;
     }
   }
