@@ -51,8 +51,8 @@ export class Player {
   @Column({ type: 'varchar', default: 'Active' })
   status!: string; // Active, Inactive, Suspended
 
-  @Column({ type: 'varchar', length: 20, default: 'pending', name: 'kyc_status' })
-  kycStatus!: string; // pending, approved, rejected, verified
+  @Column({ type: 'varchar', length: 20, name: 'kyc_status' })
+  kycStatus!: string; // pending, approved, rejected, verified (NO DEFAULT - must be explicitly set)
 
   @Column({ type: 'timestamp', nullable: true, name: 'kyc_approved_at' })
   kycApprovedAt!: Date | null;

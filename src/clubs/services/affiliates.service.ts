@@ -416,8 +416,8 @@ export class AffiliatesService {
     }
 
     // Create player
-    // Staff/Admin creates players with KYC docs, so auto-approve them if documents provided
-    const hasKycDocuments = kycDocuments.length > 0;
+    // ✅ Staff/Admin creates players - ALWAYS auto-approve KYC (regardless of documents)
+    // This differentiates staff-created players from self-signup players
     const player = this.playersRepo.create({
       club,
       affiliate,
@@ -430,9 +430,9 @@ export class AffiliatesService {
       mustResetPassword: true, // Force password reset on first login
       status: 'Active', // Active status (not Pending) since created by staff
       notes: notes?.trim() || null,
-      kycStatus: hasKycDocuments ? 'approved' : 'approved', // ✅ ALWAYS approved for staff-created players
-      kycApprovedAt: hasKycDocuments ? new Date() : new Date(), // ✅ ALWAYS set approval timestamp
-      kycDocuments: kycDocuments.length > 0 ? kycDocuments : null // Store KYC documents
+      kycStatus: 'approved', // ✅ ALWAYS 'approved' for staff-created players
+      kycApprovedAt: new Date(), // ✅ ALWAYS set approval timestamp
+      kycDocuments: kycDocuments.length > 0 ? kycDocuments : null // Store KYC documents if provided
     });
 
     const savedPlayer = await this.playersRepo.save(player);
