@@ -17,3 +17,4 @@ COMMENT ON COLUMN clubs.rummy_enabled IS 'When enabled, the club will show Rummy
 
 
 
+

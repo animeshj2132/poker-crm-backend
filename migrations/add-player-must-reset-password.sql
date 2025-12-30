@@ -19,3 +19,4 @@ COMMENT ON COLUMN players.must_reset_password IS 'Force password reset on first 
 
 
 
+

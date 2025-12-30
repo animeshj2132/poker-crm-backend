@@ -13044,16 +13044,20 @@ export class ClubsController {
 
   /**
    * Get available dealers for a specific date (have shift and not on leave)
-   * GET /api/clubs/:clubId/shifts/available-dealers
+   * GET /api/clubs/:id/shifts/available-dealers
    */
-  @Get(':clubId/shifts/available-dealers')
+  @Get(':id/shifts/available-dealers')
   @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
   @UseGuards(RolesGuard)
   async getAvailableDealersForDate(
-    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
     @Query('date') date: string,
   ) {
     try {
+      // Validate clubId
+      if (!clubId) {
+        throw new BadRequestException('Club ID is required');
+      }
       if (!date) {
         throw new BadRequestException('Date parameter is required');
       }

@@ -66,3 +66,4 @@ COMMENT ON COLUMN tournament_players.prize_amount IS 'Prize money won by player'
 
 
 
+
