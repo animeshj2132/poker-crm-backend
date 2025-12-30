@@ -386,6 +386,9 @@ export class AuthService {
         throw new UnauthorizedException('Club configuration error. Please contact support.');
       }
 
+      // Get KYC status from player entity
+      const playerKycStatus = player.kycStatus || (player as any).kycStatus;
+      
       return {
         player: {
           id: player.id,
@@ -394,8 +397,8 @@ export class AuthService {
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
           nickname: player.playerId ? player.playerId.trim() : null,
           status: player.status || 'Active',
-          kycStatus: (player as any).kycStatus || 'pending',
-          kycApproved: (player as any).kycStatus === 'approved' || (player as any).kycStatus === 'verified',
+          kycStatus: playerKycStatus || 'pending', // Use actual kycStatus from database
+          kycApproved: playerKycStatus === 'approved' || playerKycStatus === 'verified',
           mustResetPassword: (player as any).mustResetPassword || false // For first-time login detection
         },
         club: {
@@ -773,7 +776,7 @@ export class AuthService {
           phoneNumber: playerWithRelations.phoneNumber ? playerWithRelations.phoneNumber.trim() : trimmedPhone,
           nickname: playerWithRelations.playerId ? playerWithRelations.playerId.trim() : trimmedNickname,
           status: playerWithRelations.status || 'Active',
-          kycStatus: (playerWithRelations as any).kycStatus || 'pending',
+          kycStatus: playerWithRelations.kycStatus || (playerWithRelations as any).kycStatus || 'pending',
           kycRequired: true // New players must complete KYC
         },
         club: {
@@ -863,8 +866,8 @@ export class AuthService {
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
           nickname: player.playerId ? player.playerId.trim() : null,
           status: player.status || 'Active',
-          kycStatus: (player as any).kycStatus || 'pending',
-          kycApproved: (player as any).kycStatus === 'approved' || (player as any).kycStatus === 'verified',
+          kycStatus: player.kycStatus || (player as any).kycStatus || 'pending',
+          kycApproved: (player.kycStatus || (player as any).kycStatus) === 'approved' || (player.kycStatus || (player as any).kycStatus) === 'verified',
           kycDocuments: (player as any).kycDocuments || null,
           totalSpent: Number(player.totalSpent) || 0,
           totalCommission: Number(player.totalCommission) || 0,

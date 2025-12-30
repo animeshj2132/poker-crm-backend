@@ -39,3 +39,4 @@ COMMENT ON COLUMN buyout_requests.rejection_reason IS 'Reason for rejection if s
 
 
 
+

@@ -416,7 +416,8 @@ export class AffiliatesService {
     }
 
     // Create player
-    // Super Admin creates players with KYC docs, so auto-approve them
+    // Staff/Admin creates players with KYC docs, so auto-approve them if documents provided
+    const hasKycDocuments = kycDocuments.length > 0;
     const player = this.playersRepo.create({
       club,
       affiliate,
@@ -427,10 +428,10 @@ export class AffiliatesService {
       panCard: panCard?.trim().toUpperCase() || null,
       passwordHash,
       mustResetPassword: true, // Force password reset on first login
-      status: 'Active',
+      status: 'Active', // Active status (not Pending) since created by staff
       notes: notes?.trim() || null,
-      kycStatus: 'approved', // Auto-approve since Super Admin uploads KYC docs during creation
-      kycApprovedAt: new Date(), // Set approval timestamp
+      kycStatus: hasKycDocuments ? 'approved' : 'approved', // ✅ ALWAYS approved for staff-created players
+      kycApprovedAt: hasKycDocuments ? new Date() : new Date(), // ✅ ALWAYS set approval timestamp
       kycDocuments: kycDocuments.length > 0 ? kycDocuments : null // Store KYC documents
     });
 
