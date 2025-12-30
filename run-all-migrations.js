@@ -35,7 +35,8 @@ const migrations = [
   '0015_add_pan_card_to_players.sql',
   'fnb-tables.sql',
   '0016_staff_offers.sql',
-  '0019_tournament_registrations.sql'
+  '0019_tournament_registrations.sql',
+  '0030_remove_kyc_default.sql'
 ];
 
 async function runMigrations() {
