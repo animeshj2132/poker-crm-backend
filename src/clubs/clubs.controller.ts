@@ -8759,6 +8759,7 @@ export class ClubsController {
               phoneNumber: p.phoneNumber || null,
               playerId: p.playerId || null,
               status: p.status || 'Active',
+              kycStatus: p.kycStatus || 'pending', // ✅ Include KYC status
               totalSpent: Number(p.totalSpent) || 0,
               totalCommission: Number(p.totalCommission) || 0,
               affiliateCode: p.affiliate ? (p.affiliate as any).code : null,
