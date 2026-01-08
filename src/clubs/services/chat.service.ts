@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not } from 'typeorm';
 import { ChatSession, ChatSessionType, ChatSessionStatus } from '../entities/chat-session.entity';
@@ -15,6 +15,7 @@ import { UserTenantRole } from '../../users/user-tenant-role.entity';
 import { UserClubRole } from '../../users/user-club-role.entity';
 import { TenantRole, ClubRole } from '../../common/rbac/roles';
 import { StaffStatus, StaffRole } from '../entities/staff.entity';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class ChatService {
@@ -35,6 +36,8 @@ export class ChatService {
     private readonly userTenantRoleRepo: Repository<UserTenantRole>,
     @InjectRepository(UserClubRole)
     private readonly userClubRoleRepo: Repository<UserClubRole>,
+    @Inject(forwardRef(() => EventsService))
+    private readonly eventsService: EventsService,
   ) {}
 
   // ==================== STAFF CHAT ====================
@@ -477,7 +480,17 @@ export class ChatService {
         isRead: false
       });
 
-      return await this.messageRepo.save(message);
+      const savedMessage = await this.messageRepo.save(message);
+
+      // Emit real-time event for staff-to-staff chat
+      try {
+        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage);
+      } catch (err) {
+        // Non-critical - log but don't fail
+        console.error('Failed to emit chat message event:', err);
+      }
+
+      return savedMessage;
     } else if (session.sessionType === ChatSessionType.PLAYER) {
       // Player chat - staff is replying to player
       // Verify staff has access (any staff with player chat access can reply)
@@ -494,7 +507,18 @@ export class ChatService {
       session.lastMessageAt = new Date();
       await this.sessionRepo.save(session);
 
-      return await this.messageRepo.save(message);
+      const savedMessage = await this.messageRepo.save(message);
+
+      // Emit real-time event for player-staff chat
+      try {
+        const playerId = session.player?.id;
+        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage, playerId);
+      } catch (err) {
+        // Non-critical - log but don't fail
+        console.error('Failed to emit chat message event:', err);
+      }
+
+      return savedMessage;
     } else {
       throw new BadRequestException('Invalid session type');
     }

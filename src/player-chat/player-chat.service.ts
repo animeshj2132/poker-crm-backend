@@ -3,6 +3,8 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not } from 'typeorm';
@@ -11,6 +13,7 @@ import { ClubsService } from '../clubs/clubs.service';
 import { ChatSession, ChatSessionType, ChatSessionStatus } from '../clubs/entities/chat-session.entity';
 import { ChatMessage, MessageSenderType } from '../clubs/entities/chat-message.entity';
 import { Club } from '../clubs/club.entity';
+import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class PlayerChatService {
@@ -24,6 +27,8 @@ export class PlayerChatService {
     @InjectRepository(Club)
     private readonly clubRepo: Repository<Club>,
     private readonly clubsService: ClubsService,
+    @Inject(forwardRef(() => EventsService))
+    private readonly eventsService: EventsService,
   ) {}
 
   /**
@@ -181,6 +186,15 @@ export class PlayerChatService {
       });
 
       const savedMessage = await this.messageRepo.save(chatMessage);
+
+      // Emit real-time event for player message to staff
+      try {
+        this.eventsService.emitNewChatMessage(clubId, session.id, savedMessage, playerId);
+        this.eventsService.emitChatSessionUpdate(clubId, session, playerId);
+      } catch (err) {
+        // Non-critical - log but don't fail
+        console.error('Failed to emit chat events:', err);
+      }
 
       return {
         success: true,

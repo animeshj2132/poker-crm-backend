@@ -224,6 +224,91 @@ export class EventsService {
       this.logger.log(`Emitted table available notification for club ${clubId} to ${clients.size} clients`);
     }
   }
+
+  // ==================== CHAT EVENTS ====================
+
+  // Emit new chat message to all subscribers
+  emitNewChatMessage(clubId: string, sessionId: string, message: any, playerId?: string) {
+    // Emit to club (for staff)
+    const clubClients = this.clubSubscriptions.get(clubId);
+    if (clubClients && clubClients.size > 0) {
+      this.server.emit('chat:new-message', {
+        clubId,
+        sessionId,
+        message: {
+          id: message.id,
+          message: message.message,
+          senderType: message.senderType,
+          senderName: message.senderName,
+          createdAt: message.createdAt,
+          isRead: message.isRead
+        }
+      });
+      this.logger.log(`Emitted new chat message for club ${clubId} to ${clubClients.size} clients`);
+    }
+
+    // Emit to player if it's a player chat
+    if (playerId) {
+      const playerClients = this.playerSubscriptions.get(playerId);
+      if (playerClients && playerClients.size > 0) {
+        playerClients.forEach(clientId => {
+          this.server.to(clientId).emit('chat:new-message', {
+            clubId,
+            sessionId,
+            playerId,
+            message: {
+              id: message.id,
+              message: message.message,
+              senderType: message.senderType,
+              senderName: message.senderName,
+              createdAt: message.createdAt,
+              isRead: message.isRead
+            }
+          });
+        });
+        this.logger.log(`Emitted new chat message for player ${playerId} to ${playerClients.size} clients`);
+      }
+    }
+  }
+
+  // Emit chat session created/updated
+  emitChatSessionUpdate(clubId: string, session: any, playerId?: string) {
+    // Emit to club (for staff)
+    const clubClients = this.clubSubscriptions.get(clubId);
+    if (clubClients && clubClients.size > 0) {
+      this.server.emit('chat:session-updated', {
+        clubId,
+        session: {
+          id: session.id,
+          sessionType: session.sessionType,
+          status: session.status,
+          subject: session.subject,
+          lastMessageAt: session.lastMessageAt
+        }
+      });
+      this.logger.log(`Emitted chat session update for club ${clubId} to ${clubClients.size} clients`);
+    }
+
+    // Emit to player if it's a player chat
+    if (playerId) {
+      const playerClients = this.playerSubscriptions.get(playerId);
+      if (playerClients && playerClients.size > 0) {
+        playerClients.forEach(clientId => {
+          this.server.to(clientId).emit('chat:session-updated', {
+            clubId,
+            playerId,
+            session: {
+              id: session.id,
+              status: session.status,
+              subject: session.subject,
+              lastMessageAt: session.lastMessageAt
+            }
+          });
+        });
+        this.logger.log(`Emitted chat session update for player ${playerId} to ${playerClients.size} clients`);
+      }
+    }
+  }
 }
 
 
