@@ -11,3 +11,4 @@ UPDATE players
 SET kyc_status = 'pending' 
 WHERE kyc_status IS NULL;
 
+
