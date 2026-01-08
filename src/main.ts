@@ -14,6 +14,7 @@ async function bootstrap() {
     
     // Website (Main site)
     process.env.WEBSITE_URL || 'http://localhost:3000',
+    'http://localhost:3001',
     
     // Development ports (for local testing)
     'https://localhost',
