@@ -254,7 +254,16 @@ export class ChatService {
       relations: ['staffInitiator', 'staffRecipient', 'club']
     });
     
-    return sessionWithRelations || savedSession;
+    if (!sessionWithRelations) {
+      return savedSession;
+    }
+    
+    // Calculate otherStaff for the initiator (since they're the one creating it)
+    // The frontend will recalculate this based on the current user, but we provide it for consistency
+    const result = sessionWithRelations as any;
+    result.otherStaff = sessionWithRelations.staffRecipient;
+    
+    return result;
   }
 
   async getStaffChatSessions(
