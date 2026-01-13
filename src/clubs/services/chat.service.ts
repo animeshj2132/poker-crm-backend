@@ -246,7 +246,15 @@ export class ChatService {
       status: ChatSessionStatus.OPEN
     });
 
-    return await this.sessionRepo.save(session);
+    const savedSession = await this.sessionRepo.save(session);
+    
+    // Reload with relations to ensure staffInitiator and staffRecipient are populated
+    const sessionWithRelations = await this.sessionRepo.findOne({
+      where: { id: savedSession.id },
+      relations: ['staffInitiator', 'staffRecipient', 'club']
+    });
+    
+    return sessionWithRelations || savedSession;
   }
 
   async getStaffChatSessions(
