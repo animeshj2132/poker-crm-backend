@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { StorageService } from './storage/storage.service';
 import { ValidationPipe } from '@nestjs/common';
 import * as http from 'http';
+import * as https from 'https';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -86,7 +87,11 @@ async function bootstrap() {
   };
 
   const pingServer = (url: string, logResult: boolean = false) => {
-    http.get(url, (res) => {
+    // Use https module for HTTPS URLs, http module for HTTP URLs
+    const isHttps = url.startsWith('https://');
+    const httpModule = isHttps ? https : http;
+    
+    httpModule.get(url, (res) => {
       const statusCode = res.statusCode || 0;
       if (statusCode >= 200 && statusCode < 300) {
         if (logResult) {
