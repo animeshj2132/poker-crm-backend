@@ -482,6 +482,10 @@ export class ChatService {
 
       const savedMessage = await this.messageRepo.save(message);
 
+      // Update session last message time
+      session.lastMessageAt = new Date();
+      await this.sessionRepo.save(session);
+
       // Emit real-time event for staff-to-staff chat
       try {
         this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage);
@@ -693,21 +697,47 @@ export class ChatService {
     return await this.sessionRepo.save(session);
   }
 
-  async getUnreadCounts(clubId: string, staffId: string): Promise<{ staffChats: number, playerChats: number }> {
+  async getUnreadCounts(clubId: string, userId: string): Promise<{ staffChats: number, playerChats: number }> {
+    // If userId is empty, return zero counts
+    if (!userId) {
+      return { staffChats: 0, playerChats: 0 };
+    }
+
+    // Get or create staff entry for user
+    let staff = await this.staffRepo.findOne({
+      where: { id: userId, club: { id: clubId } }
+    });
+    
+    if (!staff) {
+      try {
+        staff = await this.getOrCreateStaffForUser(userId, clubId);
+      } catch (error) {
+        // If user is not found or not Super Admin/Admin, return zero counts
+        return { staffChats: 0, playerChats: 0 };
+      }
+    }
+
+    const staffId = staff.id;
+
+    // Staff chats: messages from other staff in sessions where current staff is initiator or recipient
     const staffChatsUnread = await this.messageRepo.createQueryBuilder('message')
       .leftJoin('message.session', 'session')
+      .leftJoin('session.club', 'club')
       .leftJoin('session.staffInitiator', 'initiator')
       .leftJoin('session.staffRecipient', 'recipient')
-      .where('session.clubId = :clubId', { clubId })
+      .leftJoin('message.senderStaff', 'senderStaff')
+      .where('club.id = :clubId', { clubId })
       .andWhere('session.sessionType = :staffType', { staffType: ChatSessionType.STAFF })
       .andWhere('(initiator.id = :staffId OR recipient.id = :staffId)', { staffId })
       .andWhere('message.isRead = false')
-      .andWhere('message.senderStaffId != :staffId', { staffId })
+      .andWhere('(senderStaff.id != :staffId OR senderStaff.id IS NULL)', { staffId })
       .getCount();
 
+    // Player chats: unread messages from players
     const playerChatsUnread = await this.messageRepo.createQueryBuilder('message')
       .leftJoin('message.session', 'session')
-      .where('session.clubId = :clubId', { clubId })
+      .leftJoin('session.club', 'club')
+      .where('club.id = :clubId', { clubId })
       .andWhere('session.sessionType = :playerType', { playerType: ChatSessionType.PLAYER })
       .andWhere('message.isRead = false')
       .andWhere('message.senderType = :playerSenderType', { playerSenderType: MessageSenderType.PLAYER })
