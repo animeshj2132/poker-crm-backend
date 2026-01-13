@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { StorageService } from './storage/storage.service';
 import { ValidationPipe } from '@nestjs/common';
+import * as http from 'http';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -44,6 +45,16 @@ async function bootstrap() {
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })
   );
 
+  // Add health check endpoint to prevent Render from sleeping
+  // Note: Since global prefix is 'api', this will be accessible at /api/health
+  app.getHttpAdapter().get('/health', (req, res) => {
+    res.status(200).json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  });
+
   const port = process.env.PORT || 3333;
   // Ensure storage bucket exists (non-blocking)
   try {
@@ -51,6 +62,51 @@ async function bootstrap() {
   } catch (_) {}
   await app.listen(port);
   console.log(`🚀 Backend running on http://localhost:${port}`);
+
+  // Self-ping mechanism to prevent Render from sleeping
+  let pingCount = 0;
+  const startSelfPing = () => {
+    // Get the server URL - use RENDER_EXTERNAL_URL if available (Render), otherwise localhost
+    const serverUrl = process.env.RENDER_EXTERNAL_URL 
+      ? `${process.env.RENDER_EXTERNAL_URL}/api/health`
+      : `http://localhost:${port}/api/health`;
+    
+    console.log(`🔄 Self-ping enabled: ${serverUrl} (pinging every 30s to prevent Render sleep)`);
+    
+    // Ping immediately on startup
+    pingServer(serverUrl, true);
+    
+    // Then ping every 30 seconds
+    setInterval(() => {
+      pingCount++;
+      // Only log every 2 minutes (4 pings) to reduce log clutter
+      const shouldLog = pingCount % 4 === 0;
+      pingServer(serverUrl, shouldLog);
+    }, 30000); // 30 seconds
+  };
+
+  const pingServer = (url: string, logResult: boolean = false) => {
+    http.get(url, (res) => {
+      const statusCode = res.statusCode || 0;
+      if (statusCode >= 200 && statusCode < 300) {
+        if (logResult) {
+          console.log(`✅ Self-ping successful (${pingCount} pings): ${new Date().toISOString()}`);
+        }
+      } else {
+        console.warn(`⚠️ Self-ping returned status ${statusCode}`);
+      }
+    }).on('error', (err) => {
+      // Only log errors if it's not a connection refused (server not ready yet)
+      if (!err.message.includes('ECONNREFUSED')) {
+        console.warn(`⚠️ Self-ping error: ${err.message}`);
+      }
+    });
+  };
+
+  // Start self-ping after a short delay to ensure server is fully ready
+  setTimeout(() => {
+    startSelfPing();
+  }, 2000);
 }
 
 bootstrap();
