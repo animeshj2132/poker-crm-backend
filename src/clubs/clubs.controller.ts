@@ -80,6 +80,10 @@ import { ShiftManagementService } from './services/shift-management.service';
 import { CreateShiftDto } from './dto/create-shift.dto';
 import { UpdateShiftDto } from './dto/update-shift.dto';
 import { CopyShiftDto } from './dto/copy-shift.dto';
+import { RosterManagementService } from './services/roster-management.service';
+import { CreateRosterTemplateDto } from './dto/create-roster-template.dto';
+import { UpdateRosterTemplateDto } from './dto/update-roster-template.dto';
+import { GenerateRosterDto } from './dto/generate-roster.dto';
 import { PayrollService } from './services/payroll.service';
 import { ProcessSalaryDto } from './dto/process-salary.dto';
 import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
@@ -150,6 +154,7 @@ export class ClubsController {
     private readonly buyInRequestService: BuyInRequestService,
     private readonly attendanceTrackingService: AttendanceTrackingService,
     private readonly leaveManagementService: LeaveManagementService,
+    private readonly rosterManagementService: RosterManagementService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
@@ -12771,26 +12776,30 @@ export class ClubsController {
     @Request() req?: any,
   ) {
     try {
-      // For DEALER role, enforce that they can only view their own shifts
+      // For non-admin staff members, enforce that they can only view their own shifts
       const user = req?.user;
       const clubIdFromHeader = req?.headers?.['x-club-id'] || clubId;
       const clubRoleEntry = user?.clubRoles?.find((cr: any) => cr.clubId === clubIdFromHeader);
       const userRoles = clubRoleEntry?.roles || [];
-      const isDealerOnly = userRoles.includes(ClubRole.DEALER) && 
-                          !userRoles.some((r: ClubRole) => [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR].includes(r));
       
-      if (isDealerOnly && userId) {
-        // DEALER can only view their own shifts - get their staff ID from email
+      // Check if user has admin privileges (can see all shifts)
+      const hasAdminPrivileges = userRoles.some((r: ClubRole) => 
+        [ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR].includes(r)
+      );
+      
+      // If user doesn't have admin privileges and no staffId is explicitly provided, filter to their own shifts
+      if (!hasAdminPrivileges && !staffId && userId) {
         const userEntity = await this.usersService.findById(userId);
         if (userEntity?.email) {
           const allStaff = await this.staffManagementService.getAllStaff(clubId, {});
           const staffList = Array.isArray(allStaff) ? allStaff : [];
-          const currentStaff = staffList.find(s => s.email === userEntity.email && s.role === StaffRole.DEALER);
+          // Find staff member by email (works for any role: Dealer, Cashier, Manager, HR, etc.)
+          const currentStaff = staffList.find(s => s.email === userEntity.email);
           if (currentStaff) {
-            staffId = currentStaff.id; // Force staffId to current dealer
-            role = StaffRole.DEALER; // Force role to DEALER
+            staffId = currentStaff.id; // Force staffId to current staff member
+            role = currentStaff.role; // Use their actual role
           } else {
-            throw new ForbiddenException('Dealer not found');
+            throw new ForbiddenException('Staff member not found');
           }
         } else {
           throw new ForbiddenException('User email not found');
@@ -13123,6 +13132,370 @@ export class ClubsController {
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in deleteMultipleShifts:', error);
+      throw error;
+    }
+  }
+
+// ==================== ROSTER MANAGEMENT ====================
+
+  /**
+   * Create or update roster template for a staff member
+   * POST /api/clubs/:clubId/roster/templates
+   */
+  @Post(':clubId/roster/templates')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async createRosterTemplate(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() createRosterTemplateDto: CreateRosterTemplateDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const template = await this.rosterManagementService.createOrUpdateTemplate(
+        clubId,
+        createRosterTemplateDto,
+        userId,
+      );
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'roster_template_created',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Created/updated roster template for ${createRosterTemplateDto.staffName} (${createRosterTemplateDto.staffRole})`,
+            targetType: 'roster_template',
+            targetId: template.id,
+            targetName: createRosterTemplateDto.staffName,
+            metadata: {
+              staffId: createRosterTemplateDto.staffId,
+              offDays: createRosterTemplateDto.offDays,
+              shiftTime: `${createRosterTemplateDto.defaultShiftStartTime} - ${createRosterTemplateDto.defaultShiftEndTime}`,
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log:', auditError);
+      }
+
+      return { success: true, template };
+    } catch (error) {
+      console.error('Error in createRosterTemplate:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all roster templates for a club
+   * GET /api/clubs/:clubId/roster/templates
+   */
+  @Get(':clubId/roster/templates')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getRosterTemplates(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    try {
+      const templates = await this.rosterManagementService.getAllTemplates(
+        clubId,
+        includeInactive === 'true',
+      );
+      return { success: true, templates };
+    } catch (error) {
+      console.error('Error in getRosterTemplates:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get roster template for a specific staff member
+   * GET /api/clubs/:clubId/roster/templates/staff/:staffId
+   */
+  @Get(':clubId/roster/templates/staff/:staffId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getRosterTemplateByStaffId(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+  ) {
+    try {
+      const template = await this.rosterManagementService.getTemplateByStaffId(clubId, staffId);
+      return { success: true, template };
+    } catch (error) {
+      console.error('Error in getRosterTemplateByStaffId:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a roster template
+   * PATCH /api/clubs/:clubId/roster/templates/:templateId
+   */
+  @Patch(':clubId/roster/templates/:templateId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateRosterTemplate(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('templateId', new ParseUUIDPipe()) templateId: string,
+    @Body() updateRosterTemplateDto: UpdateRosterTemplateDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const template = await this.rosterManagementService.updateTemplate(
+        clubId,
+        templateId,
+        updateRosterTemplateDto,
+        userId,
+      );
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'roster_template_updated',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Updated roster template for ${template.staffName}`,
+            targetType: 'roster_template',
+            targetId: template.id,
+            targetName: template.staffName,
+            metadata: updateRosterTemplateDto,
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log:', auditError);
+      }
+
+      return { success: true, template };
+    } catch (error) {
+      console.error('Error in updateRosterTemplate:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a roster template
+   * DELETE /api/clubs/:clubId/roster/templates/:templateId
+   */
+  @Delete(':clubId/roster/templates/:templateId')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  async deleteRosterTemplate(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('templateId', new ParseUUIDPipe()) templateId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      // Get template before deletion for audit log
+      const template = await this.rosterManagementService.getTemplateById(clubId, templateId);
+      
+      const result = await this.rosterManagementService.deleteTemplate(clubId, templateId);
+
+      // Audit log
+      try {
+        if (userId && template) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'roster_template_deleted',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Deleted roster template for ${template.staffName}`,
+            targetType: 'roster_template',
+            targetId: templateId,
+            targetName: template.staffName,
+            metadata: { staffId: template.staffId },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log:', auditError);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in deleteRosterTemplate:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate roster (create shifts) for all staff based on templates
+   * POST /api/clubs/:clubId/roster/generate
+   */
+  @Post(':clubId/roster/generate')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async generateRoster(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() generateRosterDto: GenerateRosterDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const result = await this.rosterManagementService.generateRoster(
+        clubId,
+        generateRosterDto,
+        userId,
+      );
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'roster_generated',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Generated ${generateRosterDto.periodType} roster from ${generateRosterDto.startDate} (${result.totalShiftsCreated} shifts created)`,
+            targetType: 'roster',
+            targetId: undefined, // Bulk operation, no specific target ID
+            targetName: `${generateRosterDto.periodType} Roster`,
+            metadata: {
+              startDate: generateRosterDto.startDate,
+              endDate: result.endDate,
+              periodType: generateRosterDto.periodType,
+              shiftsCreated: result.totalShiftsCreated,
+              staffProcessed: result.staffProcessed,
+              overwriteExisting: generateRosterDto.overwriteExisting,
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log:', auditError);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in generateRoster:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get roster overview (all staff shifts for a period)
+   * GET /api/clubs/:clubId/roster/overview?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+   */
+  @Get(':clubId/roster/overview')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getRosterOverview(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    try {
+      if (!startDate || !endDate) {
+        throw new BadRequestException('startDate and endDate are required');
+      }
+
+      const overview = await this.rosterManagementService.getRosterOverview(
+        clubId,
+        startDate,
+        endDate,
+      );
+      return { success: true, ...overview };
+    } catch (error) {
+      console.error('Error in getRosterOverview:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Bulk create roster templates
+   * POST /api/clubs/:clubId/roster/templates/bulk
+   */
+  @Post(':clubId/roster/templates/bulk')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async bulkCreateRosterTemplates(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { templates: CreateRosterTemplateDto[] },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const result = await this.rosterManagementService.bulkCreateTemplates(
+        clubId,
+        body.templates,
+        userId,
+      );
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'roster_templates_bulk_created',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Bulk created ${result.created} roster templates`,
+            targetType: 'roster_template',
+            targetId: undefined, // Bulk operation, no specific target ID
+            targetName: 'Multiple Templates',
+            metadata: {
+              templatesCount: body.templates.length,
+              created: result.created,
+              errors: result.errors,
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log:', auditError);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in bulkCreateRosterTemplates:', error);
       throw error;
     }
   }

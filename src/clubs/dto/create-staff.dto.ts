@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsEnum, IsOptional, MaxLength, MinLength, IsEmail } from 'class-validator';
+import { IsNotEmpty, IsString, IsEnum, IsOptional, MaxLength, MinLength, IsEmail, ValidateIf } from 'class-validator';
 import { StaffRole } from '../entities/staff.entity';
 
 export class CreateStaffDto {
@@ -27,13 +27,13 @@ export class CreateStaffDto {
   @MaxLength(20)
   phone!: string;
 
-  @IsOptional()
+  @IsNotEmpty({ message: 'Aadhar document is required' })
   @IsString()
-  aadharDocumentUrl?: string;
+  aadharDocumentUrl!: string;
 
-  @IsOptional()
+  @IsNotEmpty({ message: 'PAN document is required' })
   @IsString()
-  panDocumentUrl?: string;
+  panDocumentUrl!: string;
 
   @IsOptional()
   @IsString()

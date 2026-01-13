@@ -7,11 +7,13 @@ import { ChatSession } from '../clubs/entities/chat-session.entity';
 import { ChatMessage } from '../clubs/entities/chat-message.entity';
 import { Club } from '../clubs/club.entity';
 import { ClubsModule } from '../clubs/clubs.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Player, ChatSession, ChatMessage, Club]),
-    ClubsModule
+    ClubsModule,
+    EventsModule
   ],
   controllers: [PlayerChatController],
   providers: [PlayerChatService],

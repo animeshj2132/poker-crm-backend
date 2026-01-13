@@ -87,6 +87,14 @@ export class StaffManagementService {
     panDocumentUrl?: string;
     customRoleName?: string;
   }, createdBy: string) {
+    // Validate KYC documents - both are required
+    if (!data.aadharDocumentUrl) {
+      throw new BadRequestException('Aadhar document is required to create a staff member');
+    }
+    if (!data.panDocumentUrl) {
+      throw new BadRequestException('PAN document is required to create a staff member');
+    }
+
     // Validate custom role
     if (data.role === StaffRole.STAFF && !data.customRoleName) {
       throw new BadRequestException('Custom role name is required when role is Staff');
@@ -332,6 +340,17 @@ export class StaffManagementService {
     customRoleName: string;
   }>) {
     const staff = await this.getStaffEntity(clubId, staffId);
+
+    // Validate KYC documents - both must be present
+    const finalAadhar = data.aadharDocumentUrl !== undefined ? data.aadharDocumentUrl : staff.aadharDocumentUrl;
+    const finalPan = data.panDocumentUrl !== undefined ? data.panDocumentUrl : staff.panDocumentUrl;
+    
+    if (!finalAadhar) {
+      throw new BadRequestException('Aadhar document is required. Cannot remove Aadhar document.');
+    }
+    if (!finalPan) {
+      throw new BadRequestException('PAN document is required. Cannot remove PAN document.');
+    }
 
     // Check for duplicate email if changing
     if (data.email && data.email !== staff.email) {

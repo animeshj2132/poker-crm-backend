@@ -69,6 +69,8 @@ import { AttendanceTrackingService } from './services/attendance-tracking.servic
 import { LeavePolicy } from './entities/leave-policy.entity';
 import { LeaveApplication } from './entities/leave-application.entity';
 import { LeaveManagementService } from './services/leave-management.service';
+import { RosterTemplate } from './entities/roster-template.entity';
+import { RosterManagementService } from './services/roster-management.service';
 
 @Module({
   imports: [
@@ -111,7 +113,8 @@ import { LeaveManagementService } from './services/leave-management.service';
       BuyInRequest,
       AttendanceTracking,
       LeavePolicy,
-      LeaveApplication
+      LeaveApplication,
+      RosterTemplate
     ]),
     UsersModule,
     StorageModule,
@@ -143,7 +146,8 @@ import { LeaveManagementService } from './services/leave-management.service';
     BuyOutRequestService,
     BuyInRequestService,
     AttendanceTrackingService,
-    LeaveManagementService
+    LeaveManagementService,
+    RosterManagementService
   ],
   controllers: [ClubsController],
   exports: [
@@ -172,7 +176,8 @@ import { LeaveManagementService } from './services/leave-management.service';
     BuyOutRequestService,
     BuyInRequestService,
     AttendanceTrackingService,
-    LeaveManagementService
+    LeaveManagementService,
+    RosterManagementService
   ]
 })
 export class ClubsModule {}
