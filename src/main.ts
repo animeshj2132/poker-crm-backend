@@ -47,8 +47,9 @@ async function bootstrap() {
   );
 
   // Add health check endpoint to prevent Render from sleeping
-  // Note: Since global prefix is 'api', this will be accessible at /api/health
-  app.getHttpAdapter().get('/health', (req, res) => {
+  // Use the Express adapter directly with the full path including prefix
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.get('/api/health', (req: any, res: any) => {
     res.status(200).json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
