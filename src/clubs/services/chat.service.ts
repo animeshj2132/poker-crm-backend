@@ -249,11 +249,11 @@ export class ChatService {
       // Also check by userId field (for staff with linked user accounts)
       initiator = await this.staffRepo.findOne({
         where: { userId: initiatorUserId, club: { id: clubId } }
-      });
-      
-      if (!initiator) {
-        // Check if it's a user (Super Admin/Admin) and create staff entry
-        initiator = await this.getOrCreateStaffForUser(initiatorUserId, clubId);
+    });
+    
+    if (!initiator) {
+      // Check if it's a user (Super Admin/Admin) and create staff entry
+      initiator = await this.getOrCreateStaffForUser(initiatorUserId, clubId);
       }
     }
 
@@ -276,10 +276,10 @@ export class ChatService {
             where: { email: user.email, club: { id: clubId } }
           });
         }
-        
-        if (!recipient) {
-          // Check if it's a user (Super Admin/Admin) and create staff entry
-          recipient = await this.getOrCreateStaffForUser(dto.recipientStaffId, clubId);
+    
+    if (!recipient) {
+      // Check if it's a user (Super Admin/Admin) and create staff entry
+      recipient = await this.getOrCreateStaffForUser(dto.recipientStaffId, clubId);
         }
       }
     }
@@ -318,8 +318,8 @@ export class ChatService {
       const reloaded = await this.sessionRepo.findOne({
         where: { id: existing.id },
         relations: ['staffInitiator', 'staffRecipient', 'club']
-      });
-      
+    });
+
       if (reloaded) {
         const result = reloaded as any;
         result.otherStaff = reloaded.staffInitiator?.id === initiator.id 
