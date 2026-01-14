@@ -95,7 +95,8 @@ export class ChatService {
       status: StaffStatus.ACTIVE,
       employeeId: `USER-${userId.substring(0, 8)}`,
       tempPassword: false,
-      passwordHash: null
+      passwordHash: null,
+      userId: userId  // Link staff to user account
     });
     
     return await this.staffRepo.save(staff);
@@ -103,8 +104,9 @@ export class ChatService {
 
   /**
    * Get all chatable users for a club (staff + Super Admin + Admin users)
+   * If currentUserId is provided, excludes users with existing active (non-archived) chat sessions
    */
-  async getChatableUsers(clubId: string, tenantId?: string): Promise<any[]> {
+  async getChatableUsers(clubId: string, tenantId?: string, currentUserId?: string, excludeExisting = false): Promise<any[]> {
     const club = await this.clubRepo.findOne({ 
       where: { id: clubId },
       relations: ['tenant']
@@ -176,7 +178,56 @@ export class ChatService {
       index === self.findIndex(u => u.id === user.id || u.email?.toLowerCase() === user.email?.toLowerCase())
     );
 
-    return uniqueUsers;
+    // If excludeExisting is true and currentUserId is provided, filter out users with existing active chats
+    if (excludeExisting && currentUserId) {
+      // Get or create staff entry for current user
+      let currentStaff = await this.staffRepo.findOne({
+        where: { id: currentUserId, club: { id: clubId } }
+      });
+      
+      if (!currentStaff) {
+        try {
+          currentStaff = await this.getOrCreateStaffForUser(currentUserId, clubId);
+        } catch (error) {
+          // If can't create staff entry, just return all users
+          return uniqueUsers.filter(u => u.id !== currentUserId);
+        }
+      }
+
+      const currentStaffId = currentStaff.id;
+
+      // Get all existing chat sessions for current user (not archived by current user)
+      const existingSessions = await this.sessionRepo.createQueryBuilder('session')
+        .leftJoinAndSelect('session.staffInitiator', 'initiator')
+        .leftJoinAndSelect('session.staffRecipient', 'recipient')
+        .where('session.club.id = :clubId', { clubId })
+        .andWhere('session.sessionType = :type', { type: ChatSessionType.STAFF })
+        .andWhere('(initiator.id = :staffId OR recipient.id = :staffId)', { staffId: currentStaffId })
+        .andWhere(
+          '(initiator.id = :staffId AND session.archivedByInitiator = false) OR (recipient.id = :staffId AND session.archivedByRecipient = false)',
+          { staffId: currentStaffId }
+        )
+        .getMany();
+
+      // Get IDs of users with existing chats
+      const existingChatUserIds = new Set(
+        existingSessions.map(session => {
+          return session.staffInitiator?.id === currentStaffId 
+            ? session.staffRecipient?.id 
+            : session.staffInitiator?.id;
+        }).filter(Boolean)
+      );
+
+      // Filter out users with existing chats and current user
+      return uniqueUsers.filter(u => 
+        u.id !== currentUserId && 
+        u.id !== currentStaffId && 
+        !existingChatUserIds.has(u.id)
+      );
+    }
+
+    // Remove current user from the list
+    return uniqueUsers.filter(u => u.id !== currentUserId);
   }
 
   async createStaffChatSession(
@@ -184,7 +235,7 @@ export class ChatService {
     initiatorUserId: string,
     dto: CreateStaffChatSessionDto
   ): Promise<ChatSession> {
-    const club = await this.clubRepo.findOne({ where: { id: clubId } });
+    const club = await this.clubRepo.findOne({ where: { id: clubId }, relations: ['tenant'] });
     if (!club) {
       throw new NotFoundException('Club not found');
     }
@@ -195,45 +246,88 @@ export class ChatService {
     });
     
     if (!initiator) {
-      // Check if it's a user (Super Admin/Admin) and create staff entry
-      initiator = await this.getOrCreateStaffForUser(initiatorUserId, clubId);
+      // Also check by userId field (for staff with linked user accounts)
+      initiator = await this.staffRepo.findOne({
+        where: { userId: initiatorUserId, club: { id: clubId } }
+      });
+      
+      if (!initiator) {
+        // Check if it's a user (Super Admin/Admin) and create staff entry
+        initiator = await this.getOrCreateStaffForUser(initiatorUserId, clubId);
+      }
     }
 
-    // Get or create staff entry for recipient
+    // Get or create staff entry for recipient (FIRST try as staff ID, then as user ID)
     let recipient = await this.staffRepo.findOne({
       where: { id: dto.recipientStaffId, club: { id: clubId } }
     });
     
     if (!recipient) {
-      // Check if it's a user (Super Admin/Admin) and create staff entry
-      recipient = await this.getOrCreateStaffForUser(dto.recipientStaffId, clubId);
+      // Also check by userId field (for staff with linked user accounts)
+      recipient = await this.staffRepo.findOne({
+        where: { userId: dto.recipientStaffId, club: { id: clubId } }
+      });
+      
+      if (!recipient) {
+        // Try to get user and check by email
+        const user = await this.userRepo.findOne({ where: { id: dto.recipientStaffId } });
+        if (user && user.email) {
+          recipient = await this.staffRepo.findOne({
+            where: { email: user.email, club: { id: clubId } }
+          });
+        }
+        
+        if (!recipient) {
+          // Check if it's a user (Super Admin/Admin) and create staff entry
+          recipient = await this.getOrCreateStaffForUser(dto.recipientStaffId, clubId);
+        }
+      }
     }
 
     if (initiator.id === recipient.id) {
       throw new BadRequestException('Cannot create chat session with yourself');
     }
 
-    // Check if session already exists
-    const existing = await this.sessionRepo.findOne({
-      where: [
-        {
-          club: { id: clubId },
-          sessionType: ChatSessionType.STAFF,
-          staffInitiator: { id: initiator.id },
-          staffRecipient: { id: recipient.id },
-          status: ChatSessionStatus.OPEN
-        },
-        {
-          club: { id: clubId },
-          sessionType: ChatSessionType.STAFF,
-          staffInitiator: { id: recipient.id },
-          staffRecipient: { id: initiator.id },
-          status: ChatSessionStatus.OPEN
-        }
-      ]
-    });
+    // Check if session already exists (regardless of archive status)
+    // We want to find any active session between these two users
+    const existing = await this.sessionRepo
+      .createQueryBuilder('session')
+      .leftJoinAndSelect('session.staffInitiator', 'initiator')
+      .leftJoinAndSelect('session.staffRecipient', 'recipient')
+      .leftJoinAndSelect('session.club', 'club')
+      .where('club.id = :clubId', { clubId })
+      .andWhere('session.sessionType = :type', { type: ChatSessionType.STAFF })
+      .andWhere(
+        '((initiator.id = :initiatorId AND recipient.id = :recipientId) OR (initiator.id = :recipientId AND recipient.id = :initiatorId))',
+        { initiatorId: initiator.id, recipientId: recipient.id }
+      )
+      .getOne();
 
     if (existing) {
+      // If archived by initiator, un-archive it
+      const isInitiator = existing.staffInitiator?.id === initiator.id;
+      if (isInitiator && existing.archivedByInitiator) {
+        existing.archivedByInitiator = false;
+        await this.sessionRepo.save(existing);
+      } else if (!isInitiator && existing.archivedByRecipient) {
+        existing.archivedByRecipient = false;
+        await this.sessionRepo.save(existing);
+      }
+      
+      // Reload with all relations
+      const reloaded = await this.sessionRepo.findOne({
+        where: { id: existing.id },
+        relations: ['staffInitiator', 'staffRecipient', 'club']
+      });
+      
+      if (reloaded) {
+        const result = reloaded as any;
+        result.otherStaff = reloaded.staffInitiator?.id === initiator.id 
+          ? reloaded.staffRecipient 
+          : reloaded.staffInitiator;
+        return result;
+      }
+      
       return existing;
     }
 
@@ -263,6 +357,25 @@ export class ChatService {
     const result = sessionWithRelations as any;
     result.otherStaff = sessionWithRelations.staffRecipient;
     
+    // Emit real-time event for new session creation
+    try {
+      // Emit to both initiator and recipient using their user IDs
+      this.eventsService.emitChatSessionUpdate(
+        clubId, 
+        sessionWithRelations, 
+        undefined, 
+        initiator.userId || initiatorUserId
+      );
+      this.eventsService.emitChatSessionUpdate(
+        clubId, 
+        sessionWithRelations, 
+        undefined, 
+        recipient.userId || dto.recipientStaffId
+      );
+    } catch (err) {
+      console.error('Failed to emit chat session creation event:', err);
+    }
+    
     return result;
   }
 
@@ -275,15 +388,34 @@ export class ChatService {
     role?: string
   ): Promise<{ sessions: any[], total: number, page: number, totalPages: number }> {
     // Get or create staff entry for user if they're not in staff table
+    // Try multiple lookup methods: staff ID, user ID, email
     let staff = await this.staffRepo.findOne({
       where: { id: userId, club: { id: clubId } }
     });
+    
+    if (!staff) {
+      // Try by userId field (for staff with linked user accounts)
+      staff = await this.staffRepo.findOne({
+        where: { userId: userId, club: { id: clubId } }
+      });
+    }
+    
+    if (!staff) {
+      // Try to get user and match by email
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (user && user.email) {
+        staff = await this.staffRepo.findOne({
+          where: { email: user.email, club: { id: clubId } }
+        });
+      }
+    }
     
     if (!staff) {
       // Try to get or create staff entry for user (Super Admin/Admin)
       try {
         staff = await this.getOrCreateStaffForUser(userId, clubId);
       } catch (error) {
+        console.error('Error getting staff for user:', error);
         // If user is not found or not Super Admin/Admin, return empty
         return { sessions: [], total: 0, page, totalPages: 0 };
       }
@@ -473,6 +605,23 @@ export class ChatService {
     });
     
     if (!sender) {
+      // Try by userId field
+      sender = await this.staffRepo.findOne({
+        where: { userId: senderUserId, club: { id: clubId } }
+      });
+    }
+    
+    if (!sender) {
+      // Try by email
+      const user = await this.userRepo.findOne({ where: { id: senderUserId } });
+      if (user && user.email) {
+        sender = await this.staffRepo.findOne({
+          where: { email: user.email, club: { id: clubId } }
+        });
+      }
+    }
+    
+    if (!sender) {
       // Check if it's a user (Super Admin/Admin) and create staff entry
       sender = await this.getOrCreateStaffForUser(senderUserId, clubId);
     }
@@ -503,9 +652,44 @@ export class ChatService {
       session.lastMessageAt = new Date();
       await this.sessionRepo.save(session);
 
+      // Determine recipient staff and their user ID
+      const recipientStaff = session.staffInitiator?.id === sender.id 
+        ? session.staffRecipient 
+        : session.staffInitiator;
+      
+      const recipientStaffId = recipientStaff?.id;
+      let recipientUserId = recipientStaff?.userId;
+
+      // If recipientStaff doesn't have userId set, try to find it by email
+      // This handles cases where staff entries were created before userId linking was implemented
+      if (!recipientUserId && recipientStaff?.email) {
+        const recipientUser = await this.userRepo.findOne({
+          where: { email: recipientStaff.email }
+        });
+        if (recipientUser) {
+          recipientUserId = recipientUser.id;
+          // Also update the staff entry to link it properly for future messages
+          if (recipientStaff && !recipientStaff.userId) {
+            recipientStaff.userId = recipientUser.id;
+            await this.staffRepo.save(recipientStaff).catch(err => {
+              console.error('Failed to update staff userId:', err);
+              // Non-critical - continue even if update fails
+            });
+          }
+        }
+      }
+
       // Emit real-time event for staff-to-staff chat
       try {
-        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage);
+        // Emit to club for general updates
+        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage, undefined, recipientStaffId);
+        
+        // Emit direct notification to recipient staff's user ID
+        if (recipientUserId) {
+          this.eventsService.emitNewChatMessageDirect(clubId, sessionId, savedMessage, recipientUserId);
+        } else {
+          console.warn(`No userId found for recipient staff ${recipientStaffId} (${recipientStaff?.email}), notification may not be delivered`);
+        }
       } catch (err) {
         // Non-critical - log but don't fail
         console.error('Failed to emit chat message event:', err);
@@ -565,6 +749,23 @@ export class ChatService {
     let staff = await this.staffRepo.findOne({
       where: { id: userId, club: { id: clubId } }
     });
+    
+    if (!staff) {
+      // Try by userId field
+      staff = await this.staffRepo.findOne({
+        where: { userId: userId, club: { id: clubId } }
+      });
+    }
+    
+    if (!staff) {
+      // Try by email
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (user && user.email) {
+        staff = await this.staffRepo.findOne({
+          where: { email: user.email, club: { id: clubId } }
+        });
+      }
+    }
     
     if (!staff) {
       try {
@@ -697,6 +898,23 @@ export class ChatService {
     });
     
     if (!staff) {
+      // Try by userId field
+      staff = await this.staffRepo.findOne({
+        where: { userId: userId, club: { id: clubId } }
+      });
+    }
+    
+    if (!staff) {
+      // Try by email
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (user && user.email) {
+        staff = await this.staffRepo.findOne({
+          where: { email: user.email, club: { id: clubId } }
+        });
+      }
+    }
+    
+    if (!staff) {
       staff = await this.getOrCreateStaffForUser(userId, clubId);
     }
 
@@ -724,6 +942,23 @@ export class ChatService {
     let staff = await this.staffRepo.findOne({
       where: { id: userId, club: { id: clubId } }
     });
+    
+    if (!staff) {
+      // Try by userId field
+      staff = await this.staffRepo.findOne({
+        where: { userId: userId, club: { id: clubId } }
+      });
+    }
+    
+    if (!staff) {
+      // Try by email
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (user && user.email) {
+        staff = await this.staffRepo.findOne({
+          where: { email: user.email, club: { id: clubId } }
+        });
+      }
+    }
     
     if (!staff) {
       try {

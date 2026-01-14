@@ -187,6 +187,11 @@ export class StaffManagementService {
             }
           }
 
+          // Link staff entry to user account
+          savedStaff.userId = user.id;
+          await this.staffRepo.save(savedStaff);
+          console.log(`✅ Linked staff ${savedStaff.id} to user ${user.id} (${data.email})`);
+
           // Assign appropriate role to the user for this club
           const existingRole = await this.userClubRoleRepo.findOne({
             where: { user: { id: user.id }, club: { id: clubId }, role: clubRole }

@@ -83,6 +83,21 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.emit('subscribed', { playerId: data.playerId, clubId: data.clubId });
   }
 
+  @SubscribeMessage('subscribe:staff')
+  handleSubscribeStaff(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { staffId: string; clubId: string }
+  ) {
+    if (!data || !data.staffId || !data.clubId) {
+      client.emit('error', { message: 'Staff ID and Club ID are required' });
+      return;
+    }
+
+    this.logger.log(`Client ${client.id} subscribing to staff ${data.staffId}`);
+    this.eventsService.subscribeToStaff(client.id, data.staffId, data.clubId);
+    client.emit('subscribed', { staffId: data.staffId, clubId: data.clubId });
+  }
+
   @SubscribeMessage('unsubscribe:club')
   handleUnsubscribeClub(
     @ConnectedSocket() client: Socket,

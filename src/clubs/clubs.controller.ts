@@ -14557,9 +14557,12 @@ export class ClubsController {
   async getChatableUsers(
     @Param('clubId', ParseUUIDPipe) clubId: string,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-user-id') userId?: string,
+    @Query('excludeExisting') excludeExisting?: string,
   ) {
     try {
-      const users = await this.chatService.getChatableUsers(clubId, tenantId);
+      const shouldExclude = excludeExisting === 'true';
+      const users = await this.chatService.getChatableUsers(clubId, tenantId, userId, shouldExclude);
       return { success: true, users };
     } catch (error) {
       console.error('Error in getChatableUsers:', error);

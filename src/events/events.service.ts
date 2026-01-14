@@ -8,6 +8,7 @@ export class EventsService {
   private clientSubscriptions: Map<string, Set<string>> = new Map(); // clientId -> Set of clubIds/playerIds
   private clubSubscriptions: Map<string, Set<string>> = new Map(); // clubId -> Set of clientIds
   private playerSubscriptions: Map<string, Set<string>> = new Map(); // playerId -> Set of clientIds
+  private staffSubscriptions: Map<string, Set<string>> = new Map(); // staffUserId -> Set of clientIds
 
   setServer(server: Server) {
     this.server = server;
@@ -83,6 +84,39 @@ export class EventsService {
     }
   }
 
+  subscribeToStaff(clientId: string, staffUserId: string, clubId: string) {
+    if (!this.clientSubscriptions.has(clientId)) {
+      this.clientSubscriptions.set(clientId, new Set());
+    }
+    this.clientSubscriptions.get(clientId)!.add(`staff:${staffUserId}`);
+    this.clientSubscriptions.get(clientId)!.add(`club:${clubId}`); // Also subscribe to club for general updates
+
+    if (!this.staffSubscriptions.has(staffUserId)) {
+      this.staffSubscriptions.set(staffUserId, new Set());
+    }
+    this.staffSubscriptions.get(staffUserId)!.add(clientId);
+
+    if (!this.clubSubscriptions.has(clubId)) {
+      this.clubSubscriptions.set(clubId, new Set());
+    }
+    this.clubSubscriptions.get(clubId)!.add(clientId);
+  }
+
+  unsubscribeFromStaff(clientId: string, staffUserId: string) {
+    const subscriptions = this.clientSubscriptions.get(clientId);
+    if (subscriptions) {
+      subscriptions.delete(`staff:${staffUserId}`);
+    }
+
+    const staffClients = this.staffSubscriptions.get(staffUserId);
+    if (staffClients) {
+      staffClients.delete(clientId);
+      if (staffClients.size === 0) {
+        this.staffSubscriptions.delete(staffUserId);
+      }
+    }
+  }
+
   removeClient(clientId: string) {
     const subscriptions = this.clientSubscriptions.get(clientId);
     if (subscriptions) {
@@ -93,6 +127,9 @@ export class EventsService {
         } else if (sub.startsWith('player:')) {
           const playerId = sub.replace('player:', '');
           this.unsubscribeFromPlayer(clientId, playerId);
+        } else if (sub.startsWith('staff:')) {
+          const staffUserId = sub.replace('staff:', '');
+          this.unsubscribeFromStaff(clientId, staffUserId);
         }
       });
     }
@@ -227,9 +264,10 @@ export class EventsService {
 
   // ==================== CHAT EVENTS ====================
 
+  // Subscribe staff member to their personal chat updates
   // Emit new chat message to all subscribers
-  emitNewChatMessage(clubId: string, sessionId: string, message: any, playerId?: string) {
-    // Emit to club (for staff)
+  emitNewChatMessage(clubId: string, sessionId: string, message: any, playerId?: string, recipientStaffId?: string) {
+    // Emit to club (for all staff to update their chat lists)
     const clubClients = this.clubSubscriptions.get(clubId);
     if (clubClients && clubClients.size > 0) {
       this.server.emit('chat:new-message', {
@@ -240,11 +278,36 @@ export class EventsService {
           message: message.message,
           senderType: message.senderType,
           senderName: message.senderName,
+          senderStaffId: message.senderStaff?.id,
           createdAt: message.createdAt,
           isRead: message.isRead
         }
       });
       this.logger.log(`Emitted new chat message for club ${clubId} to ${clubClients.size} clients`);
+    }
+
+    // If there's a specific recipient staff, emit directly to them
+    if (recipientStaffId) {
+      const recipientClients = this.playerSubscriptions.get(recipientStaffId);
+      if (recipientClients && recipientClients.size > 0) {
+        recipientClients.forEach(clientId => {
+          this.server.to(clientId).emit('chat:new-message-direct', {
+            clubId,
+            sessionId,
+            recipientStaffId,
+            message: {
+              id: message.id,
+              message: message.message,
+              senderType: message.senderType,
+              senderName: message.senderName,
+              senderStaffId: message.senderStaff?.id,
+              createdAt: message.createdAt,
+              isRead: message.isRead
+            }
+          });
+        });
+        this.logger.log(`Emitted direct chat message to recipient staff ${recipientStaffId} (${recipientClients.size} clients)`);
+      }
     }
 
     // Emit to player if it's a player chat
@@ -272,7 +335,7 @@ export class EventsService {
   }
 
   // Emit chat session created/updated
-  emitChatSessionUpdate(clubId: string, session: any, playerId?: string) {
+  emitChatSessionUpdate(clubId: string, session: any, playerId?: string, recipientStaffUserId?: string) {
     // Emit to club (for staff)
     const clubClients = this.clubSubscriptions.get(clubId);
     if (clubClients && clubClients.size > 0) {
@@ -283,7 +346,9 @@ export class EventsService {
           sessionType: session.sessionType,
           status: session.status,
           subject: session.subject,
-          lastMessageAt: session.lastMessageAt
+          lastMessageAt: session.lastMessageAt,
+          staffInitiator: session.staffInitiator,
+          staffRecipient: session.staffRecipient
         }
       });
       this.logger.log(`Emitted chat session update for club ${clubId} to ${clubClients.size} clients`);
@@ -307,6 +372,52 @@ export class EventsService {
         });
         this.logger.log(`Emitted chat session update for player ${playerId} to ${playerClients.size} clients`);
       }
+    }
+
+    // Emit to specific staff member if it's a staff chat
+    if (recipientStaffUserId) {
+      const staffClients = this.staffSubscriptions.get(recipientStaffUserId);
+      if (staffClients && staffClients.size > 0) {
+        staffClients.forEach(clientId => {
+          this.server.to(clientId).emit('chat:session-updated', {
+            clubId,
+            recipientStaffUserId,
+            session: {
+              id: session.id,
+              sessionType: session.sessionType,
+              status: session.status,
+              subject: session.subject,
+              lastMessageAt: session.lastMessageAt,
+              staffInitiator: session.staffInitiator,
+              staffRecipient: session.staffRecipient
+            }
+          });
+        });
+        this.logger.log(`Emitted chat session update for staff ${recipientStaffUserId} to ${staffClients.size} clients`);
+      }
+    }
+  }
+
+  emitNewChatMessageDirect(clubId: string, sessionId: string, message: any, recipientStaffUserId: string) {
+    const clients = this.staffSubscriptions.get(recipientStaffUserId);
+    if (clients && clients.size > 0) {
+      clients.forEach(clientId => {
+        this.server.to(clientId).emit('chat:new-message-direct', {
+          clubId,
+          sessionId,
+          recipientStaffUserId,
+          message: {
+            id: message.id,
+            message: message.message,
+            senderType: message.senderType,
+            senderName: message.senderName,
+            createdAt: message.createdAt,
+            isRead: message.isRead,
+            senderStaff: message.senderStaff
+          }
+        });
+      });
+      this.logger.log(`Emitted direct chat message for staff ${recipientStaffUserId} to ${clients.size} clients`);
     }
   }
 }
