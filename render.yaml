@@ -2,7 +2,7 @@ services:
   - type: web
     name: poker-crm-backend
     env: node
-    buildCommand: npm install && npm run build
+    buildCommand: NODE_OPTIONS=--max-old-space-size=512 npm install && npm run build
     startCommand: npm run start:prod
     envVars:
       - key: NODE_ENV
@@ -10,4 +10,4 @@ services:
       - key: PORT
         value: 3333
       - key: NODE_OPTIONS
-        value: --max-old-space-size=2048
+        value: --max-old-space-size=400
