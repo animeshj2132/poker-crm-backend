@@ -56,6 +56,7 @@ export class PlayerTournamentsService {
       }
 
       // Query actual tournaments from database
+      console.log('🏆 [TOURNAMENTS] Fetching tournaments for club:', clubId);
       const tournamentsData = await this.playersRepo.query(`
         SELECT 
           id, 
@@ -70,11 +71,12 @@ export class PlayerTournamentsService {
           structure
         FROM tournaments 
         WHERE club_id = $1 
-          AND status IN ('upcoming', 'registration_open')
+          AND status IN ('scheduled', 'upcoming', 'registration_open', 'active', 'registering')
           AND start_time > NOW()
         ORDER BY start_time ASC
         LIMIT $2
       `, [clubId, limit]) as Tournament[];
+      console.log('🏆 [TOURNAMENTS] Found tournaments:', tournamentsData.length, tournamentsData);
 
       const tournaments = tournamentsData.map((t: any) => ({
         id: t.id,
@@ -226,8 +228,9 @@ export class PlayerTournamentsService {
       }
 
       const tourn = tournament[0];
-      if (tourn.status !== 'upcoming' && tourn.status !== 'registration_open') {
-        throw new BadRequestException('Tournament is not accepting registrations');
+      const allowedStatuses = ['scheduled', 'upcoming', 'registration_open', 'registering', 'active'];
+      if (!allowedStatuses.includes(tourn.status)) {
+        throw new BadRequestException(`Tournament is not accepting registrations (status: ${tourn.status})`);
       }
 
       if (tourn.current_players >= tourn.max_players) {

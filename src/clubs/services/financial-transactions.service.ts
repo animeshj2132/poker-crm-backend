@@ -60,15 +60,26 @@ export class FinancialTransactionsService {
     const club = await this.clubsRepo.findOne({ where: { id: clubId } });
     if (!club) throw new NotFoundException('Club not found');
 
+    // CRITICAL FIX: Club Buy-In transactions should be COMPLETED immediately
+    // Only Credit requests need approval
+    const shouldAutoComplete = [
+      TransactionType.DEPOSIT,
+      TransactionType.BUY_IN,
+      TransactionType.WITHDRAWAL,
+      TransactionType.CASHOUT
+    ].includes(data.type);
+
     const transaction = this.transactionsRepo.create({
       type: data.type,
       playerId: data.playerId.trim(),
       playerName: data.playerName.trim(),
       amount: data.amount,
       notes: data.notes?.trim() || null,
-      status: TransactionStatus.PENDING,
+      status: shouldAutoComplete ? TransactionStatus.COMPLETED : TransactionStatus.PENDING,
       club
     });
+
+    console.log(`💰 [TRANSACTION] Creating ${data.type} transaction with status: ${shouldAutoComplete ? 'COMPLETED' : 'PENDING'}`);
 
     return this.transactionsRepo.save(transaction);
   }

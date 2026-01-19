@@ -11,7 +11,7 @@ import { FinancialTransaction, TransactionStatus } from '../clubs/entities/finan
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../clubs/entities/table.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { TenantRole, ClubRole } from '../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
 import { FinancialTransactionsService } from '../clubs/services/financial-transactions.service';
@@ -30,6 +30,7 @@ export class AuthService {
     private readonly creditRequestsService: CreditRequestsService,
     private readonly affiliatesService: AffiliatesService,
     private readonly fnbService: FnbEnhancedService,
+    private readonly dataSource: DataSource,
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
@@ -1270,6 +1271,8 @@ export class AuthService {
    */
   async getPlayerBalance(playerId: string, clubId: string) {
     try {
+      console.log('💰 [BALANCE] Fetching balance for player:', playerId, 'club:', clubId);
+      
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
         throw new BadRequestException('Player ID is required');
@@ -1283,12 +1286,18 @@ export class AuthService {
       });
 
       if (!player) {
+        console.log('❌ [BALANCE] Player not found');
         throw new NotFoundException('Player not found');
       }
 
+      console.log('✅ [BALANCE] Player found:', player.email);
+
       // CRITICAL: KYC CHECK - Players with pending KYC can view balance but cannot perform actions
       const kycStatus = (player as any).kycStatus || 'pending';
+      console.log('🔍 [BALANCE] Player KYC status:', kycStatus);
+      
       if (kycStatus !== 'approved' && kycStatus !== 'verified') {
+        console.log('⚠️ [BALANCE] KYC not approved, returning zero balance');
         // Return zero balance for pending KYC - they must complete KYC first
         return {
           availableBalance: 0,
@@ -1313,34 +1322,42 @@ export class AuthService {
           },
           order: { createdAt: 'DESC' }
         });
+        console.log('💰 [BALANCE] Found', transactions.length, 'completed transactions');
       } catch (dbError) {
-        console.error('Database error fetching transactions:', dbError);
+        console.error('❌ [BALANCE] Database error fetching transactions:', dbError);
         // Continue with empty transactions array
         transactions = [];
       }
 
       // Edge case: Calculate balance from transactions
       let availableBalance = 0;
+      console.log('💰 [BALANCE] Calculating balance from transactions...');
+      
       for (const txn of transactions) {
         try {
           const amount = Number(txn.amount);
           if (isNaN(amount)) {
-            console.warn('Invalid transaction amount:', txn.id, txn.amount);
+            console.warn('⚠️ [BALANCE] Invalid transaction amount:', txn.id, txn.amount);
             continue;
           }
+          console.log('💰 [BALANCE] Transaction:', txn.type, amount);
+          
           if (['Deposit', 'Credit', 'Bonus', 'Refund'].includes(txn.type)) {
             availableBalance += amount;
+            console.log('  ➕ Added:', amount, '| New balance:', availableBalance);
           } else if (['Cashout', 'Withdrawal', 'Buy In'].includes(txn.type)) {
             availableBalance -= amount;
+            console.log('  ➖ Subtracted:', amount, '| New balance:', availableBalance);
           }
         } catch (calcError) {
-          console.error('Error calculating balance from transaction:', txn.id, calcError);
+          console.error('❌ [BALANCE] Error calculating balance from transaction:', txn.id, calcError);
           // Skip this transaction
         }
       }
 
       // Edge case: Ensure balance is not negative (shouldn't happen but safety check)
       availableBalance = Math.max(0, availableBalance);
+      console.log('💰 [BALANCE] Final calculated balance:', availableBalance);
 
       // Get table balance (if seated)
       const waitlistEntry = await this.waitlistRepo.findOne({
@@ -1370,21 +1387,40 @@ export class AuthService {
       // Get credit information
       const creditEnabled = (player as any).creditEnabled || false;
       const creditLimit = (player as any).creditLimit || 0;
-      const creditUsed = 0; // TODO: Calculate from active credit requests
+      
+      // Calculate credit used from approved credit requests (use limit field, not amount)
+      let creditUsed = 0;
+      if (creditEnabled) {
+        try {
+          const approvedRequests = await this.dataSource.query(
+            `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
+            [clubId.trim(), playerId, 'Approved']
+          );
+          creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
+        } catch (creditError) {
+          console.warn('💰 [BALANCE] Failed to calculate credit used:', creditError);
+          creditUsed = 0;
+        }
+      }
+      
       const availableCredit = creditEnabled ? Math.max(0, creditLimit - creditUsed) : 0;
 
-      return {
+      const result = {
         availableBalance: Math.max(0, availableBalance),
         tableBalance,
-        totalBalance: Math.max(0, availableBalance) + tableBalance,
+        totalBalance: Math.max(0, availableBalance) + tableBalance, // Total = Cash + Table, NOT including credit
         tableId,
         seatNumber: waitlistEntry?.tableNumber || null,
         creditEnabled,
         creditLimit,
+        creditUsed, // Add creditUsed to response
         availableCredit
       };
+      
+      console.log('💰 [BALANCE] Returning balance:', JSON.stringify(result, null, 2));
+      return result;
     } catch (err) {
-      console.error('Get player balance error:', err);
+      console.error('❌ [BALANCE] Get player balance error:', err);
       if (err instanceof BadRequestException || err instanceof NotFoundException) {
         throw err;
       }
@@ -1510,7 +1546,7 @@ export class AuthService {
   /**
    * Join waitlist
    */
-  async joinWaitlist(playerId: string, clubId: string, tableType?: string, partySize: number = 1) {
+  async joinWaitlist(playerId: string, clubId: string, tableType?: string, partySize: number = 1, requestedSeat?: number) {
     try {
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
@@ -1705,7 +1741,8 @@ export class AuthService {
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : undefined,
           email: player.email.trim().toLowerCase(),
           partySize,
-          tableType: tableType && tableType.trim() ? tableType.trim() : undefined
+          tableType: tableType && tableType.trim() ? tableType.trim() : undefined,
+          requestedSeat: requestedSeat || undefined
         });
       } catch (createError) {
         console.error('Error creating waitlist entry:', createError);
@@ -2132,6 +2169,68 @@ export class AuthService {
   }
 
   /**
+   * Get upcoming tournaments for players
+   */
+  async getUpcomingTournaments(clubId: string) {
+    try {
+      // Validate inputs
+      if (!clubId || typeof clubId !== 'string' || !clubId.trim()) {
+        throw new BadRequestException('Club ID is required');
+      }
+
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId.trim())) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      // Check if club exists
+      const club = await this.clubsService.findById(clubId.trim());
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // Get scheduled and active tournaments
+      console.log('🔍 [TOURNAMENTS] Fetching for clubId:', clubId.trim());
+      
+      const tournaments = await this.dataSource.query(`
+        SELECT 
+          id,
+          name,
+          description,
+          buy_in,
+          prize_pool,
+          max_players,
+          current_players,
+          start_time,
+          status,
+          structure
+        FROM tournaments
+        WHERE club_id = $1
+        AND status IN ('scheduled', 'active', 'registering')
+        ORDER BY start_time ASC
+        LIMIT 50
+      `, [clubId.trim()]);
+
+      console.log('✅ [TOURNAMENTS] Found:', tournaments?.length || 0, 'tournaments');
+      if (tournaments && tournaments.length > 0) {
+        console.log('📊 [TOURNAMENTS] First tournament:', tournaments[0]);
+      }
+
+      return {
+        tournaments: tournaments || [],
+        total: tournaments ? tournaments.length : 0
+      };
+    } catch (err) {
+      console.error('Get upcoming tournaments error:', err);
+      if (err instanceof BadRequestException || err instanceof NotFoundException) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get upcoming tournaments');
+    }
+  }
+
+  /**
    * Get table details
    */
   async getTableDetails(clubId: string, tableId: string) {
@@ -2311,18 +2410,33 @@ export class AuthService {
       // Edge case: Create credit request with error handling
       let creditRequest;
       try {
+        console.log('💳 [CREDIT REQUEST] Creating credit request:', {
+          clubId: clubId.trim(),
+          playerId: player.id,
+          playerName: player.name.trim(),
+          amount,
+          notes: notes && notes.trim() ? notes.trim() : undefined
+        });
+        
         creditRequest = await this.creditRequestsService.create(clubId.trim(), {
           playerId: player.id,
           playerName: player.name.trim(),
           amount,
           notes: notes && notes.trim() ? notes.trim() : undefined
         });
+        
+        console.log('💳 [CREDIT REQUEST] Credit request created successfully:', creditRequest.id);
       } catch (createError) {
-        console.error('Error creating credit request:', createError);
+        console.error('❌ [CREDIT REQUEST] Error creating credit request:', createError);
+        console.error('❌ [CREDIT REQUEST] Error details:', {
+          message: createError instanceof Error ? createError.message : String(createError),
+          stack: createError instanceof Error ? createError.stack : undefined,
+          name: createError instanceof Error ? createError.name : undefined
+        });
         if (createError instanceof BadRequestException || createError instanceof NotFoundException || createError instanceof ConflictException) {
           throw createError;
         }
-        throw new BadRequestException('Failed to create credit request. Please try again.');
+        throw new BadRequestException(`Failed to create credit request: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
       }
 
       // Edge case: Verify request was created
@@ -2339,11 +2453,62 @@ export class AuthService {
         createdAt: creditRequest.createdAt
       };
     } catch (err) {
-      console.error('Request credit error:', err);
+      console.error('❌ [CREDIT REQUEST] Request credit error:', err);
+      console.error('❌ [CREDIT REQUEST] Error details:', {
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+        name: err instanceof Error ? err.name : undefined,
+        constructor: err?.constructor?.name
+      });
       if (err instanceof BadRequestException || err instanceof NotFoundException || err instanceof ForbiddenException) {
         throw err;
       }
-      throw new BadRequestException('Failed to request credit');
+      throw new BadRequestException(`Failed to request credit: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get player credit requests
+   */
+  async getPlayerCreditRequests(playerId: string, clubId: string) {
+    try {
+      // Verify player exists
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId.trim(), club: { id: clubId.trim() } },
+        relations: ['club']
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // Get all credit requests for this player (only visible ones)
+      const requests = await this.dataSource.query(
+        `SELECT 
+          id,
+          player_id as "playerId",
+          player_name as "playerName",
+          amount as "requestedAmount",
+          status,
+          notes as "requestNote",
+          credit_limit as "approvedLimit",
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        FROM credit_requests 
+        WHERE club_id = $1 AND player_id = $2 AND visible_to_player = true
+        ORDER BY created_at DESC`,
+        [clubId.trim(), playerId.trim()]
+      );
+
+      console.log('💳 [GET CREDIT REQUESTS] Found', requests.length, 'requests for player:', playerId);
+      
+      return requests || [];
+    } catch (err) {
+      console.error('❌ [GET CREDIT REQUESTS] Error:', err);
+      if (err instanceof BadRequestException || err instanceof NotFoundException) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get credit requests');
     }
   }
 
@@ -2577,7 +2742,8 @@ export class AuthService {
         throw new NotFoundException('Club not found');
       }
 
-      // Query F&B menu from database
+      // Query F&B menu from database (using menu_items table)
+      console.log('🍔 [FNB] Fetching menu for club:', clubId);
       let query = `
         SELECT 
           id, 
@@ -2585,10 +2751,11 @@ export class AuthService {
           description,
           category,
           price,
-          is_available as "isAvailable",
-          image_url as "imageUrl"
-        FROM fnb_menu 
-        WHERE club_id = $1 AND is_available = true
+          availability,
+          image_url_1 as image_url,
+          stock
+        FROM menu_items 
+        WHERE club_id = $1
       `;
       const params: any[] = [clubId];
 
@@ -2600,6 +2767,7 @@ export class AuthService {
       query += ` ORDER BY category ASC, name ASC`;
 
       const menuItems = await this.playersRepo.query(query, params);
+      console.log('🍔 [FNB] Found menu items:', menuItems.length, menuItems);
 
       return {
         menuItems: menuItems.map((item: any) => ({
@@ -2608,8 +2776,10 @@ export class AuthService {
           description: item.description,
           category: item.category,
           price: parseFloat(item.price),
-          isAvailable: item.isAvailable,
-          imageUrl: item.imageUrl,
+          isAvailable: item.availability === 'in-stock' || item.availability === 'limited',
+          image_url: item.image_url,
+          stock: item.stock,
+          availability: item.availability,
         })),
         total: menuItems.length,
       };
@@ -2666,6 +2836,8 @@ export class AuthService {
           createdAt: order.createdAt,
           updatedAt: order.updatedAt,
           statusHistory: order.statusHistory,
+          cancellationReason: order.cancellationReason || order.cancellation_reason || null,
+          rejectionReason: order.rejectionReason || order.rejection_reason || null,
         })),
       };
     } catch (err) {

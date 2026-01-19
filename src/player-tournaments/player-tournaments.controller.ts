@@ -24,11 +24,15 @@ export class PlayerTournamentsController {
     @Headers('x-club-id') clubId?: string,
     @Query('limit') limit?: string,
   ) {
+    console.log('🎯 [CONTROLLER] Received x-club-id:', clubId);
     if (!clubId || !clubId.trim()) {
       throw new BadRequestException('x-club-id header is required');
     }
     const limitNum = limit ? parseInt(limit, 10) : 20;
-    return this.tournamentsService.getUpcomingTournaments(clubId.trim(), limitNum);
+    console.log('🎯 [CONTROLLER] Calling service with clubId:', clubId.trim(), 'limit:', limitNum);
+    const result = await this.tournamentsService.getUpcomingTournaments(clubId.trim(), limitNum);
+    console.log('🎯 [CONTROLLER] Service returned:', JSON.stringify(result));
+    return result;
   }
 
   /**

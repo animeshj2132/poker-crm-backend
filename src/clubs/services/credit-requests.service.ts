@@ -64,8 +64,8 @@ export class CreditRequestsService {
       amount: data.amount,
       notes: data.notes?.trim() || null,
       status: CreditRequestStatus.PENDING,
-      visibleToPlayer: false,
-      limit: 0,
+      visibleToPlayer: true, // Make visible to player immediately
+      limit: data.amount, // Set limit to requested amount initially
       club
     });
 
@@ -83,7 +83,8 @@ export class CreditRequestsService {
 
   async findOne(id: string, clubId: string) {
     const request = await this.creditRequestsRepo.findOne({
-      where: { id, club: { id: clubId } }
+      where: { id, club: { id: clubId } },
+      relations: ['club']
     });
     if (!request) throw new NotFoundException('Credit request not found');
     return request;

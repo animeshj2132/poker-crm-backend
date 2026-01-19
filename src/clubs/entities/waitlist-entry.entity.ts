@@ -49,6 +49,9 @@ export class WaitlistEntry {
   @Column({ type: 'varchar', nullable: true, name: 'table_type' })
   tableType!: string | null; // e.g., 'cash', 'tournament', 'high-stakes'
 
+  @Column({ type: 'int', nullable: true, name: 'requested_seat' })
+  requestedSeat!: number | null; // Seat number player requested (1-8)
+
   @Column({ type: 'int', default: 0 })
   priority!: number; // Higher number = higher priority
 

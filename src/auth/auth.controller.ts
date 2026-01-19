@@ -251,13 +251,22 @@ export class AuthController {
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string
   ) {
+    console.log('💰 [BALANCE CONTROLLER] Received request');
+    console.log('💰 [BALANCE CONTROLLER] x-player-id:', playerId);
+    console.log('💰 [BALANCE CONTROLLER] x-club-id:', clubId);
+    
     if (!playerId || !playerId.trim()) {
+      console.log('❌ [BALANCE CONTROLLER] Missing x-player-id header');
       throw new BadRequestException('x-player-id header is required');
     }
     if (!clubId || !clubId.trim()) {
+      console.log('❌ [BALANCE CONTROLLER] Missing x-club-id header');
       throw new BadRequestException('x-club-id header is required');
     }
-    return this.authService.getPlayerBalance(playerId.trim(), clubId.trim());
+    
+    const result = await this.authService.getPlayerBalance(playerId.trim(), clubId.trim());
+    console.log('💰 [BALANCE CONTROLLER] Returning balance:', JSON.stringify(result, null, 2));
+    return result;
   }
 
   /**
@@ -290,7 +299,7 @@ export class AuthController {
   async joinWaitlist(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
-    @Body() body?: { tableType?: string; partySize?: number }
+    @Body() body?: { tableType?: string; partySize?: number; requestedSeat?: number }
   ) {
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
@@ -302,7 +311,8 @@ export class AuthController {
       playerId.trim(),
       clubId.trim(),
       body?.tableType,
-      body?.partySize || 1
+      body?.partySize || 1,
+      body?.requestedSeat
     );
   }
 
@@ -361,6 +371,20 @@ export class AuthController {
   }
 
   /**
+   * Get upcoming tournaments
+   * GET /api/auth/player/tournaments
+   */
+  @Get('player/tournaments')
+  async getUpcomingTournaments(
+    @Headers('x-club-id') clubId?: string
+  ) {
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    return this.authService.getUpcomingTournaments(clubId.trim());
+  }
+
+  /**
    * Get table details
    * GET /api/auth/player/tables/:tableId
    */
@@ -386,7 +410,47 @@ export class AuthController {
   async requestCredit(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
-    @Body() body?: { amount: number; notes?: string }
+    @Body() body?: { amount: number | string; notes?: string }
+  ) {
+    console.log('💳 [CREDIT REQUEST] Received request:', { playerId, clubId, body });
+    
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!body || body.amount === undefined || body.amount === null) {
+      throw new BadRequestException('Amount is required');
+    }
+    
+    // Convert amount to number if it's a string
+    let amount: number;
+    if (typeof body.amount === 'string') {
+      amount = parseFloat(body.amount);
+      if (isNaN(amount)) {
+        throw new BadRequestException('Amount must be a valid number');
+      }
+    } else {
+      amount = Number(body.amount);
+      if (isNaN(amount)) {
+        throw new BadRequestException('Amount must be a valid number');
+      }
+    }
+    
+    console.log('💳 [CREDIT REQUEST] Parsed amount:', amount);
+    
+    return this.authService.requestCredit(playerId.trim(), clubId.trim(), amount, body.notes);
+  }
+
+  /**
+   * Get player credit requests
+   * GET /api/auth/player/credit-requests
+   */
+  @Get('player/credit-requests')
+  async getPlayerCreditRequests(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string
   ) {
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
@@ -394,10 +458,7 @@ export class AuthController {
     if (!clubId || !clubId.trim()) {
       throw new BadRequestException('x-club-id header is required');
     }
-    if (!body || body.amount === undefined) {
-      throw new BadRequestException('Amount is required');
-    }
-    return this.authService.requestCredit(playerId.trim(), clubId.trim(), body.amount, body.notes);
+    return this.authService.getPlayerCreditRequests(playerId.trim(), clubId.trim());
   }
 
   /**
@@ -427,10 +488,13 @@ export class AuthController {
     @Headers('x-club-id') clubId?: string,
     @Query('category') category?: string,
   ) {
+    console.log('🍽️ [CONTROLLER] Received x-club-id for FNB:', clubId);
     if (!clubId || !clubId.trim()) {
       throw new BadRequestException('x-club-id header is required');
     }
-    return this.authService.getPlayerFnbMenu(clubId.trim(), category);
+    const result = await this.authService.getPlayerFnbMenu(clubId.trim(), category);
+    console.log('🍽️ [CONTROLLER] FNB Service returned:', JSON.stringify(result));
+    return result;
   }
 
   /**

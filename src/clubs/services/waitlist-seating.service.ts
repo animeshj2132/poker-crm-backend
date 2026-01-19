@@ -26,6 +26,7 @@ export class WaitlistSeatingService {
     priority?: number;
     notes?: string;
     tableType?: string;
+    requestedSeat?: number;
   }) {
     if (!data.playerName || !data.playerName.trim()) {
       throw new BadRequestException('Player name is required');
@@ -50,6 +51,7 @@ export class WaitlistSeatingService {
       priority: data.priority || 0,
       notes: data.notes || null,
       tableType: data.tableType || null,
+      requestedSeat: data.requestedSeat || null,
       status: WaitlistStatus.PENDING
     });
 
@@ -60,12 +62,22 @@ export class WaitlistSeatingService {
     const where: any = { club: { id: clubId } };
     if (status) where.status = status;
 
-    return this.waitlistRepo.find({
+    const entries = await this.waitlistRepo.find({
       where,
       order: {
         priority: 'DESC',
         createdAt: 'ASC'
       }
+    });
+
+    // Add position numbers to PENDING entries
+    const pendingEntries = entries.filter(e => e.status === 'PENDING');
+    return entries.map(entry => {
+      if (entry.status === 'PENDING') {
+        const position = pendingEntries.findIndex(e => e.id === entry.id) + 1;
+        return { ...entry, position };
+      }
+      return { ...entry, position: null };
     });
   }
 

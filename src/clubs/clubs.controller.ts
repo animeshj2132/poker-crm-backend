@@ -53,7 +53,7 @@ import { UpdatePlayerDto } from './dto/update-player.dto';
 import { VerifyClubCodeDto } from './dto/verify-club-code.dto';
 import { Player } from './entities/player.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { Affiliate } from './entities/affiliate.entity';
 import { FnbService } from './services/fnb.service';
@@ -157,7 +157,8 @@ export class ClubsController {
     private readonly rosterManagementService: RosterManagementService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
-    @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>
+    @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>,
+    private readonly dataSource: DataSource
   ) {}
 
   /**
@@ -8755,8 +8756,21 @@ export class ClubsController {
       }
 
       return {
-        players: validPlayers.map(p => {
+        players: await Promise.all(validPlayers.map(async (p) => {
           try {
+            // Calculate credit used from approved credit requests (use limit field, not amount)
+            let creditUsed = 0;
+            try {
+              const approvedRequests = await this.dataSource.query(
+                `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
+                [clubId, p.id, 'Approved']
+              );
+              creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
+            } catch (creditError) {
+              console.warn(`Failed to calculate credit used for player ${p.id}:`, creditError);
+              creditUsed = 0;
+            }
+
             return {
               id: p.id,
               name: p.name || 'Unknown',
@@ -8769,6 +8783,9 @@ export class ClubsController {
               totalCommission: Number(p.totalCommission) || 0,
               affiliateCode: p.affiliate ? (p.affiliate as any).code : null,
               notes: p.notes || null,
+              creditEnabled: (p as any).creditEnabled || false, // ✅ Include credit enabled
+              creditLimit: Number((p as any).creditLimit || 0), // ✅ Include credit limit
+              creditUsed: creditUsed, // ✅ Include credit used
               createdAt: p.createdAt,
               updatedAt: p.updatedAt
             };
@@ -8776,7 +8793,7 @@ export class ClubsController {
             console.error('Error mapping player:', p.id, mapError);
             return null;
           }
-        }).filter(p => p !== null),
+        })),
         pagination: {
           total,
           page: pageNum,
@@ -10368,6 +10385,74 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException((e instanceof Error ? e.message : 'Failed to create transaction'));
+    }
+  }
+
+  /**
+   * Get all player feedback for a club
+   * GET /api/clubs/:id/player-feedback
+   */
+  @Get(':id/player-feedback')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async getPlayerFeedback(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const pageNum = page ? parseInt(page, 10) : 1;
+      const limitNum = limit ? parseInt(limit, 10) : 20;
+      const offset = (pageNum - 1) * limitNum;
+
+      const [feedback, total] = await this.dataSource.query(
+        `
+        SELECT 
+          pf.id,
+          pf.message,
+          pf.rating,
+          pf.created_at,
+          p.id as player_id,
+          p.first_name,
+          p.last_name,
+          p.email
+        FROM player_feedback pf
+        JOIN players p ON pf.player_id = p.id
+        WHERE pf.club_id = $1
+        ORDER BY pf.created_at DESC
+        LIMIT $2 OFFSET $3
+        `,
+        [clubId, limitNum, offset]
+      ).then(async (feedback) => {
+        const [{ count }] = await this.dataSource.query(
+          'SELECT COUNT(*) as count FROM player_feedback WHERE club_id = $1',
+          [clubId]
+        );
+        return [feedback, parseInt(count)];
+      });
+
+      return {
+        success: true,
+        feedback: feedback.map((item: any) => ({
+          id: item.id,
+          message: item.message,
+          rating: item.rating,
+          createdAt: item.created_at,
+          player: {
+            id: item.player_id,
+            name: `${item.first_name || ''} ${item.last_name || ''}`.trim() || 'Unknown',
+            email: item.email,
+          },
+        })),
+        pagination: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(total / limitNum),
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching player feedback:', error);
+      throw new BadRequestException('Failed to fetch player feedback');
     }
   }
 

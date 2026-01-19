@@ -22,10 +22,17 @@ export class PlayerOffersController {
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
   ) {
+    console.log('🎯 [OFFERS CONTROLLER] Received x-club-id:', clubId);
+    console.log('🎯 [OFFERS CONTROLLER] Received x-player-id:', playerId);
+    
     if (!clubId || !clubId.trim()) {
+      console.log('❌ [OFFERS CONTROLLER] Missing x-club-id header');
       throw new BadRequestException('x-club-id header is required');
     }
-    return this.offersService.getActiveOffers(clubId.trim(), playerId?.trim());
+    
+    const result = await this.offersService.getActiveOffers(clubId.trim(), playerId?.trim());
+    console.log('🎁 [OFFERS CONTROLLER] Service returned:', result.total, 'offers');
+    return result;
   }
 
   /**

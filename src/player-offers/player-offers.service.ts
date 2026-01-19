@@ -26,51 +26,67 @@ export class PlayerOffersService {
    */
   async getActiveOffers(clubId: string, playerId?: string) {
     try {
+      console.log('🎁 [OFFERS] Fetching offers for club:', clubId);
+      
       // Validate UUID
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!uuidRegex.test(clubId)) {
+        console.log('❌ [OFFERS] Invalid UUID format:', clubId);
         throw new BadRequestException('Invalid club ID format');
       }
 
       const club = await this.clubsService.findById(clubId);
       if (!club) {
+        console.log('❌ [OFFERS] Club not found:', clubId);
         throw new NotFoundException('Club not found');
       }
 
-      // Query staff_offers table directly from database
+      console.log('✅ [OFFERS] Club found, querying push_notifications...');
+
+      // Query push_notifications table (where admin creates offers)
       const query = `
         SELECT 
           id,
           club_id,
           title,
-          description,
-          offer_type,
-          value,
-          validity_start,
-          validity_end,
-          is_active,
-          created_at,
-          updated_at,
+          details as description,
           image_url,
-          terms,
-          target_audience,
-          created_by
-        FROM staff_offers
+          video_url,
+          target_type as target_audience,
+          notification_type,
+          is_active,
+          scheduled_at,
+          sent_at,
+          created_at,
+          updated_at
+        FROM push_notifications
         WHERE club_id = $1
           AND is_active = true
-          AND validity_start <= NOW()
-          AND validity_end > NOW()
+          AND (target_type = 'all_players' OR notification_type = 'player')
         ORDER BY created_at DESC
       `;
 
       const offers = await this.dataSource.query(query, [clubId]);
 
+      console.log('🎁 [OFFERS] Query result:', offers.length, 'offers found');
+      console.log('🎁 [OFFERS] Raw offers:', JSON.stringify(offers, null, 2));
+
       return {
-        offers: offers || [],
+        offers: offers.map((offer: any) => ({
+          id: offer.id,
+          title: offer.title,
+          description: offer.description,
+          image_url: offer.image_url,
+          video_url: offer.video_url,
+          offer_type: offer.notification_type === 'player' ? 'promotion' : 'announcement',
+          target_audience: offer.target_audience,
+          is_active: offer.is_active,
+          created_at: offer.created_at,
+        })) || [],
         total: offers?.length || 0,
       };
     } catch (err) {
-      console.error('Get active offers error:', err);
+      console.error('❌ [OFFERS] Error:', err);
       if (
         err instanceof BadRequestException ||
         err instanceof NotFoundException ||
