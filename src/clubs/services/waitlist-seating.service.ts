@@ -117,6 +117,40 @@ export class WaitlistSeatingService {
     return entry;
   }
 
+  async getSeatedPlayers(clubId: string) {
+    const seatedEntries = await this.waitlistRepo.find({
+      where: {
+        club: { id: clubId },
+        status: WaitlistStatus.SEATED,
+      },
+      order: { seatedAt: 'DESC' },
+    });
+
+    // Get table info for each seated player
+    const seatedPlayersWithTables = await Promise.all(
+      seatedEntries.map(async (entry) => {
+        let table = null;
+        if (entry.tableNumber) {
+          table = await this.tableRepo.findOne({
+            where: { club: { id: clubId }, tableNumber: entry.tableNumber },
+          });
+        }
+        return {
+          id: entry.playerId,
+          name: entry.playerName,
+          tableNumber: entry.tableNumber,
+          tableName: table ? `Table ${table.tableNumber}` : `Table ${entry.tableNumber}`,
+          tableId: table?.id,
+          seatNumber: entry.requestedSeat || entry.tableNumber,
+          seatedAt: entry.seatedAt,
+          entryId: entry.id,
+        };
+      })
+    );
+
+    return seatedPlayersWithTables;
+  }
+
   async updateWaitlistEntry(clubId: string, entryId: string, data: {
     playerName?: string;
     phoneNumber?: string;
@@ -546,6 +580,32 @@ export class WaitlistSeatingService {
     }
 
     await this.waitlistRepo.remove(entry);
+  }
+
+  async getSeatedPlayersForTable(clubId: string, tableId: string) {
+    // Get the table first to get its table number
+    const table = await this.getTable(clubId, tableId);
+    if (!table) {
+      throw new NotFoundException(`Table with ID ${tableId} not found`);
+    }
+
+    // Find all seated players for this table using table number
+    const seatedEntries = await this.waitlistRepo.find({
+      where: {
+        club: { id: clubId },
+        status: WaitlistStatus.SEATED,
+        tableNumber: table.tableNumber,
+      },
+      order: { seatedAt: 'ASC' },
+    });
+
+    return seatedEntries.map(entry => ({
+      playerId: entry.playerId,
+      playerName: entry.playerName || 'Unknown',
+      seatNumber: entry.requestedSeat || null,
+      seatedAt: entry.seatedAt,
+      tableNumber: entry.tableNumber,
+    }));
   }
 
   // ========== Table Session Management ==========

@@ -5176,6 +5176,37 @@ export class ClubsController {
     }
   }
 
+  @Get(':id/seated-players')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE, ClubRole.CASHIER)
+  async getSeatedPlayers(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only access seated players from your assigned club');
+      }
+
+      const seatedEntries = await this.waitlistSeatingService.getSeatedPlayers(clubId);
+      return seatedEntries;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get seated players: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   @Post(':id/waitlist/:entryId/unseat')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @HttpCode(HttpStatus.OK)
@@ -6341,6 +6372,110 @@ export class ClubsController {
       }
       console.error('Error ending table session:', e);
       throw new BadRequestException(`Failed to end table session: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get seated players for a table
+   * GET /api/clubs/:id/tables/:tableId/seated-players
+   */
+  @Get(':id/tables/:tableId/seated-players')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  async getSeatedPlayersForTable(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+  ) {
+    try {
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Get all seated players for this table
+      const seatedPlayers = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
+      
+      return {
+        tableId: table.id,
+        tableNumber: table.tableNumber,
+        seatedPlayers: seatedPlayers.map(p => ({
+          playerId: p.playerId,
+          playerName: p.playerName,
+          seatNumber: p.seatNumber,
+          seatedAt: p.seatedAt,
+        })),
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error getting seated players:', e);
+      throw new BadRequestException(`Failed to get seated players: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Settle all players and end table session
+   * POST /api/clubs/:id/tables/:tableId/settle-and-end
+   */
+  @Post(':id/tables/:tableId/settle-and-end')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @HttpCode(HttpStatus.OK)
+  async settleAndEndSession(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('tableId', new ParseUUIDPipe()) tableId: string,
+    @Body() body: { settlements: Array<{ playerId: string; amount: number }> },
+    @Req() req?: Request
+  ) {
+    try {
+      const table = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (!table) {
+        throw new NotFoundException(`Table with ID ${tableId} not found`);
+      }
+
+      // Settle all players (creates transactions, unseat all, reset table seats)
+      const settlementResult = await this.buyOutRequestService.settleAllPlayersOnTable(
+        clubId,
+        tableId,
+        body.settlements
+      );
+
+      // End the table session (mark as CLOSED, clear session notes)
+      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.CLOSED);
+      
+      // Clear all session data (reset timer to 0)
+      const currentNotes = table.notes || '';
+      let updatedNotes = currentNotes
+        .replace(/Session Started: [^|]+\|?/g, '')
+        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .trim();
+      
+      // Clean up any trailing pipes
+      updatedNotes = updatedNotes.replace(/\|\s*\|/g, '|').replace(/^\|\s*|\s*\|$/g, '').trim();
+      
+      await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      return {
+        success: true,
+        message: 'All players settled and session ended successfully',
+        settlementResult,
+        table: {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          status: TableStatus.CLOSED,
+        },
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) {
+        throw e;
+      }
+      console.error('Error settling players and ending session:', e);
+      throw new BadRequestException(`Failed to settle and end session: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 

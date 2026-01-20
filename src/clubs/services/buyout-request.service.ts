@@ -51,20 +51,28 @@ export class BuyOutRequestService {
     dto: ApproveBuyOutDto,
     userId: string
   ) {
-    const request = await this.buyOutRequestRepo.findOne({
-      where: { id: requestId, club: { id: clubId } },
-      relations: ['player', 'table', 'club'],
-    });
+    // Get request using raw query first to ensure we have player_id
+    const rawRequest = await this.dataSource.query(
+      `SELECT * FROM buyout_requests WHERE id = $1 AND club_id = $2`,
+      [requestId, clubId]
+    );
 
-    if (!request) {
+    if (!rawRequest || rawRequest.length === 0) {
       throw new NotFoundException('Buy-out request not found');
     }
 
-    if (request.status !== BuyOutRequestStatus.PENDING) {
+    const requestData = rawRequest[0];
+
+    if (requestData.status !== 'pending') {
       throw new BadRequestException('This request has already been processed');
     }
 
-    const amount = dto.amount || request.requestedAmount || request.currentTableBalance || 0;
+    const playerId = requestData.player_id;
+    if (!playerId) {
+      throw new BadRequestException('Buy-out request is missing player information');
+    }
+
+    const amount = dto.amount || requestData.requested_amount || requestData.current_table_balance || 0;
 
     if (amount <= 0) {
       throw new BadRequestException('Invalid buy-out amount');
@@ -76,35 +84,64 @@ export class BuyOutRequestService {
     await queryRunner.startTransaction();
 
     try {
-      // Update request status
-      request.status = BuyOutRequestStatus.APPROVED;
-      request.processedBy = { id: userId } as any;
-      request.processedAt = new Date();
-      await queryRunner.manager.save(request);
+      // Update request status using raw query
+      await queryRunner.query(
+        `UPDATE buyout_requests 
+         SET status = 'approved', processed_by = $1, processed_at = NOW(), updated_at = NOW()
+         WHERE id = $2`,
+        [userId, requestId]
+      );
 
-      // Create buy-out transaction (WITHDRAWAL)
-      const transaction = queryRunner.manager.create(FinancialTransaction, {
-        club: { id: clubId } as any,
-        player: { id: request.player.id } as any,
-        amount: amount,
-        type: TransactionType.WITHDRAWAL,
-        status: TransactionStatus.COMPLETED,
-        description: `Table buy-out - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''}`,
-        processedBy: userId,
-      });
+      // Get player name for transaction
+      const playerData = await queryRunner.query(
+        `SELECT name FROM players WHERE id = $1`,
+        [playerId]
+      );
+      const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
-      await queryRunner.manager.save(transaction);
+      // Create buy-out transaction (DEPOSIT) - adds money to player's balance
+      await queryRunner.query(
+        `INSERT INTO financial_transactions 
+         (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+        [
+          clubId,
+          playerId,
+          playerName,
+          amount,
+          `Table buy-out - Table ${requestData.table_number}${requestData.seat_number ? `, Seat ${requestData.seat_number}` : ''}`
+        ]
+      );
+
+      // Unseat the player from the waitlist and get table info
+      await queryRunner.query(
+        `UPDATE waitlist_entries 
+         SET status = 'completed', updated_at = NOW()
+         WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
+        [playerId, clubId]
+      );
+
+      // Decrement table's current seats count
+      if (requestData.table_number) {
+        await queryRunner.query(
+          `UPDATE poker_tables 
+           SET current_seats = GREATEST(0, current_seats - 1), updated_at = NOW()
+           WHERE club_id = $1 AND table_number = $2`,
+          [clubId, requestData.table_number]
+        );
+      }
 
       await queryRunner.commitTransaction();
 
       return {
         success: true,
         message: 'Buy-out request approved and balance updated',
-        requestId: request.id,
+        requestId: requestId,
         amount: amount,
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
+      console.error('Error approving buy-out request:', error);
       throw new BadRequestException(`Failed to approve buy-out request: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await queryRunner.release();
@@ -142,5 +179,82 @@ export class BuyOutRequestService {
       message: 'Buy-out request rejected',
       requestId: request.id,
     };
+  }
+
+  async settleAllPlayersOnTable(
+    clubId: string,
+    tableId: string,
+    settlements: Array<{ playerId: string; amount: number }>,
+  ) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const results = [];
+
+      for (const { playerId, amount } of settlements) {
+        // Get player name
+        const playerData = await queryRunner.query(
+          `SELECT name FROM players WHERE id = $1`,
+          [playerId]
+        );
+        const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
+
+        // Get table info
+        const tableData = await queryRunner.query(
+          `SELECT table_number FROM poker_tables WHERE id = $1`,
+          [tableId]
+        );
+        const tableNumber = tableData && tableData.length > 0 ? tableData[0].table_number : null;
+
+        // Get waitlist entry info
+        const waitlistData = await queryRunner.query(
+          `SELECT requested_seat FROM waitlist_entries WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
+          [playerId, clubId]
+        );
+        const seatNumber = waitlistData && waitlistData.length > 0 ? waitlistData[0].requested_seat : null;
+
+        // Create settlement transaction (DEPOSIT) - adds money to player's balance
+        await queryRunner.query(
+          `INSERT INTO financial_transactions 
+           (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+          [
+            clubId,
+            playerId,
+            playerName,
+            amount,
+            `Session settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''}`
+          ]
+        );
+
+        // Unseat the player from the waitlist
+        await queryRunner.query(
+          `UPDATE waitlist_entries 
+           SET status = 'completed', updated_at = NOW()
+           WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
+          [playerId, clubId]
+        );
+
+        results.push({ playerId, playerName, amount, settled: true });
+      }
+
+      // Reset table's current seats to 0
+      await queryRunner.query(
+        `UPDATE poker_tables 
+         SET current_seats = 0, updated_at = NOW()
+         WHERE club_id = $1 AND id = $2`,
+        [clubId, tableId]
+      );
+
+      await queryRunner.commitTransaction();
+      return { success: true, settlements: results };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

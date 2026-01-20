@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -87,16 +88,42 @@ export class PlayerPlaytimeService {
       const callTimeDuration = 2; // minutes
       const cashOutWindow = 2; // minutes
 
-      // Calculate session state (simplified - always make call time available after min play time)
+      // Check for active buy-out request (call time)
+      const buyOutRequest = await this.dataSource.query(
+        `SELECT * FROM buyout_requests 
+         WHERE player_id = $1 AND club_id = $2 AND status = 'pending' 
+         ORDER BY created_at DESC LIMIT 1`,
+        [player.id, clubId]
+      );
+      
+      const activeBuyOutRequest = buyOutRequest && buyOutRequest.length > 0 ? buyOutRequest[0] : null;
+
+      // Calculate session state
       const minutesPlayed = Math.floor(sessionDuration / 60);
       const minPlayTimeCompleted = minutesPlayed >= minPlayTime;
-      const callTimeAvailable = minPlayTimeCompleted; // Always available after min play time
-      const callTimeActive = false; // TODO: Implement call time tracking
+      const callTimeAvailable = minPlayTimeCompleted && !activeBuyOutRequest; // Available if min play time completed and no active request
+      const callTimeActive = !!activeBuyOutRequest; // Active if there's a pending buyout request
       const cashOutWindowActive = false; // TODO: Implement cashout window tracking
 
       let callTimeRemaining = 0;
       let cashOutTimeRemaining = 0;
-      let sessionPhase = minPlayTimeCompleted ? 'CALL_TIME_AVAILABLE' : 'MINIMUM_PLAY';
+      
+      // Calculate call time remaining if active
+      if (callTimeActive && activeBuyOutRequest.call_time_started_at) {
+        const callTimeStartedAt = new Date(activeBuyOutRequest.call_time_started_at).getTime();
+        const now = Date.now();
+        const elapsedMinutes = (now - callTimeStartedAt) / (1000 * 60);
+        callTimeRemaining = Math.max(0, callTimeDuration - elapsedMinutes);
+        console.log(`⏱️ [CALL TIME] Started: ${new Date(callTimeStartedAt)}, Elapsed: ${elapsedMinutes.toFixed(2)}m, Remaining: ${callTimeRemaining.toFixed(2)}m`);
+      } else if (callTimeActive) {
+        // If call time is active but no timestamp, default to full duration
+        callTimeRemaining = callTimeDuration;
+        console.log(`⏱️ [CALL TIME] Active but no timestamp, using full duration: ${callTimeDuration}m`);
+      }
+
+      let sessionPhase = callTimeActive 
+        ? 'CALL_TIME_ACTIVE' 
+        : (minPlayTimeCompleted ? 'CALL_TIME_AVAILABLE' : 'MINIMUM_PLAY');
 
       const canCashOut = false; // TODO: Implement cashout logic
 
@@ -136,9 +163,12 @@ export class PlayerPlaytimeService {
         call_time_window_minutes: callTimeDuration,
         call_time_play_period_minutes: callTimeDuration,
         cashout_window_minutes: cashOutWindow,
-        call_time_started: null, // TODO: Implement call time tracking
-        call_time_ends: null, // TODO: Implement call time tracking
-        cashout_window_ends: null, // TODO: Implement cashout window tracking
+        call_time_started: activeBuyOutRequest?.call_time_started_at || null,
+        call_time_ends: activeBuyOutRequest?.call_time_started_at 
+          ? new Date(new Date(activeBuyOutRequest.call_time_started_at).getTime() + callTimeDuration * 60 * 1000).toISOString()
+          : null,
+        cashout_window_active: false,
+        cashout_window_ends: null,
       };
 
       console.log('✅ [LIVE SESSION] Returning active session for player:', {
@@ -237,18 +267,62 @@ export class PlayerPlaytimeService {
         throw new NotFoundException('Player not found');
       }
 
+      // Get the player's seated waitlist entry
+      const seatedEntry = await this.waitlistRepo.findOne({
+        where: {
+          playerId: playerId,
+          club: { id: clubId },
+          status: WaitlistStatus.SEATED,
+        },
+        relations: ['club'],
+      });
+
+      if (!seatedEntry) {
+        throw new BadRequestException('Player is not currently seated at a table');
+      }
+
+      // Check if buy-out request already exists
+      const existingRequest = await this.dataSource.query(
+        `SELECT * FROM buyout_requests WHERE player_id = $1 AND club_id = $2 AND status = 'pending'`,
+        [playerId, clubId]
+      );
+
+      if (existingRequest && existingRequest.length > 0) {
+        throw new ConflictException('Call time already requested. Please wait for admin approval.');
+      }
+
+      // Get the actual table entity to get the table ID
+      let actualTableId = null;
+      if (seatedEntry.tableNumber) {
+        const table = await this.tablesRepo.findOne({
+          where: { club: { id: clubId }, tableNumber: seatedEntry.tableNumber },
+        });
+        if (table) {
+          actualTableId = table.id;
+        }
+      }
+
+      // Create buy-out request (FIXED parameter order)
+      await this.dataSource.query(
+        `INSERT INTO buyout_requests 
+        (club_id, player_id, table_id, table_number, seat_number, status, call_time_started_at, requested_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), NOW(), NOW(), NOW())`,
+        [clubId, playerId, actualTableId, seatedEntry.tableNumber, seatedEntry.requestedSeat || seatedEntry.tableNumber]
+      );
+
       return {
         success: true,
-        message: 'Call time started',
+        message: 'Call time started. Your cash-out request has been submitted to the admin.',
         startedAt: new Date().toISOString(),
-        tableId: tableId || null,
+        tableId: actualTableId,
       };
     } catch (err) {
       console.error('Start call time error:', err);
       if (
         err instanceof BadRequestException ||
         err instanceof NotFoundException ||
-        err instanceof ForbiddenException
+        err instanceof ForbiddenException ||
+        err instanceof ConflictException
       ) {
         throw err;
       }
