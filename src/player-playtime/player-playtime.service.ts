@@ -5,16 +5,23 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
+import { Table } from '../clubs/entities/table.entity';
 
 @Injectable()
 export class PlayerPlaytimeService {
   constructor(
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
+    @InjectRepository(WaitlistEntry)
+    private readonly waitlistRepo: Repository<WaitlistEntry>,
+    @InjectRepository(Table)
+    private readonly tablesRepo: Repository<Table>,
     private readonly clubsService: ClubsService,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -40,10 +47,112 @@ export class PlayerPlaytimeService {
         throw new NotFoundException('Player not found');
       }
 
-      // Return null if no active session
+      // Check if player is currently SEATED in waitlist
+      const seatedEntry = await this.waitlistRepo.findOne({
+        where: {
+          club: { id: clubId },
+          playerId: playerId,
+          status: WaitlistStatus.SEATED,
+        },
+        order: { seatedAt: 'DESC' },
+      });
+
+      if (!seatedEntry || !seatedEntry.tableNumber) {
+        return {
+          session: null,
+          hasActiveSession: false,
+        };
+      }
+
+      // Get table details
+      const table = await this.tablesRepo.findOne({
+        where: { club: { id: clubId }, tableNumber: seatedEntry.tableNumber },
+        relations: ['club'],
+      });
+
+      if (!table) {
+        return {
+          session: null,
+          hasActiveSession: false,
+        };
+      }
+
+      // Calculate session duration
+      const sessionStartTime = seatedEntry.seatedAt || seatedEntry.createdAt;
+      const now = new Date();
+      const sessionDuration = Math.floor((now.getTime() - new Date(sessionStartTime).getTime()) / 1000); // in seconds
+
+      // Default timing configuration (2 minutes for testing)
+      const minPlayTime = 2; // minutes
+      const callTimeDuration = 2; // minutes
+      const cashOutWindow = 2; // minutes
+
+      // Calculate session state (simplified - always make call time available after min play time)
+      const minutesPlayed = Math.floor(sessionDuration / 60);
+      const minPlayTimeCompleted = minutesPlayed >= minPlayTime;
+      const callTimeAvailable = minPlayTimeCompleted; // Always available after min play time
+      const callTimeActive = false; // TODO: Implement call time tracking
+      const cashOutWindowActive = false; // TODO: Implement cashout window tracking
+
+      let callTimeRemaining = 0;
+      let cashOutTimeRemaining = 0;
+      let sessionPhase = minPlayTimeCompleted ? 'CALL_TIME_AVAILABLE' : 'MINIMUM_PLAY';
+
+      const canCashOut = false; // TODO: Implement cashout logic
+
+      // Build session object
+      const session = {
+        id: seatedEntry.id,
+        playerId: player.id,
+        tableId: table.id,
+        tableName: `Table ${table.tableNumber}`,
+        gameType: table.tableType || 'CASH',
+        stakes: `₹${table.minBuyIn || 1000}.00/${table.maxBuyIn || 10000}.00`,
+        buyInAmount: table.minBuyIn || 1000,
+        currentChips: 0, // Placeholder - would need chip tracking
+        sessionDuration,
+        startedAt: sessionStartTime,
+        status: 'active',
+        isLive: true,
+        sessionStartTime,
+        
+        // State machine properties
+        sessionPhase,
+        minPlayTimeCompleted,
+        callTimeAvailable,
+        callTimeActive,
+        callTimeRemaining,
+        cashOutWindowActive,
+        canCashOut,
+        cashOutTimeRemaining,
+        
+        // Table configuration
+        min_play_time: minPlayTime,
+        call_time_duration: callTimeDuration,
+        cash_out_window: cashOutWindow,
+        
+        // Seat request timing
+        min_play_time_minutes: minPlayTime,
+        call_time_window_minutes: callTimeDuration,
+        call_time_play_period_minutes: callTimeDuration,
+        cashout_window_minutes: cashOutWindow,
+        call_time_started: null, // TODO: Implement call time tracking
+        call_time_ends: null, // TODO: Implement call time tracking
+        cashout_window_ends: null, // TODO: Implement cashout window tracking
+      };
+
+      console.log('✅ [LIVE SESSION] Returning active session for player:', {
+        playerId,
+        tableId: table.id,
+        tableName: session.tableName,
+        sessionPhase,
+        minPlayTimeCompleted,
+        callTimeAvailable,
+      });
+
       return {
-        session: null,
-        hasActiveSession: false,
+        session,
+        hasActiveSession: true,
       };
     } catch (err) {
       console.error('Get current session error:', err);

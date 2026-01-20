@@ -41,5 +41,11 @@ export class CreateWaitlistEntryDto {
   @IsOptional()
   @MaxLength(50)
   tableType?: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  @IsOptional()
+  requestedSeat?: number;
 }
 

@@ -317,15 +317,80 @@ export class TournamentsService {
       throw new BadRequestException('Cannot start a completed tournament');
     }
 
-    const query = `
-      UPDATE tournaments 
-      SET status = 'active', updated_at = NOW()
-      WHERE club_id = $1 AND id = $2
-      RETURNING *
-    `;
+    // Use transaction to ensure atomicity
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    const result = await this.dataSource.query(query, [clubId, tournamentId]);
-    return result[0];
+    try {
+      // Get all registered players
+      const registeredPlayers = await queryRunner.query(
+        `SELECT tr.player_id, p.name as player_name
+         FROM tournament_registrations tr
+         INNER JOIN players p ON p.id = tr.player_id
+         WHERE tr.tournament_id = $1 AND tr.status = 'registered'`,
+        [tournamentId]
+      );
+
+      console.log(`🏆 [TOURNAMENT START] Taking balance from ${registeredPlayers.length} registered players`);
+
+      // Take ENTIRE balance from each registered player
+      for (const participant of registeredPlayers) {
+        // Calculate player's entire available balance
+        const balanceResult = await queryRunner.query(
+          `SELECT SUM(
+            CASE 
+              WHEN type IN ('DEPOSIT', 'BUY_IN', 'CREDIT') THEN amount
+              WHEN type IN ('WITHDRAWAL', 'CASHOUT', 'DEBIT') THEN -amount
+              ELSE 0
+            END
+          ) as total FROM financial_transactions 
+          WHERE club_id = $1 AND player_id = $2 AND status = 'Completed'`,
+          [clubId, participant.player_id]
+        );
+
+        const availableBalance = balanceResult[0]?.total ? Number(balanceResult[0].total) : 0;
+
+        if (availableBalance > 0) {
+          // Create BUY_IN transaction for entire balance
+          await queryRunner.query(
+            `INSERT INTO financial_transactions (club_id, player_id, player_name, amount, type, status, notes)
+             VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', $5)`,
+            [
+              clubId,
+              participant.player_id,
+              participant.player_name,
+              availableBalance,
+              `Tournament buy-in - ${tournament.name || 'Tournament'} (Full balance: ₹${availableBalance.toFixed(2)})`
+            ]
+          );
+
+          console.log(`✅ [TOURNAMENT START] Took ₹${availableBalance} from player ${participant.player_name}`);
+        } else {
+          console.warn(`⚠️ [TOURNAMENT START] Player ${participant.player_name} has no balance, skipping`);
+        }
+      }
+
+      // Update tournament status to active
+      const result = await queryRunner.query(
+        `UPDATE tournaments 
+         SET status = 'active', updated_at = NOW()
+         WHERE club_id = $1 AND id = $2
+         RETURNING *`,
+        [clubId, tournamentId]
+      );
+
+      await queryRunner.commitTransaction();
+
+      console.log(`✅ [TOURNAMENT START] Tournament ${tournament.name} started successfully`);
+      return result[0];
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ [TOURNAMENT START] Error:', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   // End tournament with winners

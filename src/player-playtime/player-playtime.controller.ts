@@ -22,13 +22,19 @@ export class PlayerPlaytimeController {
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
   ) {
+    console.log('🎮 [PLAYTIME] GET /api/player-playtime/current called');
+    console.log('🎮 [PLAYTIME] x-player-id:', playerId);
+    console.log('🎮 [PLAYTIME] x-club-id:', clubId);
+    
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
     }
     if (!clubId || !clubId.trim()) {
       throw new BadRequestException('x-club-id header is required');
     }
-    return this.playtimeService.getCurrentSession(playerId.trim(), clubId.trim());
+    const result = await this.playtimeService.getCurrentSession(playerId.trim(), clubId.trim());
+    console.log('🎮 [PLAYTIME] Returning session:', { hasActiveSession: result.hasActiveSession });
+    return result;
   }
 
   /**

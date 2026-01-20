@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { WaitlistEntry, WaitlistStatus } from '../entities/waitlist-entry.entity';
 import { Table, TableStatus, TableType } from '../entities/table.entity';
 import { Club } from '../club.entity';
+import { Player } from '../entities/player.entity';
+import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
 import { EventsService } from '../../events/events.service';
 
 @Injectable()
@@ -12,6 +14,9 @@ export class WaitlistSeatingService {
     @InjectRepository(WaitlistEntry) private readonly waitlistRepo: Repository<WaitlistEntry>,
     @InjectRepository(Table) private readonly tableRepo: Repository<Table>,
     @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
+    @InjectRepository(Player) private readonly playerRepo: Repository<Player>,
+    @InjectRepository(FinancialTransaction) private readonly transactionRepo: Repository<FinancialTransaction>,
+    private readonly dataSource: DataSource,
     @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService
   ) {}
 
@@ -41,6 +46,24 @@ export class WaitlistSeatingService {
     const club = await this.clubsRepo.findOne({ where: { id: clubId } });
     if (!club) throw new NotFoundException('Club not found');
 
+    // CRITICAL: Check if player is already in the waitlist (PENDING status only)
+    if (data.playerId) {
+      const existingEntry = await this.waitlistRepo.findOne({
+        where: {
+          club: { id: clubId },
+          playerId: data.playerId,
+          status: WaitlistStatus.PENDING
+        }
+      });
+
+      if (existingEntry) {
+        throw new BadRequestException(
+          `You are already on the waitlist (Position #${existingEntry.priority || 'N/A'}). ` +
+          `Please wait to be seated or remove yourself from the waitlist before joining again.`
+        );
+      }
+    }
+
     const entry = this.waitlistRepo.create({
       club,
       playerName: data.playerName.trim(),
@@ -69,6 +92,11 @@ export class WaitlistSeatingService {
         createdAt: 'ASC'
       }
     });
+
+    console.log('📋 [WAITLIST] Fetched entries:', entries.length);
+    if (entries.length > 0) {
+      console.log('📋 [WAITLIST] Sample entry:', entries[0]);
+    }
 
     // Add position numbers to PENDING entries
     const pendingEntries = entries.filter(e => e.status === 'PENDING');
@@ -167,12 +195,75 @@ export class WaitlistSeatingService {
       throw new BadRequestException(`Table only has ${table.maxSeats - table.currentSeats} available seats. Party size is ${entry.partySize}.`);
     }
 
+    // CRITICAL: Get player and take ALL their money for table
+    if (!entry.playerId) {
+      throw new BadRequestException('Cannot assign seat: Player ID is required');
+    }
+
+    const player = await this.playerRepo.findOne({
+      where: { id: entry.playerId, club: { id: clubId } },
+      relations: ['club']
+    });
+
+    if (!player) {
+      throw new NotFoundException('Player not found');
+    }
+
+    // Calculate player's ENTIRE available balance (will take it all)
+    // DEBUG: Check all transactions first
+    const allTransactions = await this.dataSource.query(
+      `SELECT id, type, amount, status, created_at FROM financial_transactions 
+       WHERE club_id = $1 AND player_id = $2 
+       ORDER BY created_at DESC`,
+      [clubId, entry.playerId]
+    );
+    
+    console.log(`🔍 [ASSIGN SEAT DEBUG] Player ${entry.playerName} (${entry.playerId}) ALL transactions:`, allTransactions);
+    
+    // Fixed: Use UPPER() for case-insensitive type and status checks
+    const completedTransactions = await this.dataSource.query(
+      `SELECT SUM(
+        CASE 
+          WHEN UPPER(type) IN ('DEPOSIT', 'CREDIT') THEN amount
+          WHEN UPPER(type) IN ('WITHDRAWAL', 'CASHOUT', 'BUY_IN', 'DEBIT') THEN -amount
+          ELSE 0
+        END
+      ) as total FROM financial_transactions 
+      WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+      [clubId, entry.playerId]
+    );
+
+    const availableBalance = completedTransactions[0]?.total ? Number(completedTransactions[0].total) : 0;
+    
+    console.log(`🎯 [ASSIGN SEAT] Player ${entry.playerName} (${entry.playerId}) balance check:`);
+    console.log(`   Completed transactions query result:`, completedTransactions);
+    console.log(`   Available Balance: ₹${availableBalance}`);
+    console.log(`   Min Buy-in: ₹${table.minBuyIn || 0}`);
+
+    // Check minimum buy-in requirement
+    const minBuyIn = table.minBuyIn ? Number(table.minBuyIn) : 0;
+    if (minBuyIn > 0 && availableBalance < minBuyIn) {
+      throw new BadRequestException(
+        `Insufficient balance. Minimum buy-in: ₹${minBuyIn.toFixed(2)}, Your balance: ₹${availableBalance.toFixed(2)}`
+      );
+    }
+
+    if (availableBalance <= 0) {
+      throw new BadRequestException('No balance available. Please add funds before joining table.');
+    }
+
+    // Use database transaction to ensure atomicity
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
     // Update table
     table.currentSeats += entry.partySize;
     if (table.currentSeats >= table.maxSeats) {
-      table.status = TableStatus.OCCUPIED;
+        table.status = TableStatus.OCCUPIED; // All seats filled
     } else {
-      table.status = TableStatus.OCCUPIED;
+        table.status = TableStatus.AVAILABLE; // Still has available seats
     }
 
     // Update entry
@@ -181,8 +272,26 @@ export class WaitlistSeatingService {
     entry.seatedAt = new Date();
     entry.seatedBy = seatedBy;
 
-    const savedTable = await this.tableRepo.save(table);
-    const savedEntry = await this.waitlistRepo.save(entry);
+      const savedTable = await queryRunner.manager.save(table);
+      const savedEntry = await queryRunner.manager.save(entry);
+
+      // CRITICAL: Create buy-in transaction for ENTIRE balance (player brings all money to table)
+      if (availableBalance > 0) {
+        const buyInTransaction = queryRunner.manager.create(FinancialTransaction, {
+          club: { id: clubId } as any,
+          playerId: player.id,
+          playerName: player.name,
+          amount: availableBalance,
+          type: TransactionType.BUY_IN,
+          status: TransactionStatus.COMPLETED,
+          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Full balance: ₹${availableBalance.toFixed(2)})`
+        });
+
+        await queryRunner.manager.save(buyInTransaction);
+        console.log(`✅ [TABLE SEATING] Took entire balance ₹${availableBalance} from player ${player.name} for table`);
+      }
+
+      await queryRunner.commitTransaction();
     
     // Emit real-time events
     if (this.eventsService) {
@@ -196,6 +305,12 @@ export class WaitlistSeatingService {
     }
     
     return savedEntry;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async unseatPlayer(clubId: string, entryId: string) {

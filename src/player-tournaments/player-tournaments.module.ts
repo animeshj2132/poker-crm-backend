@@ -3,11 +3,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PlayerTournamentsController } from './player-tournaments.controller';
 import { PlayerTournamentsService } from './player-tournaments.service';
 import { Player } from '../clubs/entities/player.entity';
+import { FinancialTransaction } from '../clubs/entities/financial-transaction.entity';
 import { ClubsModule } from '../clubs/clubs.module';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Player]), ClubsModule, AuthModule],
+  imports: [TypeOrmModule.forFeature([Player, FinancialTransaction]), ClubsModule, AuthModule],
   controllers: [PlayerTournamentsController],
   providers: [PlayerTournamentsService],
   exports: [PlayerTournamentsService],

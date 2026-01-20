@@ -6132,8 +6132,8 @@ export class ClubsController {
         throw new NotFoundException(`Table with ID ${tableId} not found`);
       }
 
-      // Update table status to OCCUPIED and add session start time
-      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.OCCUPIED);
+      // Update table status to AVAILABLE when session starts (will become OCCUPIED when all seats filled)
+      await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.AVAILABLE);
       
       // Handle session start/resume with paused time tracking
       const sessionStartTime = new Date().toISOString();
@@ -6182,7 +6182,7 @@ export class ClubsController {
             metadata: { 
               tableNumber: table.tableNumber,
               previousStatus: table.status,
-              newStatus: TableStatus.OCCUPIED,
+              newStatus: TableStatus.AVAILABLE,
               pausedElapsedSeconds
             },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
@@ -6198,7 +6198,7 @@ export class ClubsController {
         table: {
           id: table.id,
           tableNumber: table.tableNumber,
-          status: TableStatus.OCCUPIED,
+          status: TableStatus.AVAILABLE,
           notes: updatedNotes,
         },
         sessionStartTime,
@@ -6277,7 +6277,7 @@ export class ClubsController {
         throw new NotFoundException(`Table with ID ${tableId} not found`);
       }
 
-      // Update table status to CLOSED and reset current seats
+      // Update table status to CLOSED and reset current seats (session ended)
       await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.CLOSED);
       await this.waitlistSeatingService.resetTableSeats(clubId, tableId);
       

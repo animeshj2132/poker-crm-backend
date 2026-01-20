@@ -11,7 +11,7 @@ import { FinancialTransaction, TransactionStatus } from '../clubs/entities/finan
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../clubs/entities/table.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { TenantRole, ClubRole } from '../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
 import { FinancialTransactionsService } from '../clubs/services/financial-transactions.service';
@@ -1625,30 +1625,30 @@ export class AuthService {
         throw new ForbiddenException('Account is inactive. Please contact support.');
       }
 
-      // Check if already on waitlist
+      // CRITICAL: Check if already on waitlist (use playerId for accuracy)
       const existingEntry = await this.waitlistRepo.findOne({
         where: {
           club: { id: clubId.trim() },
-          email: player.email,
+          playerId: playerId.trim(),
           status: WaitlistStatus.PENDING
         }
       });
 
       if (existingEntry) {
-        throw new ConflictException('You are already on the waitlist');
+        throw new ConflictException('You are already on the waitlist. Please wait to be seated or remove yourself before joining again.');
       }
 
-      // Check if already seated
+      // CRITICAL: Check if already seated at a table
       const seatedEntry = await this.waitlistRepo.findOne({
         where: {
           club: { id: clubId.trim() },
-          email: player.email,
+          playerId: playerId.trim(),
           status: WaitlistStatus.SEATED
         }
       });
 
       if (seatedEntry) {
-        throw new ConflictException('You are already seated at a table');
+        throw new ConflictException('You are already seated at a table. Please leave the table before joining the waitlist again.');
       }
 
       // Edge case: Check if any tables exist for this club
@@ -1797,6 +1797,7 @@ export class AuthService {
           playerName: entry.playerName,
           partySize: entry.partySize,
           tableType: entry.tableType,
+          requestedSeat: entry.requestedSeat,
           status: entry.status,
           createdAt: entry.createdAt
         },
@@ -1820,6 +1821,7 @@ export class AuthService {
    * Get waitlist status
    */
   async getWaitlistStatus(playerId: string, clubId: string) {
+    console.log(`🎯 [WAITLIST STATUS] Request for player ${playerId} in club ${clubId}`);
     try {
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
@@ -1859,13 +1861,14 @@ export class AuthService {
       }
 
       // Edge case: Get waitlist entry with error handling
+      // CRITICAL: Check for BOTH PENDING and SEATED status (player needs to see active games)
       let entry = null;
       try {
         entry = await this.waitlistRepo.findOne({
           where: {
             club: { id: clubId.trim() },
             playerId: playerId.trim(),
-            status: WaitlistStatus.PENDING
+            status: In([WaitlistStatus.PENDING, WaitlistStatus.SEATED])
           },
           order: { createdAt: 'DESC' }
         });
@@ -1873,6 +1876,8 @@ export class AuthService {
         console.error('Database error fetching waitlist entry:', dbError);
         throw new BadRequestException('Unable to fetch waitlist status. Please try again.');
       }
+
+      console.log(`🔍 [WAITLIST STATUS] Entry found:`, entry ? { id: entry.id, status: entry.status, tableNumber: entry.tableNumber, playerId: entry.playerId } : null);
 
       if (!entry) {
         // Edge case: Check if any tables exist
@@ -1939,24 +1944,53 @@ export class AuthService {
         }
       }
 
-      return {
-        onWaitlist: true,
+      // Get table info if player is SEATED
+      let tableInfo = null;
+      if (entry.status === WaitlistStatus.SEATED && entry.tableNumber) {
+        try {
+          const table = await this.tablesRepo.findOne({
+            where: { club: { id: clubId.trim() }, tableNumber: entry.tableNumber }
+          });
+          if (table) {
+            tableInfo = {
+              tableId: table.id,
+              tableName: `Table ${table.tableNumber}`,
+              tableStatus: table.status,
+              gameType: table.tableType || 'Cash Game'
+            };
+          }
+        } catch (tableError) {
+          console.error('Failed to fetch table info for seated player:', tableError);
+        }
+      }
+
+      const result = {
+        onWaitlist: entry.status === WaitlistStatus.PENDING,
+        isSeated: entry.status === WaitlistStatus.SEATED,
         entry: {
           id: entry.id,
           playerName: entry.playerName,
           partySize: entry.partySize,
           tableType: entry.tableType,
-          status: entry.status,
+          status: entry.status.toLowerCase(), // Return lowercase for frontend compatibility
           tableNumber: entry.tableNumber,
+          seatNumber: entry.requestedSeat, // Include requested seat
+          seatedAt: entry.seatedAt,
           createdAt: entry.createdAt
         },
-        position,
-        totalInQueue,
+        position: entry.status === WaitlistStatus.PENDING ? position : null,
+        totalInQueue: entry.status === WaitlistStatus.PENDING ? totalInQueue : null,
         availableTables: entry.status === WaitlistStatus.PENDING ? availableTables : null,
+        tableInfo, // Include table details for SEATED players
         message: entry.status === WaitlistStatus.PENDING && availableTables === 0
           ? 'No tables are currently available. You will be notified when a table becomes available.'
+          : entry.status === WaitlistStatus.SEATED 
+          ? `You are seated at ${tableInfo?.tableName || `Table ${entry.tableNumber}`}`
           : undefined
       };
+      
+      console.log(`✅ [WAITLIST STATUS] Returning:`, JSON.stringify(result, null, 2));
+      return result;
     } catch (err) {
       console.error('Get waitlist status error:', err);
       if (err instanceof BadRequestException || err instanceof NotFoundException) {

@@ -5,8 +5,9 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { Repository, MoreThanOrEqual, DataSource } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
+import { FinancialTransaction, TransactionType, TransactionStatus } from '../clubs/entities/financial-transaction.entity';
 import { ClubsService } from '../clubs/clubs.service';
 import { AuthService } from '../auth/auth.service';
 
@@ -35,6 +36,9 @@ export class PlayerTournamentsService {
   constructor(
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
+    @InjectRepository(FinancialTransaction)
+    private readonly transactionRepo: Repository<FinancialTransaction>,
+    private readonly dataSource: DataSource,
     private readonly clubsService: ClubsService,
     private readonly authService: AuthService,
   ) {}
@@ -71,8 +75,7 @@ export class PlayerTournamentsService {
           structure
         FROM tournaments 
         WHERE club_id = $1 
-          AND status IN ('scheduled', 'upcoming', 'registration_open', 'active', 'registering')
-          AND start_time > NOW()
+          AND status NOT IN ('completed', 'cancelled')
         ORDER BY start_time ASC
         LIMIT $2
       `, [clubId, limit]) as Tournament[];
@@ -218,7 +221,7 @@ export class PlayerTournamentsService {
 
       // Check if tournament exists and is available
       const tournament = await this.playersRepo.query(`
-        SELECT id, max_players, current_players, status, start_time, buy_in
+        SELECT id, name, max_players, current_players, status, start_time, buy_in
         FROM tournaments
         WHERE id = $1 AND club_id = $2
       `, [tournamentId, clubId]);
@@ -237,18 +240,19 @@ export class PlayerTournamentsService {
         throw new BadRequestException('Tournament is full');
       }
 
-      // CRITICAL: Check player balance against tournament buy-in requirement
+      // CRITICAL: Check player has minimum balance (but don't deduct yet - that happens when tournament starts)
       const buyInRequired = parseFloat(tourn.buy_in) || 0;
+      
       if (buyInRequired > 0) {
         try {
           const playerBalance = await this.authService.getPlayerBalance(playerId, clubId);
-          const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
+          const availableBalance = playerBalance.availableBalance || 0;
 
-          if (totalAvailableBalance < buyInRequired) {
+          if (availableBalance < buyInRequired) {
             throw new BadRequestException(
-              `Insufficient balance. Tournament buy-in required: ₹${buyInRequired.toLocaleString()}, ` +
-              `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
-              `Please add funds to your account before registering. Note: Balance will be deducted when the tournament starts.`
+              `Insufficient balance. Tournament minimum buy-in: ₹${buyInRequired.toLocaleString()}, ` +
+              `Your current balance: ₹${availableBalance.toLocaleString()}. ` +
+              `Please add funds before registering.`
             );
           }
         } catch (balanceError) {
@@ -257,7 +261,6 @@ export class PlayerTournamentsService {
             throw balanceError;
           }
           // If balance check fails for other reasons, log but don't block registration
-          // The actual deduction happens when tournament starts
           console.error('Error checking player balance for tournament registration:', balanceError);
         }
       }
@@ -286,15 +289,46 @@ export class PlayerTournamentsService {
         throw new BadRequestException('You are already registered for this tournament');
       }
 
-      // Insert registration
-      let registration;
+      // Use database transaction to ensure atomicity (registration + buy-in deduction)
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
       try {
-        registration = await this.playersRepo.query(`
+        // Insert registration
+        const registration = await queryRunner.query(`
           INSERT INTO tournament_registrations (tournament_id, player_id, club_id, status, registered_at)
           VALUES ($1, $2, $3, 'registered', NOW())
           RETURNING id, registered_at
         `, [tournamentId, playerId, clubId]);
+
+        if (!registration || registration.length === 0) {
+          throw new BadRequestException('Failed to create registration');
+        }
+
+        // Update tournament current_players count
+        await queryRunner.query(`
+          UPDATE tournaments
+          SET current_players = current_players + 1,
+              updated_at = NOW()
+          WHERE id = $1
+        `, [tournamentId]);
+
+        // NOTE: Balance will be taken when tournament STARTS, not at registration
+        await queryRunner.commitTransaction();
+
+        return {
+          success: true,
+          message: buyInRequired > 0 
+            ? `Registered successfully! Your balance will be taken when the tournament starts (Minimum: ₹${buyInRequired.toLocaleString()}).`
+            : 'Registered for tournament successfully',
+          tournamentId,
+          registrationId: registration[0].id,
+          registeredAt: registration[0].registered_at,
+        };
       } catch (dbErr: any) {
+        await queryRunner.rollbackTransaction();
+        
         if (dbErr.message && (
           dbErr.message.includes('does not exist') ||
           dbErr.message.includes('relation "tournament_registrations"') ||
@@ -308,23 +342,9 @@ export class PlayerTournamentsService {
           throw new BadRequestException('You are already registered for this tournament');
         }
         throw dbErr;
+      } finally {
+        await queryRunner.release();
       }
-
-      // Update tournament current_players count
-      await this.playersRepo.query(`
-        UPDATE tournaments
-        SET current_players = current_players + 1,
-            updated_at = NOW()
-        WHERE id = $1
-      `, [tournamentId]);
-
-      return {
-        success: true,
-        message: 'Registered for tournament successfully',
-        tournamentId,
-        registrationId: registration[0].id,
-        registeredAt: registration[0].registered_at,
-      };
     } catch (err) {
       console.error('Register tournament error:', err);
       if (
