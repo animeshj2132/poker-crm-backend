@@ -12984,7 +12984,7 @@ export class ClubsController {
    * GET /api/clubs/:clubId/shifts?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&staffId=uuid&role=Dealer
    */
   @Get(':clubId/shifts')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.DEALER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.DEALER, ClubRole.CASHIER)
   @UseGuards(RolesGuard)
   async getShifts(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
