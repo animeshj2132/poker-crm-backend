@@ -11,11 +11,11 @@ export class CreateClubWithBrandingDto {
   @MaxLength(500)
   description?: string;
 
-  // Branding fields - Logo URL is MANDATORY
-  @IsNotEmpty()
+  // Branding fields - Logo URL is optional (can be uploaded after club creation)
+  @IsOptional()
   @IsUrl({ require_tld: false }, { message: 'logoUrl must be a URL' })
   @MaxLength(2048)
-  logoUrl!: string;
+  logoUrl?: string;
 
   @IsOptional()
   @IsUrl({ require_tld: false }, { message: 'videoUrl must be a URL' })

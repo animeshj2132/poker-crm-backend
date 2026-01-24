@@ -162,10 +162,10 @@ export class TenantsController {
       const club = await this.clubsService.createWithBranding(tenant.id, {
         name: dto.clubName.trim(),
         description: dto.clubDescription || '',
-        logoUrl: dto.logoUrl || undefined,
-        videoUrl: dto.videoUrl || undefined,
-        skinColor: dto.skinColor || '#10b981',
-        gradient: dto.gradient || 'emerald-green-teal'
+        logoUrl: dto.logoUrl?.trim() || undefined,
+        videoUrl: dto.videoUrl?.trim() || undefined,
+        skinColor: dto.skinColor?.trim() || '#10b981',
+        gradient: dto.gradient?.trim() || 'emerald-green-teal'
       });
 
       return {
@@ -236,12 +236,12 @@ export class TenantsController {
       await this.storageService.ensureBucket();
 
       const club = await this.clubsService.createWithBranding(tenantId, {
-        name: dto.name,
-        description: dto.description,
-        logoUrl: dto.logoUrl,
-        videoUrl: dto.videoUrl,
-        skinColor: dto.skinColor,
-        gradient: dto.gradient
+        name: dto.name.trim(),
+        description: dto.description?.trim() || undefined,
+        logoUrl: dto.logoUrl?.trim() || undefined,
+        videoUrl: dto.videoUrl?.trim() || undefined,
+        skinColor: dto.skinColor?.trim() || undefined,
+        gradient: dto.gradient?.trim() || undefined
       });
       return club;
     } catch (e) {
@@ -305,12 +305,12 @@ export class TenantsController {
 
       // Create club with branding (logo, video, colors, gradient)
       const club = await this.clubsService.createWithBranding(tenantId, {
-        name: dto.clubName,
-        description: dto.clubDescription,
-        logoUrl: dto.logoUrl,
-        videoUrl: dto.videoUrl,
-        skinColor: dto.skinColor,
-        gradient: dto.gradient
+        name: dto.clubName.trim(),
+        description: dto.clubDescription?.trim() || undefined,
+        logoUrl: dto.logoUrl?.trim() || undefined,
+        videoUrl: dto.videoUrl?.trim() || undefined,
+        skinColor: dto.skinColor?.trim() || undefined,
+        gradient: dto.gradient?.trim() || undefined
       });
 
       // Create Super Admin user (password auto-generated) and assign to tenant

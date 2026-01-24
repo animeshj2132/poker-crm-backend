@@ -37,13 +37,14 @@ export class CreateTenantWithClubDto {
   @IsOptional()
   gradient?: string;
 
-  // Logo URL is MANDATORY - must upload logo first and provide URL
+  // Logo URL is optional - logo can be uploaded after club creation
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(2048)
-  logoUrl!: string;
+  logoUrl?: string;
 
   @IsString()
   @IsOptional()
+  @MaxLength(2048)
   videoUrl?: string;
 }
