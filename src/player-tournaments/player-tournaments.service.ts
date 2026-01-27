@@ -314,17 +314,41 @@ export class PlayerTournamentsService {
           WHERE id = $1
         `, [tournamentId]);
 
-        // NOTE: Balance will be taken when tournament STARTS, not at registration
+        // DEDUCT registration fee from player balance
+        if (buyInRequired > 0) {
+          console.log(`💰 [TOURNAMENT REG] Deducting ₹${buyInRequired} from player ${playerId}`);
+          
+          // Create financial transaction for tournament registration fee
+          const transactionResult = await queryRunner.query(`
+            INSERT INTO financial_transactions (
+              club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            RETURNING id
+          `, [
+            clubId,
+            playerId,
+            player.name || 'Unknown Player',
+            'Buy In', // Using 'Buy In' type for tournament registration
+            buyInRequired,
+            'Completed',
+            `Tournament Registration: ${tourn.name} (ID: ${tournamentId})`
+          ]);
+
+          console.log(`💰 [TOURNAMENT REG] Transaction created: ${transactionResult[0].id}`);
+        }
+
         await queryRunner.commitTransaction();
 
         return {
           success: true,
           message: buyInRequired > 0 
-            ? `Registered successfully! Your balance will be taken when the tournament starts (Minimum: ₹${buyInRequired.toLocaleString()}).`
+            ? `Registered successfully! ₹${buyInRequired.toLocaleString()} has been deducted from your balance.`
             : 'Registered for tournament successfully',
           tournamentId,
           registrationId: registration[0].id,
           registeredAt: registration[0].registered_at,
+          amountDeducted: buyInRequired,
         };
       } catch (dbErr: any) {
         await queryRunner.rollbackTransaction();
@@ -412,37 +436,80 @@ export class PlayerTournamentsService {
         throw new NotFoundException('Registration not found');
       }
 
-      // Delete registration
+      // Get tournament details for refund
+      const tournament = await this.playersRepo.query(`
+        SELECT name, buy_in FROM tournaments WHERE id = $1 AND club_id = $2
+      `, [tournamentId, clubId]);
+
+      const buyInAmount = tournament && tournament.length > 0 ? parseFloat(tournament[0].buy_in) : 0;
+      const tournamentName = tournament && tournament.length > 0 ? tournament[0].name : 'Unknown Tournament';
+
+      // Use transaction to ensure atomicity
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
       try {
-        await this.playersRepo.query(`
+        // Delete registration
+        await queryRunner.query(`
           DELETE FROM tournament_registrations
           WHERE tournament_id = $1 AND player_id = $2 AND club_id = $3
         `, [tournamentId, playerId, clubId]);
+
+        // Update tournament current_players count
+        await queryRunner.query(`
+          UPDATE tournaments
+          SET current_players = GREATEST(0, current_players - 1),
+              updated_at = NOW()
+          WHERE id = $1
+        `, [tournamentId]);
+
+        // REFUND the registration fee
+        if (buyInAmount > 0) {
+          console.log(`💰 [TOURNAMENT CANCEL] Refunding ₹${buyInAmount} to player ${playerId}`);
+          
+          await queryRunner.query(`
+            INSERT INTO financial_transactions (
+              club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+          `, [
+            clubId,
+            playerId,
+            player.name || 'Unknown Player',
+            'Refund',
+            buyInAmount,
+            'Completed',
+            `Tournament Registration Refund: ${tournamentName} (ID: ${tournamentId})`
+          ]);
+
+          console.log(`💰 [TOURNAMENT CANCEL] Refund completed for player ${playerId}`);
+        }
+
+        await queryRunner.commitTransaction();
+
+        return {
+          success: true,
+          message: buyInAmount > 0 
+            ? `Registration cancelled successfully. ₹${buyInAmount.toLocaleString()} has been refunded to your balance.`
+            : 'Registration cancelled successfully',
+          tournamentId,
+          amountRefunded: buyInAmount,
+        };
       } catch (dbErr: any) {
+        await queryRunner.rollbackTransaction();
+        
         if (dbErr.message && (
           dbErr.message.includes('does not exist') ||
           dbErr.message.includes('relation "tournament_registrations"') ||
           dbErr.code === '42P01'
         )) {
-          console.error('tournament_registrations table does not exist. Please run the migration: sql/0019_tournament_registrations.sql');
           throw new BadRequestException('Tournament registration system is not set up. Please contact support or run the database migration.');
         }
         throw dbErr;
+      } finally {
+        await queryRunner.release();
       }
-
-      // Update tournament current_players count
-      await this.playersRepo.query(`
-        UPDATE tournaments
-        SET current_players = GREATEST(0, current_players - 1),
-            updated_at = NOW()
-        WHERE id = $1
-      `, [tournamentId]);
-
-      return {
-        success: true,
-        message: 'Registration cancelled successfully',
-        tournamentId,
-      };
     } catch (err) {
       console.error('Cancel registration error:', err);
       if (

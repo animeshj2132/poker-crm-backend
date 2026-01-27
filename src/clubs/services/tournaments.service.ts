@@ -294,15 +294,100 @@ export class TournamentsService {
   // Delete tournament
   async deleteTournament(clubId: string, tournamentId: string) {
     // Check if tournament exists
-    await this.getTournamentById(clubId, tournamentId);
+    const tournament = await this.getTournamentById(clubId, tournamentId);
 
-    const query = `
-      DELETE FROM tournaments 
-      WHERE club_id = $1 AND id = $2
-    `;
+    // Check tournament status - only refund if tournament hasn't started yet
+    const shouldRefund = !['active', 'completed', 'ended', 'finished'].includes(tournament.status?.toLowerCase() || '');
+    
+    console.log(`🏆 [TOURNAMENT DELETE] Tournament status: ${tournament.status}, Should refund: ${shouldRefund}`);
 
-    await this.dataSource.query(query, [clubId, tournamentId]);
-    return { message: 'Tournament deleted successfully' };
+    // Use transaction to ensure atomicity (refund players + delete tournament)
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      let playersRefunded = 0;
+      let totalRefunded = 0;
+
+      // Only refund if tournament hasn't started yet (scheduled, upcoming, registration_open)
+      if (shouldRefund) {
+        // Get all registered players for refund
+        const registeredPlayers = await queryRunner.query(
+          `SELECT tr.player_id, p.name as player_name
+           FROM tournament_registrations tr
+           INNER JOIN players p ON p.id = tr.player_id
+           WHERE tr.tournament_id = $1 AND tr.club_id = $2`,
+          [tournamentId, clubId]
+        );
+
+        console.log(`🏆 [TOURNAMENT DELETE] Refunding ${registeredPlayers.length} registered players`);
+
+        // Refund registration fee to all registered players
+        if (registeredPlayers.length > 0 && tournament.buy_in > 0) {
+          const buyInAmount = parseFloat(tournament.buy_in);
+          
+          for (const participant of registeredPlayers) {
+            console.log(`💰 [TOURNAMENT DELETE] Refunding ₹${buyInAmount} to player ${participant.player_id} (${participant.player_name})`);
+            
+            // Create refund transaction
+            await queryRunner.query(`
+              INSERT INTO financial_transactions (
+                club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            `, [
+              clubId,
+              participant.player_id,
+              participant.player_name || 'Unknown Player',
+              'Refund',
+              buyInAmount,
+              'Completed',
+              `Tournament Cancelled - Refund: ${tournament.name} (ID: ${tournamentId})`
+            ]);
+          }
+
+          playersRefunded = registeredPlayers.length;
+          totalRefunded = registeredPlayers.length * buyInAmount;
+          console.log(`💰 [TOURNAMENT DELETE] All refunds completed`);
+        }
+      } else {
+        console.log(`🏆 [TOURNAMENT DELETE] No refunds - tournament already started/ended (status: ${tournament.status})`);
+      }
+
+      // Delete tournament registrations first (foreign key constraint)
+      await queryRunner.query(
+        `DELETE FROM tournament_registrations WHERE tournament_id = $1 AND club_id = $2`,
+        [tournamentId, clubId]
+      );
+
+      // Delete tournament
+      await queryRunner.query(
+        `DELETE FROM tournaments WHERE club_id = $1 AND id = $2`,
+        [clubId, tournamentId]
+      );
+
+      await queryRunner.commitTransaction();
+
+      const refundMessage = shouldRefund && playersRefunded > 0 
+        ? ` Refunded ₹${parseFloat(tournament.buy_in).toLocaleString()} to ${playersRefunded} player(s).`
+        : shouldRefund 
+          ? ' No registered players to refund.'
+          : ' No refunds issued (tournament already started/completed).';
+
+      return { 
+        message: `Tournament deleted successfully.${refundMessage}`,
+        playersRefunded: playersRefunded,
+        totalRefunded: totalRefunded,
+        tournamentStatus: tournament.status
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('Error deleting tournament:', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   // Start tournament
