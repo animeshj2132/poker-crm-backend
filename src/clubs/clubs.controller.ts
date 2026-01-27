@@ -6397,14 +6397,37 @@ export class ClubsController {
       // Get all seated players for this table
       const seatedPlayers = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
       
+      // Deduplicate: Keep only the most recent entry per seat number
+      const uniquePlayers = [];
+      const seenSeats = new Set<number>();
+      
+      // Sort by seatedAt descending (most recent first)
+      const sortedPlayers = [...seatedPlayers].sort((a, b) => {
+        const dateA = a.seatedAt ? new Date(a.seatedAt).getTime() : 0;
+        const dateB = b.seatedAt ? new Date(b.seatedAt).getTime() : 0;
+        return dateB - dateA;
+      });
+      
+      // Keep only one entry per seat
+      for (const player of sortedPlayers) {
+        if (player.seatNumber && !seenSeats.has(player.seatNumber)) {
+          seenSeats.add(player.seatNumber);
+          uniquePlayers.push(player);
+        }
+      }
+      
+      console.log(`[SEATED PLAYERS API] Table ${tableId}: ${seatedPlayers.length} total, ${uniquePlayers.length} unique`);
+      
       return {
         tableId: table.id,
         tableNumber: table.tableNumber,
-        seatedPlayers: seatedPlayers.map(p => ({
+        seatedPlayers: uniquePlayers.map(p => ({
           playerId: p.playerId,
           playerName: p.playerName,
           seatNumber: p.seatNumber,
           seatedAt: p.seatedAt,
+          buyInAmount: p.buyInAmount || 0,
+          sessionBuyInAmount: p.sessionBuyInAmount || 0,
         })),
       };
     } catch (e) {
@@ -10130,14 +10153,15 @@ export class ClubsController {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } }
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
       }
 
-      // Edge case: Verify player belongs to club
+      // Edge case: Verify player belongs to club (already verified by query, but double-check)
       if (!player.club || player.club.id !== clubId) {
         throw new ForbiddenException('Player does not belong to this club');
       }

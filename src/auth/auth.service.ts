@@ -1494,6 +1494,7 @@ export class AuthService {
       let transactions = [];
       let total = 0;
       try {
+        console.log(`📊 [PLAYER TRANSACTIONS] Fetching for player ${player.id} in club ${clubId.trim()}`);
         [transactions, total] = await this.transactionsRepo.findAndCount({
           where: {
             club: { id: clubId.trim() },
@@ -1503,6 +1504,7 @@ export class AuthService {
           take: limit,
           skip: offset
         });
+        console.log(`📊 [PLAYER TRANSACTIONS] Found ${total} transactions, returning ${transactions.length}`);
       } catch (dbError) {
         console.error('Database error fetching transactions:', dbError);
         throw new BadRequestException('Unable to fetch transactions. Please try again.');

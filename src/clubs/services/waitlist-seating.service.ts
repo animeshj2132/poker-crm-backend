@@ -141,7 +141,7 @@ export class WaitlistSeatingService {
           tableNumber: entry.tableNumber,
           tableName: table ? `Table ${table.tableNumber}` : `Table ${entry.tableNumber}`,
           tableId: table?.id,
-          seatNumber: entry.requestedSeat || entry.tableNumber,
+          seatNumber: entry.requestedSeat,  // Fixed: Only use requestedSeat, not tableNumber as fallback
           seatedAt: entry.seatedAt,
           entryId: entry.id,
         };
@@ -589,6 +589,8 @@ export class WaitlistSeatingService {
       throw new NotFoundException(`Table with ID ${tableId} not found`);
     }
 
+    console.log(`[SEATED PLAYERS] Fetching for Table ${table.tableNumber} (ID: ${tableId})`);
+
     // Find all seated players for this table using table number
     const seatedEntries = await this.waitlistRepo.find({
       where: {
@@ -599,13 +601,56 @@ export class WaitlistSeatingService {
       order: { seatedAt: 'ASC' },
     });
 
-    return seatedEntries.map(entry => ({
-      playerId: entry.playerId,
-      playerName: entry.playerName || 'Unknown',
-      seatNumber: entry.requestedSeat || null,
-      seatedAt: entry.seatedAt,
-      tableNumber: entry.tableNumber,
-    }));
+    console.log(`[SEATED PLAYERS] Found ${seatedEntries.length} seated entries:`, 
+      seatedEntries.map(e => ({ playerId: e.playerId, playerName: e.playerName, seat: e.requestedSeat })));
+
+    // For each seated player, get their buy-in amount from financial transactions
+    const seatedPlayersWithBuyIn = await Promise.all(
+      seatedEntries.map(async (entry) => {
+        let buyInAmount = 0;
+        
+        if (entry.playerId) {
+          // Query to get total buy-in amount for this player at this table
+          // Get all transactions for this player to debug
+          const allTransactions = await this.waitlistRepo.manager.query(
+            `SELECT id, type, amount, status, created_at, notes
+             FROM financial_transactions
+             WHERE player_id = $1
+             ORDER BY created_at DESC
+             LIMIT 5`,
+            [entry.playerId]
+          );
+          
+          console.log(`[DEBUG] All transactions for player ${entry.playerName}:`, allTransactions);
+          
+          // Sum all BUY_IN transactions for this player (don't filter by date for now)
+          const result = await this.waitlistRepo.manager.query(
+            `SELECT COALESCE(SUM(amount), 0) as total_buy_in
+             FROM financial_transactions
+             WHERE player_id = $1 
+             AND type = 'Buy In'
+             AND status = 'Completed'`,
+            [entry.playerId]
+          );
+          
+          buyInAmount = result && result.length > 0 ? parseFloat(result[0].total_buy_in) : 0;
+          
+          console.log(`[BUY-IN AMOUNT] Player: ${entry.playerName}, ID: ${entry.playerId}, Amount: ${buyInAmount}, Seated: ${entry.seatedAt}, Transactions found: ${allTransactions.length}`);
+        }
+        
+        return {
+          playerId: entry.playerId,
+          playerName: entry.playerName || 'Unknown',
+          seatNumber: entry.requestedSeat || null,
+          seatedAt: entry.seatedAt,
+          tableNumber: entry.tableNumber,
+          buyInAmount: buyInAmount,
+          sessionBuyInAmount: buyInAmount, // Add both for compatibility
+        };
+      })
+    );
+
+    return seatedPlayersWithBuyIn;
   }
 
   // ========== Table Session Management ==========

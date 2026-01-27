@@ -1,4 +1,5 @@
 import { IsString, IsOptional, IsInt, IsBoolean, IsUUID } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdateKitchenStationDto {
   @IsString()
@@ -13,6 +14,7 @@ export class UpdateKitchenStationDto {
   @IsOptional()
   chefName?: string;
 
+  @Transform(({ value }) => value === '' || value === null ? undefined : value)
   @IsUUID()
   @IsOptional()
   chefId?: string;
