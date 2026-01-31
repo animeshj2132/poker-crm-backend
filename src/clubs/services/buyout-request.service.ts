@@ -124,7 +124,7 @@ export class BuyOutRequestService {
       // Decrement table's current seats count
       if (requestData.table_number) {
         await queryRunner.query(
-          `UPDATE poker_tables 
+          `UPDATE tables 
            SET current_seats = GREATEST(0, current_seats - 1), updated_at = NOW()
            WHERE club_id = $1 AND table_number = $2`,
           [clubId, requestData.table_number]
@@ -203,7 +203,7 @@ export class BuyOutRequestService {
 
         // Get table info
         const tableData = await queryRunner.query(
-          `SELECT table_number FROM poker_tables WHERE id = $1`,
+          `SELECT table_number FROM tables WHERE id = $1`,
           [tableId]
         );
         const tableNumber = tableData && tableData.length > 0 ? tableData[0].table_number : null;
@@ -242,7 +242,7 @@ export class BuyOutRequestService {
 
       // Reset table's current seats to 0
       await queryRunner.query(
-        `UPDATE poker_tables 
+        `UPDATE tables 
          SET current_seats = 0, updated_at = NOW()
          WHERE club_id = $1 AND id = $2`,
         [clubId, tableId]
