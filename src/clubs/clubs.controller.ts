@@ -1209,7 +1209,7 @@ export class ClubsController {
   }
 
   @Post(':id/staff')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createStaff(
@@ -1512,6 +1512,8 @@ export class ClubsController {
    * POST /api/clubs/:clubId/staff-management/create
    */
   @Post(':clubId/staff-management/create')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.HR)
+  @UseGuards(RolesGuard)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
   async createStaffMember(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
@@ -1520,6 +1522,31 @@ export class ClubsController {
     @Req() req?: Request
   ) {
     try {
+      // HR users should NOT be able to create Admin or Super Admin staff
+      // Admin users should NOT be able to create Super Admin staff
+      if (userId) {
+        const user = await this.usersService.findById(userId);
+        const clubRolesForClub: ClubRole[] = (user?.clubRoles || [])
+          .filter((cr: any) => cr.club?.id === clubId || cr.clubId === clubId)
+          .map((cr: any) => cr.role as ClubRole);
+
+        const isHrOnly =
+          clubRolesForClub.includes(ClubRole.HR) &&
+          !clubRolesForClub.some((r) => r === ClubRole.SUPER_ADMIN || r === ClubRole.ADMIN);
+
+        if (isHrOnly && (dto.role === StaffRole.SUPER_ADMIN || dto.role === StaffRole.ADMIN)) {
+          throw new ForbiddenException('HR is not allowed to create Admin or Super Admin staff members');
+        }
+
+        const isAdminOnly =
+          clubRolesForClub.includes(ClubRole.ADMIN) &&
+          !clubRolesForClub.includes(ClubRole.SUPER_ADMIN);
+
+        if (isAdminOnly && dto.role === StaffRole.SUPER_ADMIN) {
+          throw new ForbiddenException('Admin is not allowed to create Super Admin staff members');
+        }
+      }
+
       const staff = await this.staffManagementService.createStaff(clubId, dto, userId);
       
       // Audit log: Create staff member (new)
@@ -4010,7 +4037,18 @@ export class ClubsController {
   }
 
   @Post(':id/push-notifications/upload-url')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.CASHIER,
+    ClubRole.GRE,
+    ClubRole.HR,
+    ClubRole.FNB,
+    ClubRole.STAFF,
+    ClubRole.DEALER,
+    ClubRole.AFFILIATE,
+  )
   async createPushNotificationUploadUrl(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -7828,6 +7866,69 @@ export class ClubsController {
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in getAffiliateTransactions:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Override an affiliate transaction amount
+   * PUT /clubs/:clubId/affiliates/transactions/:transactionId/override
+   */
+  @Put(':clubId/affiliates/transactions/:transactionId/override')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async overrideAffiliateTransaction(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
+    @Body() dto: EditTransactionDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request,
+  ) {
+    try {
+      const transaction = await this.affiliatesService.overrideAffiliateTransaction(
+        clubId,
+        transactionId,
+        dto.amount,
+        dto.reason,
+        userId,
+      );
+
+      // Audit log for affiliate transaction override
+      try {
+        if (userId && transaction) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'affiliate_transaction_edited_override',
+            actionCategory: ActionCategory.OVERRIDE,
+            description: `Edited affiliate transaction of ₹${transaction.originalAmount ?? transaction.amount} to ₹${dto.amount} for affiliate ${transaction.affiliate?.name || transaction.affiliateId}`,
+            targetType: 'affiliate',
+            targetId: transaction.affiliate?.id || transaction.affiliateId,
+            targetName: transaction.affiliate?.name || '',
+            metadata: {
+              transactionId,
+              previousAmount: transaction.originalAmount ?? undefined,
+              newAmount: dto.amount,
+              reason: dto.reason,
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined,
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for affiliate transaction override:', auditError);
+      }
+
+      return { success: true, transaction };
+    } catch (error) {
+      console.error('Error in overrideAffiliateTransaction:', error);
       throw error;
     }
   }

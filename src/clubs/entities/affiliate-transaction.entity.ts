@@ -45,6 +45,10 @@ export class AffiliateTransaction {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   amount!: number;
 
+  // Original amount before any override (optional)
+  @Column({ type: 'decimal', precision: 10, scale: 2, name: 'original_amount', nullable: true })
+  originalAmount?: number | null;
+
   @Column({ type: 'varchar', length: 50, name: 'transaction_type', default: TransactionType.PAYMENT })
   transactionType!: TransactionType;
 
@@ -53,6 +57,22 @@ export class AffiliateTransaction {
 
   @Column({ type: 'text', nullable: true })
   notes?: string;
+
+  // Reason for overriding this transaction (if any)
+  @Column({ type: 'text', nullable: true, name: 'override_reason' })
+  overrideReason?: string | null;
+
+  // User who performed the override (if any)
+  @Column({ type: 'uuid', nullable: true, name: 'overridden_by' })
+  overriddenBy?: string | null;
+
+  // When the override was performed (if any)
+  @Column({ type: 'timestamp', nullable: true, name: 'overridden_at' })
+  overriddenAt?: Date | null;
+
+  // Flag indicating if this transaction has been overridden
+  @Column({ type: 'boolean', name: 'is_overridden', default: false })
+  isOverridden!: boolean;
 
   @Column({ type: 'varchar', length: 50, default: TransactionStatus.COMPLETED })
   status!: TransactionStatus;

@@ -20,10 +20,12 @@ export class InventoryItem {
   @Column({ type: 'varchar' })
   category!: string;
 
-  @Column({ type: 'int', name: 'current_stock' })
+  // Allow decimal stock values (e.g. 2.5 / 3.5 units)
+  @Column({ type: 'decimal', precision: 10, scale: 2, name: 'current_stock' })
   currentStock!: number;
 
-  @Column({ type: 'int', name: 'min_stock' })
+  // Allow decimal minimum stock thresholds
+  @Column({ type: 'decimal', precision: 10, scale: 2, name: 'min_stock' })
   minStock!: number;
 
   @Column({ type: 'varchar', nullable: true })

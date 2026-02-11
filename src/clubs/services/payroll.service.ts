@@ -357,6 +357,29 @@ export class PayrollService {
       throw new NotFoundException('Dealer not found');
     }
 
+    // Calculate available dealer tip balance:
+    // total dealer share from tips - total cashouts already processed
+    const tipSummary = await this.getDealerTipsSummary(clubId, dto.dealerId);
+
+    const cashoutsAgg = await this.dealerCashoutRepo
+      .createQueryBuilder('cashout')
+      .select('COALESCE(SUM(cashout.amount), 0)', 'totalCashouts')
+      .where('cashout.club_id = :clubId', { clubId })
+      .andWhere('cashout.dealer_id = :dealerId', { dealerId: dto.dealerId })
+      .getRawOne<{ totalCashouts: string }>();
+
+    const totalDealerShare = Number(tipSummary.totalDealerShare || 0);
+    const totalCashouts = Number(cashoutsAgg?.totalCashouts || 0);
+    const availableBalance = totalDealerShare - totalCashouts;
+
+    if (Number(dto.amount) > availableBalance + 0.0001) {
+      throw new BadRequestException(
+        `Cashout amount exceeds available tip balance. Available: ₹${availableBalance.toFixed(
+          2,
+        )}, Requested: ₹${Number(dto.amount).toFixed(2)}`,
+      );
+    }
+
     const cashout = this.dealerCashoutRepo.create({
       clubId,
       dealerId: dto.dealerId,

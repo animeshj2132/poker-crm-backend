@@ -572,6 +572,63 @@ export class AffiliatesService {
   }
 
   /**
+   * Override an existing affiliate transaction amount with proper audit fields
+   * and keep affiliate totalCommission in sync.
+   */
+  async overrideAffiliateTransaction(
+    clubId: string,
+    transactionId: string,
+    newAmount: number,
+    reason: string,
+    userId?: string,
+  ) {
+    if (typeof newAmount !== 'number' || isNaN(newAmount) || newAmount <= 0) {
+      throw new BadRequestException('New amount must be a positive number');
+    }
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      throw new BadRequestException('Override reason is required');
+    }
+
+    const transaction = await this.affiliateTransactionRepo.findOne({
+      where: { id: transactionId, clubId },
+      relations: ['affiliate'],
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Affiliate transaction not found');
+    }
+
+    // Preserve original amount on first override
+    if (!transaction.isOverridden) {
+      transaction.originalAmount = Number(transaction.amount);
+    }
+
+    const previousAmount = Number(transaction.amount);
+    const updatedAmount = Number(newAmount);
+    const delta = updatedAmount - previousAmount;
+
+    transaction.amount = updatedAmount;
+    transaction.isOverridden = true;
+    transaction.overrideReason = reason.trim();
+    transaction.overriddenBy = userId;
+    transaction.overriddenAt = new Date();
+
+    await this.affiliateTransactionRepo.save(transaction);
+
+    // Keep affiliate.totalCommission in sync if affiliate entity is present
+    if (transaction.affiliate) {
+      transaction.affiliate.totalCommission =
+        Number(transaction.affiliate.totalCommission || 0) + delta;
+      await this.affiliatesRepo.save(transaction.affiliate);
+    }
+
+    return this.affiliateTransactionRepo.findOne({
+      where: { id: transactionId },
+      relations: ['affiliate', 'affiliate.user'],
+    });
+  }
+
+  /**
    * Get affiliate transactions with pagination and filters
    */
   async getAffiliateTransactions(
