@@ -3,8 +3,8 @@ import { IsInt, IsOptional, Min } from 'class-validator';
 export class UpdateSessionParamsDto {
   @IsOptional()
   @IsInt()
-  @Min(30, { message: 'Minimum play time must be at least 30 minutes' })
-  minPlayTime?: number;
+  @Min(0, { message: 'Minimum play time cannot be negative' })
+  minPlayTime?: number; // Can be 0 = no minimum, player can call time immediately
 
   @IsOptional()
   @IsInt()
@@ -18,7 +18,7 @@ export class UpdateSessionParamsDto {
 
   @IsOptional()
   @IsInt()
-  @Min(30, { message: 'Session timeout must be at least 30 minutes' })
+  @Min(1, { message: 'Session timeout must be at least 1 minute' })
   sessionTimeout?: number;
 }
 

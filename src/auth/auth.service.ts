@@ -1329,8 +1329,11 @@ export class AuthService {
         transactions = [];
       }
 
-      // Edge case: Calculate balance from transactions
-      let availableBalance = 0;
+      // NEW CALCULATION: Separate cash balance and table balance
+      let cashBalance = 0; // Money in wallet (not on table)
+      let tableBalance = 0; // Money on table
+      let creditUsedOnTable = 0; // Credit used while on table
+      
       console.log('💰 [BALANCE] Calculating balance from transactions...');
       
       for (const txn of transactions) {
@@ -1342,12 +1345,33 @@ export class AuthService {
           }
           console.log('💰 [BALANCE] Transaction:', txn.type, amount);
           
-          if (['Deposit', 'Credit', 'Bonus', 'Refund'].includes(txn.type)) {
-            availableBalance += amount;
-            console.log('  ➕ Added:', amount, '| New balance:', availableBalance);
-          } else if (['Cashout', 'Withdrawal', 'Buy In'].includes(txn.type)) {
-            availableBalance -= amount;
-            console.log('  ➖ Subtracted:', amount, '| New balance:', availableBalance);
+          // CASH TRANSACTIONS (wallet)
+          if (txn.type === 'Deposit') {
+            cashBalance += amount;
+            console.log('  ➕ Deposit to wallet:', amount, '| New cash balance:', cashBalance);
+          } else if (['Cashout', 'Withdrawal'].includes(txn.type)) {
+            cashBalance -= amount;
+            console.log('  ➖ Withdrawal from wallet:', amount, '| New cash balance:', cashBalance);
+          } 
+          // TABLE TRANSACTIONS
+          else if (txn.type === 'Buy In') {
+            // Money moved from wallet to table
+            cashBalance -= amount;
+            tableBalance += amount;
+            console.log('  🎲 Buy In - moved to table:', amount, '| Cash:', cashBalance, 'Table:', tableBalance);
+          }
+          // CREDIT TRANSACTIONS (debt - reduces cash balance, adds to table balance)
+          // Credit is a LOAN from the club - it's debt the player owes
+          else if (txn.type === 'Credit') {
+            cashBalance -= amount; // CRITICAL: Credit is debt, reduces cash balance
+            tableBalance += amount; // But adds to table so they can play
+            creditUsedOnTable += amount;
+            console.log('  💳 Credit used (DEBT):', amount, '| Cash:', cashBalance, 'Table:', tableBalance, 'Credit Used:', creditUsedOnTable);
+          }
+          // BONUS/REFUND (adds to wallet)
+          else if (['Bonus', 'Refund'].includes(txn.type)) {
+            cashBalance += amount;
+            console.log('  ➕ Bonus/Refund to wallet:', amount, '| New cash balance:', cashBalance);
           }
         } catch (calcError) {
           console.error('❌ [BALANCE] Error calculating balance from transaction:', txn.id, calcError);
@@ -1355,11 +1379,9 @@ export class AuthService {
         }
       }
 
-      // Edge case: Ensure balance is not negative (shouldn't happen but safety check)
-      availableBalance = Math.max(0, availableBalance);
-      console.log('💰 [BALANCE] Final calculated balance:', availableBalance);
+      console.log('💰 [BALANCE] Calculated - Cash:', cashBalance, 'Table:', tableBalance, 'Credit Used:', creditUsedOnTable);
 
-      // Get table balance (if seated)
+      // Get table info (if seated)
       const waitlistEntry = await this.waitlistRepo.findOne({
         where: {
           club: { id: clubId.trim() },
@@ -1369,7 +1391,6 @@ export class AuthService {
         relations: ['club']
       });
 
-      let tableBalance = 0;
       let tableId = null;
       let seatNumber = null;
 
@@ -1379,10 +1400,19 @@ export class AuthService {
         });
         if (table) {
           tableId = table.id;
-          // Estimate table balance (would need actual game state)
-          tableBalance = 0; // Placeholder
+          seatNumber = waitlistEntry.tableNumber;
+        }
+        
+        // If NOT seated, table balance should be 0 (this handles checkout cases)
+        if (!waitlistEntry || waitlistEntry.status !== WaitlistStatus.SEATED) {
+          console.log('⚠️ [BALANCE] Player not seated - zeroing table balance');
+          tableBalance = 0;
+          creditUsedOnTable = 0;
         }
       }
+
+      // Wallet balance can go negative if using more credit than cash
+      const availableBalance = cashBalance;
 
       // Get credit information
       const creditEnabled = (player as any).creditEnabled || false;
@@ -1406,14 +1436,27 @@ export class AuthService {
       const availableCredit = creditEnabled ? Math.max(0, creditLimit - creditUsed) : 0;
 
       const result = {
-        availableBalance: Math.max(0, availableBalance),
+        // Wallet balance (can be negative if using credit)
+        availableBalance: availableBalance,
+        cashBalance: availableBalance, // Alias for clarity
+        
+        // Table balance (money currently on table)
         tableBalance,
-        totalBalance: Math.max(0, availableBalance) + tableBalance, // Total = Cash + Table, NOT including credit
+        creditUsedOnTable,
+        cashOnTable: tableBalance - creditUsedOnTable,
+        
+        // Total balance (cash + table)
+        totalBalance: availableBalance + tableBalance,
+        
+        // Table info
         tableId,
         seatNumber: waitlistEntry?.tableNumber || null,
+        isSeated: waitlistEntry?.status === WaitlistStatus.SEATED,
+        
+        // Credit info
         creditEnabled,
         creditLimit,
-        creditUsed, // Add creditUsed to response
+        creditUsed, // Total credit used from credit requests
         availableCredit
       };
       
@@ -2873,7 +2916,13 @@ export class AuthService {
           updatedAt: order.updatedAt,
           statusHistory: order.statusHistory,
           cancellationReason: order.cancellationReason || order.cancellation_reason || null,
-          rejectionReason: order.rejectionReason || order.rejection_reason || null,
+          // Map all historical and current field names to a single rejectionReason
+          rejectionReason:
+            order.rejectionReason ||
+            order.rejection_reason ||
+            order.rejectedReason ||
+            order.rejected_reason ||
+            null,
         })),
       };
     } catch (err) {

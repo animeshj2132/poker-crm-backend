@@ -83,10 +83,48 @@ export class PlayerPlaytimeService {
       const now = new Date();
       const sessionDuration = Math.floor((now.getTime() - new Date(sessionStartTime).getTime()) / 1000); // in seconds
 
-      // Default timing configuration (2 minutes for testing)
-      const minPlayTime = 2; // minutes
-      const callTimeDuration = 2; // minutes
-      const cashOutWindow = 2; // minutes
+      // DYNAMIC timing configuration from table settings ONLY
+      // Parse from table.notes format: "Name | Type | Stakes: X | Min Play: 30m | Call: 2m | Cash-out: 5m | Timeout: 60m"
+      // NO DEFAULTS - if not set in table, defaults to 0 (no minimum)
+      let minPlayTime = 0; // No default - player can call time immediately if not set
+      let callTimeDuration = 2; // 2 minutes for call time duration
+      let cashOutWindow = 5; // 5 minutes for cash-out window
+
+      if (table.notes) {
+        const noteParts = table.notes.split('|').map(p => p.trim());
+        
+        // Extract Min Play Time
+        const minPlayMatch = noteParts.find(p => p.includes('Min Play:'));
+        if (minPlayMatch) {
+          const match = minPlayMatch.match(/(\d+)m/);
+          if (match) {
+            minPlayTime = parseInt(match[1]);
+            console.log(`⏱️ [TABLE CONFIG] Min Play Time: ${minPlayTime} minutes`);
+          }
+        }
+        
+        // Extract Call Time Duration
+        const callTimeMatch = noteParts.find(p => p.includes('Call:'));
+        if (callTimeMatch) {
+          const match = callTimeMatch.match(/(\d+)m/);
+          if (match) {
+            callTimeDuration = parseInt(match[1]);
+            console.log(`⏱️ [TABLE CONFIG] Call Time: ${callTimeDuration} minutes`);
+          }
+        }
+        
+        // Extract Cash-out Window
+        const cashOutMatch = noteParts.find(p => p.includes('Cash-out:'));
+        if (cashOutMatch) {
+          const match = cashOutMatch.match(/(\d+)m/);
+          if (match) {
+            cashOutWindow = parseInt(match[1]);
+            console.log(`⏱️ [TABLE CONFIG] Cash-out Window: ${cashOutWindow} minutes`);
+          }
+        }
+      }
+
+      console.log(`⏱️ [TABLE CONFIG] Final settings - Min Play: ${minPlayTime}m, Call Time: ${callTimeDuration}m, Cash-out: ${cashOutWindow}m`);
 
       // Check for active buy-out request (call time)
       const buyOutRequest = await this.dataSource.query(
@@ -100,10 +138,14 @@ export class PlayerPlaytimeService {
 
       // Calculate session state
       const minutesPlayed = Math.floor(sessionDuration / 60);
-      const minPlayTimeCompleted = minutesPlayed >= minPlayTime;
+      
+      // CRITICAL: If minPlayTime = 0, player can call time immediately after joining
+      const minPlayTimeCompleted = minPlayTime === 0 ? true : minutesPlayed >= minPlayTime;
       const callTimeAvailable = minPlayTimeCompleted && !activeBuyOutRequest; // Available if min play time completed and no active request
       const callTimeActive = !!activeBuyOutRequest; // Active if there's a pending buyout request
       const cashOutWindowActive = false; // TODO: Implement cashout window tracking
+      
+      console.log(`⏱️ [SESSION STATE] Minutes Played: ${minutesPlayed}, Min Required: ${minPlayTime}, Can Call Time: ${callTimeAvailable}`);
 
       let callTimeRemaining = 0;
       let cashOutTimeRemaining = 0;
@@ -281,6 +323,42 @@ export class PlayerPlaytimeService {
         throw new BadRequestException('Player is not currently seated at a table');
       }
 
+      // Get the actual table entity to check minimum play time
+      let actualTableId = null;
+      let minPlayTimeRequired = 0; // NO DEFAULT - if not set, player can call time immediately
+      
+      if (seatedEntry.tableNumber) {
+        const table = await this.tablesRepo.findOne({
+          where: { club: { id: clubId }, tableNumber: seatedEntry.tableNumber },
+        });
+        if (table) {
+          actualTableId = table.id;
+          
+          // Parse minimum play time from table notes ONLY - no defaults
+          if (table.notes) {
+            const minPlayMatch = table.notes.split('|').map(p => p.trim()).find(p => p.includes('Min Play:'));
+            if (minPlayMatch) {
+              const match = minPlayMatch.match(/(\d+)m/);
+              if (match) {
+                minPlayTimeRequired = parseInt(match[1]);
+              }
+            }
+          }
+        }
+      }
+      
+      // CRITICAL: Check if player has met minimum play time requirement
+      const sessionStartTime = seatedEntry.seatedAt || seatedEntry.createdAt;
+      const minutesPlayed = Math.floor((Date.now() - new Date(sessionStartTime).getTime()) / (1000 * 60));
+      
+      console.log(`⏱️ [CALL TIME REQUEST] Player: ${player.name}, Minutes Played: ${minutesPlayed}, Min Required: ${minPlayTimeRequired}`);
+      
+      if (minPlayTimeRequired > 0 && minutesPlayed < minPlayTimeRequired) {
+        throw new BadRequestException(
+          `You must play for at least ${minPlayTimeRequired} minutes before requesting call time. Time played: ${minutesPlayed} minutes, Remaining: ${minPlayTimeRequired - minutesPlayed} minutes`
+        );
+      }
+
       // Check if buy-out request already exists
       const existingRequest = await this.dataSource.query(
         `SELECT * FROM buyout_requests WHERE player_id = $1 AND club_id = $2 AND status = 'pending'`,
@@ -289,17 +367,6 @@ export class PlayerPlaytimeService {
 
       if (existingRequest && existingRequest.length > 0) {
         throw new ConflictException('Call time already requested. Please wait for admin approval.');
-      }
-
-      // Get the actual table entity to get the table ID
-      let actualTableId = null;
-      if (seatedEntry.tableNumber) {
-        const table = await this.tablesRepo.findOne({
-          where: { club: { id: clubId }, tableNumber: seatedEntry.tableNumber },
-        });
-        if (table) {
-          actualTableId = table.id;
-        }
       }
 
       // Create buy-out request (FIXED parameter order)

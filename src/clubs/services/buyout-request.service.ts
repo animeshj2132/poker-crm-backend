@@ -99,7 +99,9 @@ export class BuyOutRequestService {
       );
       const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
-      // Create buy-out transaction (DEPOSIT) - adds money to player's balance
+      // CRITICAL: Create buy-out transaction (DEPOSIT) - returns table money to wallet
+      // This can result in NEGATIVE wallet balance if player used more credit than cash
+      // The cashier will see negative balance and collect money from player
       await queryRunner.query(
         `INSERT INTO financial_transactions 
          (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
@@ -109,9 +111,12 @@ export class BuyOutRequestService {
           playerId,
           playerName,
           amount,
-          `Table buy-out - Table ${requestData.table_number}${requestData.seat_number ? `, Seat ${requestData.seat_number}` : ''}`
+          `Table checkout - Table ${requestData.table_number}${requestData.seat_number ? `, Seat ${requestData.seat_number}` : ''} - Returning table balance to wallet`
         ]
       );
+      
+      console.log(`💰 [BUYOUT] Returned ₹${amount} from table to wallet for player ${playerName}`);
+      console.log(`💰 [BUYOUT] If balance is negative after this, player owes money to cashier`);
 
       // Unseat the player from the waitlist and get table info
       await queryRunner.query(
@@ -215,7 +220,8 @@ export class BuyOutRequestService {
         );
         const seatNumber = waitlistData && waitlistData.length > 0 ? waitlistData[0].requested_seat : null;
 
-        // Create settlement transaction (DEPOSIT) - adds money to player's balance
+        // CRITICAL: Create settlement transaction (DEPOSIT) - returns table balance to wallet
+        // Can result in negative wallet balance if player used more credit than cash
         await queryRunner.query(
           `INSERT INTO financial_transactions 
            (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
@@ -225,9 +231,11 @@ export class BuyOutRequestService {
             playerId,
             playerName,
             amount,
-            `Session settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''}`
+            `Call time settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} - Returning table balance to wallet`
           ]
         );
+        
+        console.log(`💰 [SETTLEMENT] Returned ₹${amount} from table to wallet for player ${playerName}`);
 
         // Unseat the player from the waitlist
         await queryRunner.query(

@@ -269,21 +269,45 @@ export class WaitlistSeatingService {
 
     const availableBalance = completedTransactions[0]?.total ? Number(completedTransactions[0].total) : 0;
     
+    // CRITICAL: Check if player has credit available (for credit-only players)
+    const creditEnabled = (player as any).creditEnabled || false;
+    const creditLimit = Number((player as any).creditLimit || 0);
+    
+    // Calculate credit already used from approved credit requests
+    let creditUsed = 0;
+    if (creditEnabled) {
+      const approvedRequests = await this.dataSource.query(
+        `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
+        [clubId, entry.playerId, 'Approved']
+      );
+      creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
+    }
+    const availableCredit = creditEnabled ? Math.max(0, creditLimit - creditUsed) : 0;
+    
     console.log(`🎯 [ASSIGN SEAT] Player ${entry.playerName} (${entry.playerId}) balance check:`);
-    console.log(`   Completed transactions query result:`, completedTransactions);
-    console.log(`   Available Balance: ₹${availableBalance}`);
+    console.log(`   Available Cash Balance: ₹${availableBalance}`);
+    console.log(`   Credit Enabled: ${creditEnabled}`);
+    console.log(`   Credit Limit: ₹${creditLimit}`);
+    console.log(`   Credit Used: ₹${creditUsed}`);
+    console.log(`   Available Credit: ₹${availableCredit}`);
     console.log(`   Min Buy-in: ₹${table.minBuyIn || 0}`);
 
-    // Check minimum buy-in requirement
+    // UPDATED LOGIC: Allow joining with either cash OR credit
     const minBuyIn = table.minBuyIn ? Number(table.minBuyIn) : 0;
-    if (minBuyIn > 0 && availableBalance < minBuyIn) {
-      throw new BadRequestException(
-        `Insufficient balance. Minimum buy-in: ₹${minBuyIn.toFixed(2)}, Your balance: ₹${availableBalance.toFixed(2)}`
-      );
+    
+    // Case 1: Has enough cash to meet minimum buy-in
+    if (availableBalance >= minBuyIn) {
+      console.log(`✅ [ASSIGN SEAT] Player has sufficient cash balance`);
     }
-
-    if (availableBalance <= 0) {
-      throw new BadRequestException('No balance available. Please add funds before joining table.');
+    // Case 2: Has credit available (can join with 0 cash and request credit after)
+    else if (availableCredit > 0) {
+      console.log(`✅ [ASSIGN SEAT] Player has no cash but has credit available - allowing to join with ₹0`);
+    }
+    // Case 3: Has neither cash nor credit - reject
+    else {
+      throw new BadRequestException(
+        `Cannot join table. You need either ₹${minBuyIn.toFixed(2)} cash or approved credit. Your balance: ₹${availableBalance.toFixed(2)}, Available credit: ₹${availableCredit.toFixed(2)}`
+      );
     }
 
     // Use database transaction to ensure atomicity
@@ -309,7 +333,7 @@ export class WaitlistSeatingService {
       const savedTable = await queryRunner.manager.save(table);
       const savedEntry = await queryRunner.manager.save(entry);
 
-      // CRITICAL: Create buy-in transaction for ENTIRE balance (player brings all money to table)
+      // CRITICAL: Create buy-in transaction for ENTIRE cash balance (player brings all money to table)
       if (availableBalance > 0) {
         const buyInTransaction = queryRunner.manager.create(FinancialTransaction, {
           club: { id: clubId } as any,
@@ -318,11 +342,29 @@ export class WaitlistSeatingService {
           amount: availableBalance,
           type: TransactionType.BUY_IN,
           status: TransactionStatus.COMPLETED,
-          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Full balance: ₹${availableBalance.toFixed(2)})`
+          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Cash: ₹${availableBalance.toFixed(2)})`
         });
 
         await queryRunner.manager.save(buyInTransaction);
-        console.log(`✅ [TABLE SEATING] Took entire balance ₹${availableBalance} from player ${player.name} for table`);
+        console.log(`✅ [TABLE SEATING] Took cash balance ₹${availableBalance} from player ${player.name} for table`);
+      }
+
+      // CRITICAL: Auto-apply approved credit when joining table
+      // If player has approved credit, automatically apply it to table balance
+      if (availableCredit > 0) {
+        const creditTransaction = queryRunner.manager.create(FinancialTransaction, {
+          club: { id: clubId } as any,
+          playerId: player.id,
+          playerName: player.name,
+          amount: availableCredit,
+          type: TransactionType.CREDIT,
+          status: TransactionStatus.COMPLETED,
+          notes: `Auto-applied approved credit on table join - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
+        });
+
+        await queryRunner.manager.save(creditTransaction);
+        console.log(`✅ [TABLE SEATING] Auto-applied approved credit ₹${availableCredit} for player ${player.name}`);
+        console.log(`   Table Balance: ₹${availableBalance} cash + ₹${availableCredit} credit = ₹${availableBalance + availableCredit} total`);
       }
 
       await queryRunner.commitTransaction();

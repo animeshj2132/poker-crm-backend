@@ -6610,11 +6610,11 @@ export class ClubsController {
       const gameType = noteParts[1] || table.tableType;
       const stakes = noteParts[2]?.replace('Stakes:', '').trim() || '';
       
-      // Update session parameters
-      const minPlayTime = dto.minPlayTime !== undefined ? dto.minPlayTime : (noteParts[3]?.match(/\d+/)?.[0] || '30');
-      const callTime = dto.callTime !== undefined ? dto.callTime : (noteParts[4]?.match(/\d+/)?.[0] || '5');
-      const cashOutWindow = dto.cashOutWindow !== undefined ? dto.cashOutWindow : (noteParts[5]?.match(/\d+/)?.[0] || '10');
-      const sessionTimeout = dto.sessionTimeout !== undefined ? dto.sessionTimeout : (noteParts[6]?.match(/\d+/)?.[0] || '120');
+      // Update session parameters - NO hardcoded defaults, only from DTO or existing notes
+      const minPlayTime = dto.minPlayTime !== undefined ? dto.minPlayTime : (noteParts[3]?.match(/\d+/)?.[0] || '0');
+      const callTime = dto.callTime !== undefined ? dto.callTime : (noteParts[4]?.match(/\d+/)?.[0] || '2');
+      const cashOutWindow = dto.cashOutWindow !== undefined ? dto.cashOutWindow : (noteParts[5]?.match(/\d+/)?.[0] || '5');
+      const sessionTimeout = dto.sessionTimeout !== undefined ? dto.sessionTimeout : (noteParts[6]?.match(/\d+/)?.[0] || '60');
 
       // Rebuild notes with updated parameters
       const updatedNotes = `${tableName} | ${gameType} | Stakes: ${stakes} | Min Play: ${minPlayTime}m | Call: ${callTime}m | Cash-out: ${cashOutWindow}m | Timeout: ${sessionTimeout}m`;
