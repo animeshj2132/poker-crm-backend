@@ -84,6 +84,7 @@ import { RosterManagementService } from './services/roster-management.service';
 import { CreateRosterTemplateDto } from './dto/create-roster-template.dto';
 import { UpdateRosterTemplateDto } from './dto/update-roster-template.dto';
 import { GenerateRosterDto } from './dto/generate-roster.dto';
+import { PlayerFieldUpdateService } from './services/player-field-update.service';
 import { PayrollService } from './services/payroll.service';
 import { ProcessSalaryDto } from './dto/process-salary.dto';
 import { ProcessDealerTipsDto } from './dto/process-dealer-tips.dto';
@@ -155,6 +156,7 @@ export class ClubsController {
     private readonly attendanceTrackingService: AttendanceTrackingService,
     private readonly leaveManagementService: LeaveManagementService,
     private readonly rosterManagementService: RosterManagementService,
+    private readonly playerFieldUpdateService: PlayerFieldUpdateService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>,
@@ -8713,8 +8715,8 @@ export class ClubsController {
         name: player.name,
         email: player.email,
         phoneNumber: player.phoneNumber,
+        panCard: (player as any).panCard || player.panCard || null,
         playerId: player.playerId,
-        panCard: player.panCard,
         affiliateCode: player.affiliate?.code || null,
         status: player.status,
         kycStatus: player.kycStatus || 'approved', // ✅ Include KYC status
@@ -9189,8 +9191,11 @@ export class ClubsController {
         name: player.name,
         email: player.email,
         phoneNumber: player.phoneNumber,
+        panCard: (player as any).panCard || (player as any).pan_card || null,
         playerId: player.playerId,
         status: player.status,
+        kycStatus: (player as any).kycStatus || 'pending',
+        kycDocuments: (player as any).kycDocuments || [],
         totalSpent: Number(player.totalSpent) || 0,
         totalCommission: Number(player.totalCommission) || 0,
         affiliate: player.affiliate ? {
@@ -9906,6 +9911,128 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get suspended players'));
+    }
+  }
+
+  /**
+   * Get pending player field update requests
+   * GET /api/clubs/:id/player-field-updates/pending
+   */
+  @Get(':id/player-field-updates/pending')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async getPendingFieldUpdateRequests(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string
+  ) {
+    try {
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only view field update requests for your assigned club');
+      }
+
+      return await this.playerFieldUpdateService.getPendingRequests(clubId);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to get field update requests'));
+    }
+  }
+
+  /**
+   * Approve a player field update request
+   * POST /api/clubs/:id/player-field-updates/:requestId/approve
+   */
+  @Post(':id/player-field-updates/:requestId/approve')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async approveFieldUpdateRequest(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string
+  ) {
+    try {
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only approve field update requests for your assigned club');
+      }
+
+      const reviewerId = userId || tenantId || 'system';
+      return await this.playerFieldUpdateService.approveRequest(requestId, reviewerId);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to approve field update request'));
+    }
+  }
+
+  /**
+   * Reject a player field update request
+   * POST /api/clubs/:id/player-field-updates/:requestId/reject
+   */
+  @Post(':id/player-field-updates/:requestId/reject')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async rejectFieldUpdateRequest(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() body: { reason: string },
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-club-id') headerClubId?: string,
+    @Headers('x-user-id') userId?: string
+  ) {
+    try {
+      if (!body.reason || !body.reason.trim()) {
+        throw new BadRequestException('Rejection reason is required');
+      }
+
+      // Validate club exists
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      // For Super Admin, validate tenant
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+      }
+
+      // For club-scoped users, validate club access
+      if (headerClubId && headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only reject field update requests for your assigned club');
+      }
+
+      const reviewerId = userId || tenantId || 'system';
+      return await this.playerFieldUpdateService.rejectRequest(requestId, reviewerId, body.reason.trim());
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException((e instanceof Error ? e.message : 'Failed to reject field update request'));
     }
   }
 

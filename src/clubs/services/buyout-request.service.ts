@@ -99,24 +99,119 @@ export class BuyOutRequestService {
       );
       const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
-      // CRITICAL: Create buy-out transaction (DEPOSIT) - returns table money to wallet
-      // This can result in NEGATIVE wallet balance if player used more credit than cash
-      // The cashier will see negative balance and collect money from player
-      await queryRunner.query(
-        `INSERT INTO financial_transactions 
-         (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
-        [
-          clubId,
-          playerId,
-          playerName,
-          amount,
-          `Table checkout - Table ${requestData.table_number}${requestData.seat_number ? `, Seat ${requestData.seat_number}` : ''} - Returning table balance to wallet`
-        ]
+      // CRITICAL: Calculate credit used while at table
+      // Get all CREDIT transactions while player was seated
+      const creditTransactions = await queryRunner.query(
+        `SELECT SUM(amount) as total FROM financial_transactions 
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(type) = 'CREDIT' AND UPPER(status) = 'COMPLETED'
+         AND created_at >= (
+           SELECT seated_at FROM waitlist_entries 
+           WHERE player_id = $2 AND club_id = $1 AND status = 'SEATED' 
+           LIMIT 1
+         )`,
+        [clubId, playerId]
       );
+      const creditUsed = creditTransactions[0]?.total ? Number(creditTransactions[0].total) : 0;
       
-      console.log(`💰 [BUYOUT] Returned ₹${amount} from table to wallet for player ${playerName}`);
-      console.log(`💰 [BUYOUT] If balance is negative after this, player owes money to cashier`);
+      console.log(`💰 [BUYOUT] Player ${playerName}:`);
+      console.log(`   Table cashout amount: ₹${amount}`);
+      console.log(`   Credit used at table: ₹${creditUsed}`);
+
+      // CRITICAL LOGIC: Credit Payback
+      // If credit was used, it must be paid back first from the cashout amount
+      if (creditUsed > 0) {
+        if (amount >= creditUsed) {
+          // Case 1: Player has enough to pay back credit
+          const remainingAmount = amount - creditUsed;
+          
+          console.log(`   ✅ Player has enough to pay back credit`);
+          console.log(`   Paying back credit: ₹${creditUsed}`);
+          console.log(`   Remaining for wallet: ₹${remainingAmount}`);
+          
+          // Return table money to wallet (full amount)
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+            [
+              clubId,
+              playerId,
+              playerName,
+              amount,
+              `Table checkout - ₹${amount} (₹${creditUsed} credit payback + ₹${remainingAmount} profit)`
+            ]
+          );
+          
+          // Create DEBIT transaction to mark credit as paid back
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, NOW(), NOW())`,
+            [
+              clubId,
+              playerId,
+              playerName,
+              creditUsed,
+              `Credit payback from table cashout - ₹${creditUsed} credit paid back`
+            ]
+          );
+          
+          console.log(`   Final wallet balance: ₹${remainingAmount} (positive)`);
+        } else {
+          // Case 2: Player doesn't have enough to pay back credit - owes money
+          const shortfall = creditUsed - amount;
+          
+          console.log(`   ⚠️ Player doesn't have enough to pay back credit`);
+          console.log(`   Shortfall: ₹${shortfall}`);
+          console.log(`   Player owes club: ₹${shortfall}`);
+          
+          // Return what they have from table
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+            [
+              clubId,
+              playerId,
+              playerName,
+              amount,
+              `Table checkout - ₹${amount} (partial credit payback, still owes ₹${shortfall})`
+            ]
+          );
+          
+          // Create DEBIT for the partial payback
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, NOW(), NOW())`,
+            [
+              clubId,
+              playerId,
+              playerName,
+              amount,
+              `Partial credit payback - ₹${amount} of ₹${creditUsed} credit paid back`
+            ]
+          );
+          
+          console.log(`   Final wallet balance: -₹${shortfall} (NEGATIVE - cashier must collect)`);
+        }
+      } else {
+        // No credit used, just return cash to wallet
+        await queryRunner.query(
+          `INSERT INTO financial_transactions 
+           (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+          [
+            clubId,
+            playerId,
+            playerName,
+            amount,
+            `Table checkout - ₹${amount} (no credit used)`
+          ]
+        );
+        
+        console.log(`   No credit used, wallet gets full amount: ₹${amount}`);
+      }
 
       // Unseat the player from the waitlist and get table info
       await queryRunner.query(

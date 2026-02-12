@@ -396,10 +396,14 @@ export class AuthService {
           name: player.name.trim(),
           email: player.email.trim().toLowerCase(),
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
+          panCard: (player as any).panCard || (player as any).pan_card || null,
+          playerId: player.playerId ? player.playerId.trim() : null,
           nickname: player.playerId ? player.playerId.trim() : null,
           status: player.status || 'Active',
           kycStatus: playerKycStatus || 'pending', // Use actual kycStatus from database
           kycApproved: playerKycStatus === 'approved' || playerKycStatus === 'verified',
+          kycDocuments: (player as any).kycDocuments || null,
+          createdAt: player.createdAt,
           mustResetPassword: (player as any).mustResetPassword || false // For first-time login detection
         },
         club: {
@@ -867,6 +871,8 @@ export class AuthService {
           name: player.name.trim(),
           email: player.email.trim().toLowerCase(),
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
+          panCard: (player as any).panCard || (player as any).pan_card || null,
+          playerId: player.playerId ? player.playerId.trim() : null,
           nickname: player.playerId ? player.playerId.trim() : null,
           status: player.status || 'Active',
           kycStatus: player.kycStatus || (player as any).kycStatus || 'pending',
@@ -978,7 +984,8 @@ export class AuthService {
   }
 
   /**
-   * Update player profile
+   * Update player profile - Now creates update requests instead of direct updates
+   * Players CANNOT directly update their profile - all changes must be approved by staff
    */
   async updatePlayerProfile(
     playerId: string,
@@ -1016,84 +1023,11 @@ export class AuthService {
         throw new ForbiddenException('Account is suspended. Cannot update profile.');
       }
 
-      // Update name if provided
-      if (firstName || lastName) {
-        const currentName = player.name.split(' ');
-        const newFirstName = firstName?.trim() || currentName[0] || '';
-        const newLastName = lastName?.trim() || currentName.slice(1).join(' ') || '';
-        
-        if (newFirstName.length < 2) {
-          throw new BadRequestException('First name must be at least 2 characters');
-        }
-        if (newFirstName.length > 100) {
-          throw new BadRequestException('First name cannot exceed 100 characters');
-        }
-        if (newLastName.length < 2) {
-          throw new BadRequestException('Last name must be at least 2 characters');
-        }
-        if (newLastName.length > 100) {
-          throw new BadRequestException('Last name cannot exceed 100 characters');
-        }
-        if (!/^[a-zA-Z\s\-'\.]+$/.test(newFirstName)) {
-          throw new BadRequestException('First name contains invalid characters');
-        }
-        if (!/^[a-zA-Z\s\-'\.]+$/.test(newLastName)) {
-          throw new BadRequestException('Last name contains invalid characters');
-        }
-
-        player.name = `${newFirstName} ${newLastName}`.trim();
-      }
-
-      // Update phone number if provided
-      if (phoneNumber !== undefined) {
-        if (phoneNumber === null || phoneNumber === '') {
-          player.phoneNumber = null;
-        } else {
-          if (typeof phoneNumber !== 'string') {
-            throw new BadRequestException('Phone number must be a string');
-          }
-          const trimmedPhone = phoneNumber.trim();
-          if (trimmedPhone.length < 10) {
-            throw new BadRequestException('Phone number must be at least 10 characters');
-          }
-          if (trimmedPhone.length > 20) {
-            throw new BadRequestException('Phone number cannot exceed 20 characters');
-          }
-          if (!/^[\+]?[0-9\s\-\(\)]+$/.test(trimmedPhone)) {
-            throw new BadRequestException('Phone number contains invalid characters');
-          }
-          player.phoneNumber = trimmedPhone;
-        }
-      }
-
-      // Update nickname if provided
-      if (nickname !== undefined) {
-        if (nickname === null || nickname === '') {
-          player.playerId = null;
-        } else {
-          if (typeof nickname !== 'string') {
-            throw new BadRequestException('Nickname must be a string');
-          }
-          const trimmedNickname = nickname.trim();
-          if (trimmedNickname.length > 50) {
-            throw new BadRequestException('Nickname cannot exceed 50 characters');
-          }
-          player.playerId = trimmedNickname;
-        }
-      }
-
-      const savedPlayer = await this.playersRepo.save(player);
-
-      return {
-        player: {
-          id: savedPlayer.id,
-          name: savedPlayer.name,
-          email: savedPlayer.email,
-          phoneNumber: savedPlayer.phoneNumber,
-          nickname: savedPlayer.playerId,
-          status: savedPlayer.status
-        }
-      };
+      // IMPORTANT: Players cannot directly update their profile
+      // All profile changes must be submitted as update requests for staff approval
+      throw new BadRequestException(
+        'Direct profile updates are not allowed. Please submit your changes through the profile update request system. All changes require staff approval.'
+      );
     } catch (err) {
       console.error('Update player profile error:', err);
       if (err instanceof BadRequestException || err instanceof NotFoundException || err instanceof ForbiddenException) {

@@ -71,6 +71,8 @@ import { LeaveApplication } from './entities/leave-application.entity';
 import { LeaveManagementService } from './services/leave-management.service';
 import { RosterTemplate } from './entities/roster-template.entity';
 import { RosterManagementService } from './services/roster-management.service';
+import { PlayerFieldUpdateRequest } from './entities/player-field-update-request.entity';
+import { PlayerFieldUpdateService } from './services/player-field-update.service';
 
 @Module({
   imports: [
@@ -114,7 +116,8 @@ import { RosterManagementService } from './services/roster-management.service';
       AttendanceTracking,
       LeavePolicy,
       LeaveApplication,
-      RosterTemplate
+      RosterTemplate,
+      PlayerFieldUpdateRequest
     ]),
     UsersModule,
     StorageModule,
@@ -147,7 +150,8 @@ import { RosterManagementService } from './services/roster-management.service';
     BuyInRequestService,
     AttendanceTrackingService,
     LeaveManagementService,
-    RosterManagementService
+    RosterManagementService,
+    PlayerFieldUpdateService
   ],
   controllers: [ClubsController],
   exports: [
@@ -177,7 +181,8 @@ import { RosterManagementService } from './services/roster-management.service';
     BuyInRequestService,
     AttendanceTrackingService,
     LeaveManagementService,
-    RosterManagementService
+    RosterManagementService,
+    PlayerFieldUpdateService
   ]
 })
 export class ClubsModule {}
