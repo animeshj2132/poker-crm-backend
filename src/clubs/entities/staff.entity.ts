@@ -74,6 +74,12 @@ export class Staff {
   @Column({ type: 'varchar', nullable: true, name: 'game_type' })
   gameType!: string | null;
 
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0, name: 'base_salary' })
+  baseSalary!: number;
+
+  @Column({ type: 'varchar', default: 'Monthly', name: 'salary_type' })
+  salaryType!: string;
+
   @Column({ type: 'text', nullable: true, name: 'suspended_reason' })
   suspendedReason!: string | null;
 

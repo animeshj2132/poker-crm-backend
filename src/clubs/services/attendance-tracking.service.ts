@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import { Repository, Between, LessThanOrEqual, MoreThanOrEqual, In } from 'typeorm';
 import { AttendanceTracking, AttendanceStatus } from '../entities/attendance-tracking.entity';
-import { Staff } from '../entities/staff.entity';
+import { Staff, StaffStatus } from '../entities/staff.entity';
 import { LeaveApplication, LeaveStatus } from '../entities/leave-application.entity';
+import { Shift } from '../entities/shift.entity';
 import { CreateAttendanceDto } from '../dto/create-attendance.dto';
 
 @Injectable()
@@ -15,6 +16,8 @@ export class AttendanceTrackingService {
     private staffRepo: Repository<Staff>,
     @InjectRepository(LeaveApplication)
     private leaveApplicationRepo: Repository<LeaveApplication>,
+    @InjectRepository(Shift)
+    private shiftRepo: Repository<Shift>,
   ) {}
 
   async getAttendanceRecords(
@@ -171,6 +174,179 @@ export class AttendanceTrackingService {
       totalHours: saved.totalHours ? Number(saved.totalHours) : null,
       status: saved.status,
       notes: saved.notes,
+    };
+  }
+
+  async getDailyRoster(clubId: string, date: string) {
+    const targetDate = new Date(date);
+
+    // Get all active staff
+    const allStaff = await this.staffRepo.find({
+      where: { club: { id: clubId }, status: StaffStatus.ACTIVE },
+      order: { name: 'ASC' },
+    });
+
+    // Get shifts for this date
+    const shifts = await this.shiftRepo.find({
+      where: { clubId, shiftDate: targetDate },
+      relations: ['staff'],
+    });
+    const shiftMap = new Map<string, Shift>();
+    shifts.forEach(s => shiftMap.set(s.staffId, s));
+
+    // Get existing attendance for this date
+    const existingAttendance = await this.attendanceRepo.find({
+      where: { club: { id: clubId }, date: targetDate },
+      relations: ['staff'],
+    });
+    const attendanceMap = new Map<string, AttendanceTracking>();
+    existingAttendance.forEach(a => attendanceMap.set(a.staff.id, a));
+
+    // Get approved leaves covering this date
+    const approvedLeaves = await this.leaveApplicationRepo.find({
+      where: {
+        status: LeaveStatus.APPROVED,
+        startDate: LessThanOrEqual(targetDate),
+        endDate: MoreThanOrEqual(targetDate),
+      },
+    });
+    const onLeaveStaffIds = new Set(approvedLeaves.map(l => l.staffId));
+
+    return allStaff.map(staff => {
+      const shift = shiftMap.get(staff.id);
+      const attendance = attendanceMap.get(staff.id);
+      const isOnLeave = onLeaveStaffIds.has(staff.id);
+
+      return {
+        staffId: staff.id,
+        staffName: staff.name,
+        staffRole: staff.role,
+        employeeId: staff.employeeId,
+        hasShift: !!shift,
+        isOffDay: shift?.isOffDay || false,
+        shiftStartTime: shift?.shiftStartTime || null,
+        shiftEndTime: shift?.shiftEndTime || null,
+        alreadyLogged: !!attendance,
+        attendanceId: attendance?.id || null,
+        attendanceStatus: attendance?.status || null,
+        loginTime: attendance?.loginTime || null,
+        logoutTime: attendance?.logoutTime || null,
+        isOnLeave,
+      };
+    });
+  }
+
+  async bulkCreateAttendance(clubId: string, entries: Array<{
+    staffId: string;
+    date: string;
+    loginTime?: string;
+    logoutTime?: string;
+    useShiftTimes?: boolean;
+  }>, userId: string) {
+    const results: Array<{ staffId: string; success: boolean; message: string }> = [];
+    const targetDate = new Date(entries[0]?.date || new Date().toISOString().split('T')[0]);
+
+    // Pre-fetch all shifts for this date
+    const staffIds = entries.map(e => e.staffId);
+    const shifts = await this.shiftRepo.find({
+      where: { clubId, shiftDate: targetDate, staffId: In(staffIds) },
+    });
+    const shiftMap = new Map<string, Shift>();
+    shifts.forEach(s => shiftMap.set(s.staffId, s));
+
+    // Pre-fetch existing attendance
+    const existingAttendance = await this.attendanceRepo.find({
+      where: { club: { id: clubId }, date: targetDate },
+      relations: ['staff'],
+    });
+    const attendanceStaffIds = new Set(existingAttendance.map(a => a.staff.id));
+
+    // Pre-fetch approved leaves
+    const approvedLeaves = await this.leaveApplicationRepo.find({
+      where: {
+        status: LeaveStatus.APPROVED,
+        startDate: LessThanOrEqual(targetDate),
+        endDate: MoreThanOrEqual(targetDate),
+      },
+    });
+    const onLeaveStaffIds = new Set(approvedLeaves.map(l => l.staffId));
+
+    const recordsToCreate: AttendanceTracking[] = [];
+
+    for (const entry of entries) {
+      const { staffId, date } = entry;
+
+      // Skip already logged
+      if (attendanceStaffIds.has(staffId)) {
+        results.push({ staffId, success: false, message: 'Already has attendance record' });
+        continue;
+      }
+
+      // Skip on leave
+      if (onLeaveStaffIds.has(staffId)) {
+        results.push({ staffId, success: false, message: 'Staff is on approved leave' });
+        continue;
+      }
+
+      // Determine login/logout times
+      let loginTime: Date;
+      let logoutTime: Date;
+
+      if (entry.useShiftTimes || (!entry.loginTime && !entry.logoutTime)) {
+        const shift = shiftMap.get(staffId);
+        if (!shift) {
+          results.push({ staffId, success: false, message: 'No shift found and no custom times provided' });
+          continue;
+        }
+        if (shift.isOffDay) {
+          results.push({ staffId, success: false, message: 'Staff has an off day' });
+          continue;
+        }
+        loginTime = new Date(shift.shiftStartTime);
+        logoutTime = new Date(shift.shiftEndTime);
+      } else {
+        loginTime = new Date(entry.loginTime!);
+        logoutTime = new Date(entry.logoutTime!);
+      }
+
+      if (logoutTime.getTime() <= loginTime.getTime()) {
+        results.push({ staffId, success: false, message: 'Logout time must be after login time' });
+        continue;
+      }
+
+      const diffMs = logoutTime.getTime() - loginTime.getTime();
+      const totalHours = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+
+      const staff = await this.staffRepo.findOne({ where: { id: staffId, club: { id: clubId } } });
+      if (!staff) {
+        results.push({ staffId, success: false, message: 'Staff not found' });
+        continue;
+      }
+
+      const record = this.attendanceRepo.create({
+        club: { id: clubId } as any,
+        staff,
+        loginTime,
+        logoutTime,
+        date: targetDate,
+        totalHours,
+        status: AttendanceStatus.COMPLETED,
+        notes: null,
+      });
+
+      recordsToCreate.push(record);
+      results.push({ staffId, success: true, message: 'Attendance created' });
+    }
+
+    if (recordsToCreate.length > 0) {
+      await this.attendanceRepo.save(recordsToCreate);
+    }
+
+    return {
+      total: entries.length,
+      created: recordsToCreate.length,
+      skipped: entries.length - recordsToCreate.length,
+      results,
     };
   }
 }

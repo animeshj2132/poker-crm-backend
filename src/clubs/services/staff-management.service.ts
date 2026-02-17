@@ -87,6 +87,8 @@ export class StaffManagementService {
     panDocumentUrl?: string;
     customRoleName?: string;
     gameType?: string;
+    baseSalary?: number;
+    salaryType?: string;
   }, createdBy: string) {
     // Validate KYC documents - both are required
     if (!data.aadharDocumentUrl) {
@@ -154,6 +156,8 @@ export class StaffManagementService {
       affiliateCode,
       customRoleName: data.customRoleName || null,
       gameType: data.gameType || null,
+      baseSalary: data.baseSalary || 0,
+      salaryType: data.salaryType || 'Monthly',
       status: StaffStatus.ACTIVE,
       club: { id: clubId } as any,
     });
@@ -345,6 +349,8 @@ export class StaffManagementService {
     aadharDocumentUrl: string;
     panDocumentUrl: string;
     customRoleName: string;
+    baseSalary: number;
+    salaryType: string;
   }>) {
     const staff = await this.getStaffEntity(clubId, staffId);
 
@@ -470,6 +476,20 @@ export class StaffManagementService {
       message: 'Password reset successfully',
       tempPassword, // Return to admin to share with staff
     };
+  }
+
+  async updateStaffSalary(clubId: string, staffId: string, baseSalary: number, salaryType: string) {
+    const staff = await this.staffRepo.findOne({
+      where: { id: staffId, club: { id: clubId } },
+    });
+
+    if (!staff) {
+      throw new NotFoundException('Staff member not found');
+    }
+
+    staff.baseSalary = baseSalary;
+    staff.salaryType = salaryType || staff.salaryType;
+    return await this.staffRepo.save(staff);
   }
 }
 

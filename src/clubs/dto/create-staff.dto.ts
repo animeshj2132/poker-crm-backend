@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsEnum, IsOptional, MaxLength, MinLength, IsEmail, ValidateIf } from 'class-validator';
+import { IsNotEmpty, IsString, IsEnum, IsOptional, MaxLength, MinLength, IsEmail, IsNumber, Min } from 'class-validator';
 import { StaffRole } from '../entities/staff.entity';
 
 export class CreateStaffDto {
@@ -38,10 +38,19 @@ export class CreateStaffDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  customRoleName?: string; // Required when role is STAFF
+  customRoleName?: string;
 
   @IsOptional()
   @IsString()
-  gameType?: string; // 'poker' or 'rummy' - for clubs with both games enabled
+  gameType?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  baseSalary?: number;
+
+  @IsOptional()
+  @IsString()
+  salaryType?: string; // 'Monthly' or 'Weekly'
 }
 

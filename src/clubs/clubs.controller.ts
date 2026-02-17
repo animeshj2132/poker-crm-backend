@@ -1708,6 +1708,32 @@ export class ClubsController {
   }
 
   /**
+   * Update staff salary
+   * PUT /api/clubs/:clubId/staff-management/:staffId/salary
+   */
+  @Put(':clubId/staff-management/:staffId/salary')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @UseGuards(RolesGuard)
+  async updateStaffSalary(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('staffId', new ParseUUIDPipe()) staffId: string,
+    @Body() body: { baseSalary: number; salaryType?: string },
+  ) {
+    try {
+      const staff = await this.staffManagementService.updateStaffSalary(
+        clubId,
+        staffId,
+        body.baseSalary,
+        body.salaryType || 'Monthly',
+      );
+      return { success: true, staff, message: 'Staff salary updated successfully' };
+    } catch (error) {
+      console.error('Error in updateStaffSalary:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Suspend staff member
    * POST /api/clubs/:clubId/staff-management/:staffId/suspend
    */
@@ -16419,6 +16445,61 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to create attendance record: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get daily roster for attendance
+   * GET /api/clubs/:id/attendance/daily-roster?date=YYYY-MM-DD
+   */
+  @Get(':id/attendance/daily-roster')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async getDailyRoster(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('date') date: string,
+  ) {
+    try {
+      const effectiveClubId = headerClubId?.trim() || clubId;
+      if (!date) {
+        date = new Date().toISOString().split('T')[0];
+      }
+      return await this.attendanceTrackingService.getDailyRoster(effectiveClubId, date);
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to get daily roster: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Bulk create attendance records
+   * POST /api/clubs/:id/attendance/bulk
+   */
+  @Post(':id/attendance/bulk')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @UseGuards(RolesGuard)
+  async bulkCreateAttendance(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { entries: Array<{ staffId: string; date: string; loginTime?: string; logoutTime?: string; useShiftTimes?: boolean }> },
+  ) {
+    try {
+      const effectiveClubId = headerClubId?.trim() || clubId;
+      if (!body.entries || !Array.isArray(body.entries) || body.entries.length === 0) {
+        throw new BadRequestException('At least one attendance entry is required');
+      }
+      return await this.attendanceTrackingService.bulkCreateAttendance(effectiveClubId, body.entries, userId || '');
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to bulk create attendance: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 
