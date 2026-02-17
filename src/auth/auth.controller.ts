@@ -618,6 +618,61 @@ export class AuthController {
       body.requestedValue || '',
     );
   }
+
+  /**
+   * Player requests a club buy-in while seated at a table.
+   * POST /api/auth/player/table-buyin
+   * Creates a buy-in REQUEST that goes to staff (cashier/admin) for approval.
+   * On approval, player's TABLE balance increases (wallet stays 0).
+   */
+  @Post('player/table-buyin')
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async requestTableBuyIn(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+    @Body() body?: { amount: number | string; notes?: string }
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!body || body.amount === undefined || body.amount === null) {
+      throw new BadRequestException('Amount is required');
+    }
+
+    let amount: number;
+    if (typeof body.amount === 'string') {
+      amount = parseFloat(body.amount);
+    } else {
+      amount = Number(body.amount);
+    }
+
+    if (isNaN(amount) || amount <= 0) {
+      throw new BadRequestException('Amount must be a positive number');
+    }
+
+    return this.authService.playerTableBuyInRequest(playerId.trim(), clubId.trim(), amount, body.notes);
+  }
+
+  /**
+   * Get player's buy-in requests (for history/status tracking)
+   * GET /api/auth/player/buyin-requests
+   */
+  @Get('player/buyin-requests')
+  async getPlayerBuyInRequests(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    return this.authService.getPlayerBuyInRequests(playerId.trim(), clubId.trim());
+  }
 }
 
 

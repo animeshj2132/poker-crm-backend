@@ -77,6 +77,8 @@ export class ClubsService {
       videoUrl?: string;
       skinColor?: string;
       gradient?: string;
+      pokerEnabled?: boolean;
+      rummyEnabled?: boolean;
     }
   ) {
     // Validate inputs
@@ -111,6 +113,8 @@ export class ClubsService {
       videoUrl: data.videoUrl?.trim() || null,
       skinColor: data.skinColor?.trim() || null,
       gradient: data.gradient?.trim() || null,
+      pokerEnabled: data.pokerEnabled !== undefined ? data.pokerEnabled : true,
+      rummyEnabled: data.rummyEnabled !== undefined ? data.rummyEnabled : false,
       tenant,
       code
     });

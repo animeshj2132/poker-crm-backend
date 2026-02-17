@@ -4,6 +4,8 @@ import { Repository, DataSource } from 'typeorm';
 import { BuyOutRequest, BuyOutRequestStatus } from '../entities/buyout-request.entity';
 import { Player } from '../entities/player.entity';
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
+import { RakeCollection } from '../entities/rake-collection.entity';
+import { Table } from '../entities/table.entity';
 import { ApproveBuyOutDto } from '../dto/approve-buyout.dto';
 import { RejectBuyOutDto } from '../dto/reject-buyout.dto';
 
@@ -99,6 +101,16 @@ export class BuyOutRequestService {
       );
       const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
+      // Determine game type from the table
+      let gameType = 'poker';
+      if (requestData.table_number) {
+        const tableData = await queryRunner.query(
+          `SELECT table_type FROM tables WHERE table_number = $1 AND club_id = $2 LIMIT 1`,
+          [requestData.table_number, clubId]
+        );
+        if (tableData?.[0]?.table_type === 'RUMMY') gameType = 'rummy';
+      }
+
       // CRITICAL: Calculate credit used while at table
       // Get all CREDIT transactions while player was seated
       const creditTransactions = await queryRunner.query(
@@ -131,13 +143,14 @@ export class BuyOutRequestService {
           // Return table money to wallet (full amount)
           await queryRunner.query(
             `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
             [
               clubId,
               playerId,
               playerName,
               amount,
+              gameType,
               `Table checkout - ₹${amount} (₹${creditUsed} credit payback + ₹${remainingAmount} profit)`
             ]
           );
@@ -145,13 +158,14 @@ export class BuyOutRequestService {
           // Create DEBIT transaction to mark credit as paid back
           await queryRunner.query(
             `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, NOW(), NOW())`,
+             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
             [
               clubId,
               playerId,
               playerName,
               creditUsed,
+              gameType,
               `Credit payback from table cashout - ₹${creditUsed} credit paid back`
             ]
           );
@@ -168,13 +182,14 @@ export class BuyOutRequestService {
           // Return what they have from table
           await queryRunner.query(
             `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
             [
               clubId,
               playerId,
               playerName,
               amount,
+              gameType,
               `Table checkout - ₹${amount} (partial credit payback, still owes ₹${shortfall})`
             ]
           );
@@ -182,13 +197,14 @@ export class BuyOutRequestService {
           // Create DEBIT for the partial payback
           await queryRunner.query(
             `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, NOW(), NOW())`,
+             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
             [
               clubId,
               playerId,
               playerName,
               amount,
+              gameType,
               `Partial credit payback - ₹${amount} of ₹${creditUsed} credit paid back`
             ]
           );
@@ -199,13 +215,14 @@ export class BuyOutRequestService {
         // No credit used, just return cash to wallet
         await queryRunner.query(
           `INSERT INTO financial_transactions 
-           (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+           (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
           [
             clubId,
             playerId,
             playerName,
             amount,
+            gameType,
             `Table checkout - ₹${amount} (no credit used)`
           ]
         );
@@ -285,6 +302,8 @@ export class BuyOutRequestService {
     clubId: string,
     tableId: string,
     settlements: Array<{ playerId: string; amount: number }>,
+    rakeAmount?: number,
+    collectedByUserId?: string,
   ) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -293,6 +312,14 @@ export class BuyOutRequestService {
     try {
       const results = [];
 
+      // Get table info once (including type for game_type tagging)
+      const tableData = await queryRunner.query(
+        `SELECT id, table_number, table_type FROM tables WHERE id = $1 AND club_id = $2`,
+        [tableId, clubId]
+      );
+      const tableNumber = tableData && tableData.length > 0 ? tableData[0].table_number : null;
+      const settlementGameType = tableData?.[0]?.table_type === 'RUMMY' ? 'rummy' : 'poker';
+
       for (const { playerId, amount } of settlements) {
         // Get player name
         const playerData = await queryRunner.query(
@@ -300,13 +327,6 @@ export class BuyOutRequestService {
           [playerId]
         );
         const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
-
-        // Get table info
-        const tableData = await queryRunner.query(
-          `SELECT table_number FROM tables WHERE id = $1`,
-          [tableId]
-        );
-        const tableNumber = tableData && tableData.length > 0 ? tableData[0].table_number : null;
 
         // Get waitlist entry info
         const waitlistData = await queryRunner.query(
@@ -319,13 +339,14 @@ export class BuyOutRequestService {
         // Can result in negative wallet balance if player used more credit than cash
         await queryRunner.query(
           `INSERT INTO financial_transactions 
-           (club_id, player_id, player_name, amount, type, status, notes, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, NOW(), NOW())`,
+           (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
           [
             clubId,
             playerId,
             playerName,
             amount,
+            settlementGameType,
             `Call time settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} - Returning table balance to wallet`
           ]
         );
@@ -343,6 +364,40 @@ export class BuyOutRequestService {
         results.push({ playerId, playerName, amount, settled: true });
       }
 
+      // Record rake collection if provided
+      let rakeRecord = null;
+      if (rakeAmount && rakeAmount > 0 && tableNumber) {
+        // Get the user who collected (for audit trail)
+        let collectedByName = 'System';
+        if (collectedByUserId) {
+          const userData = await queryRunner.query(
+            `SELECT display_name, email FROM users_v1 WHERE id = $1`,
+            [collectedByUserId]
+          );
+          if (userData && userData.length > 0) {
+            collectedByName = userData[0].display_name || userData[0].email || 'System';
+          }
+        }
+
+        await queryRunner.query(
+          `INSERT INTO rake_collections
+           (club_id, table_id, table_number, session_date, total_rake_amount, collected_by, collected_by_name, collected_at, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, NOW(), $7, NOW(), NOW())`,
+          [
+            clubId,
+            tableId,
+            tableNumber,
+            rakeAmount,
+            collectedByUserId || null,
+            collectedByName,
+            `Auto-recorded rake on session end - Table ${tableNumber} - ${settlements.length} players settled`,
+          ]
+        );
+
+        console.log(`🎰 [RAKE] Recorded rake of ₹${rakeAmount} for Table ${tableNumber}`);
+        rakeRecord = { tableNumber, rakeAmount, collectedByName };
+      }
+
       // Reset table's current seats to 0
       await queryRunner.query(
         `UPDATE tables 
@@ -352,7 +407,7 @@ export class BuyOutRequestService {
       );
 
       await queryRunner.commitTransaction();
-      return { success: true, settlements: results };
+      return { success: true, settlements: results, rake: rakeRecord };
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;

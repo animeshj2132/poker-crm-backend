@@ -35,6 +35,13 @@ export class DealerTips {
   @JoinColumn({ name: 'dealer_id' })
   dealer!: Staff;
 
+  @Column({ type: 'uuid', name: 'manager_id', nullable: true })
+  managerId?: string;
+
+  @ManyToOne(() => Staff, { nullable: true })
+  @JoinColumn({ name: 'manager_id' })
+  manager?: Staff;
+
   @Column({ type: 'date', name: 'tip_date' })
   tipDate!: Date;
 

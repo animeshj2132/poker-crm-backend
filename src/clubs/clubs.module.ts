@@ -45,6 +45,7 @@ import { PayrollService } from './services/payroll.service';
 import { SalaryPayment } from './entities/salary-payment.entity';
 import { DealerTips } from './entities/dealer-tips.entity';
 import { DealerCashout } from './entities/dealer-cashout.entity';
+import { ManagerCashout } from './entities/manager-cashout.entity';
 import { TipSettings } from './entities/tip-settings.entity';
 import { PlayerBonus } from './entities/player-bonus.entity';
 import { StaffBonus } from './entities/staff-bonus.entity';
@@ -104,6 +105,7 @@ import { PlayerFieldUpdateService } from './services/player-field-update.service
       SalaryPayment,
       DealerTips,
       DealerCashout,
+      ManagerCashout,
       TipSettings,
       PlayerBonus,
       StaffBonus,

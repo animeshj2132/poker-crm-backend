@@ -1,22 +1,17 @@
 import { IsUUID, IsNumber, IsDateString, IsOptional, IsString, Min } from 'class-validator';
 
-export class ProcessDealerTipsDto {
+export class ProcessManagerCashoutDto {
   @IsUUID()
-  dealerId!: string;
-
-  @IsOptional()
-  @IsUUID()
-  managerId?: string;
+  managerId!: string;
 
   @IsDateString()
-  tipDate!: string;
+  cashoutDate!: string;
 
   @IsNumber()
   @Min(0)
-  totalTips!: number;
+  amount!: number;
 
   @IsOptional()
   @IsString()
   notes?: string;
 }
-

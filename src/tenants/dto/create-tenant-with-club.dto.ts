@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsString, IsEmail, MaxLength, IsOptional, IsHexColor } from 'class-validator';
+import { IsNotEmpty, IsString, IsEmail, MaxLength, IsOptional, IsHexColor, IsBoolean } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class CreateTenantWithClubDto {
   // Tenant info
@@ -47,4 +48,15 @@ export class CreateTenantWithClubDto {
   @IsOptional()
   @MaxLength(2048)
   videoUrl?: string;
+
+  // Game access toggles
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  pokerEnabled?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  rummyEnabled?: boolean;
 }

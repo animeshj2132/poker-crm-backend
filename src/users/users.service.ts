@@ -527,7 +527,7 @@ export class UsersService {
     });
 
     // Get clubs for each tenant (using ClubsService would be better, but for now we'll query directly)
-    const clubs: Array<{ clubId: string; clubName: string; tenantId: string; tenantName: string; description?: string; logoUrl?: string; code?: string; rummyEnabled?: boolean }> = [];
+    const clubs: Array<{ clubId: string; clubName: string; tenantId: string; tenantName: string; description?: string; logoUrl?: string; code?: string; rummyEnabled?: boolean; pokerEnabled?: boolean }> = [];
     
     for (const role of tenantRoles) {
       const tenant = role.tenant as any;
@@ -545,8 +545,9 @@ export class UsersService {
           tenantName: tenant.name,
           description: club.description || undefined,
           logoUrl: club.logoUrl || undefined,
-          code: club.code || undefined, // Include club code
-          rummyEnabled: club.rummyEnabled || false // Include rummy enabled status
+          code: club.code || undefined,
+          rummyEnabled: club.rummyEnabled || false,
+          pokerEnabled: club.pokerEnabled !== false,
         });
       }
     }
@@ -571,6 +572,8 @@ export class UsersService {
       tenantName: string;
       description?: string;
       logoUrl?: string;
+      rummyEnabled?: boolean;
+      pokerEnabled?: boolean;
       roles: ClubRole[];
     }>();
 
@@ -586,6 +589,8 @@ export class UsersService {
           tenantName: club.tenant?.name || '',
           description: club.description || undefined,
           logoUrl: club.logoUrl || undefined,
+          rummyEnabled: club.rummyEnabled || false,
+          pokerEnabled: club.pokerEnabled !== false,
           roles: []
         });
       }

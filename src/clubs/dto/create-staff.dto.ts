@@ -39,5 +39,9 @@ export class CreateStaffDto {
   @IsString()
   @MaxLength(100)
   customRoleName?: string; // Required when role is STAFF
+
+  @IsOptional()
+  @IsString()
+  gameType?: string; // 'poker' or 'rummy' - for clubs with both games enabled
 }
 

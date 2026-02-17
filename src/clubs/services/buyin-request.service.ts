@@ -81,24 +81,53 @@ export class BuyInRequestService {
       request.processedAt = new Date();
       await queryRunner.manager.save(request);
 
-      // Create buy-in transaction
-      const transaction = queryRunner.manager.create(FinancialTransaction, {
-        club: { id: clubId } as any,
-        player: { id: request.player.id } as any,
-        amount: amount,
-        type: TransactionType.BUY_IN,
-        status: TransactionStatus.COMPLETED,
-        description: `Table buy-in - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''}`,
-        processedBy: userId,
-      });
+      // CRITICAL: Club Buy-In adds money DIRECTLY to table balance.
+      // Player is already seated so wallet is 0. We create:
+      // 1. Deposit (money coming in from player paying the club) → wallet +amount
+      // 2. Buy In (money moves from wallet to table) → wallet -amount, table +amount
+      // Net: wallet stays 0, table increases by amount.
 
-      await queryRunner.manager.save(transaction);
+      // Determine game type from table type
+      const tableTypeResult = request.table?.tableType || null;
+      const gameType = tableTypeResult === 'RUMMY' ? 'rummy' : 'poker';
+
+      // Step 1: Deposit - player pays the club
+      await queryRunner.query(
+        `INSERT INTO financial_transactions
+         (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
+        [
+          clubId,
+          request.player.id,
+          request.player.name,
+          amount,
+          gameType,
+          `Club buy-in deposit - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''} (approved by staff)`,
+        ],
+      );
+
+      // Step 2: Buy In - money moves to table
+      await queryRunner.query(
+        `INSERT INTO financial_transactions
+         (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'Buy In', 'Completed', $5, $6, NOW(), NOW())`,
+        [
+          clubId,
+          request.player.id,
+          request.player.name,
+          amount,
+          gameType,
+          `Club buy-in to table - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''} (approved by staff)`,
+        ],
+      );
+
+      console.log(`💰 [BUYIN APPROVED] Player ${request.player.name}: ₹${amount} added directly to table balance (Table ${request.tableNumber})`);
 
       await queryRunner.commitTransaction();
 
       return {
         success: true,
-        message: 'Buy-in request approved and balance updated',
+        message: 'Buy-in approved - table balance updated',
         requestId: request.id,
         amount: amount,
       };

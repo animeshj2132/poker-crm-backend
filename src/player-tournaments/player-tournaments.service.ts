@@ -321,17 +321,18 @@ export class PlayerTournamentsService {
           // Create financial transaction for tournament registration fee
           const transactionResult = await queryRunner.query(`
             INSERT INTO financial_transactions (
-              club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+              club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
             RETURNING id
           `, [
             clubId,
             playerId,
             player.name || 'Unknown Player',
-            'Buy In', // Using 'Buy In' type for tournament registration
+            'Buy In',
             buyInRequired,
             'Completed',
+            'poker',
             `Tournament Registration: ${tourn.name} (ID: ${tournamentId})`
           ]);
 
@@ -470,9 +471,9 @@ export class PlayerTournamentsService {
           
           await queryRunner.query(`
             INSERT INTO financial_transactions (
-              club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+              club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
           `, [
             clubId,
             playerId,
@@ -480,6 +481,7 @@ export class PlayerTournamentsService {
             'Refund',
             buyInAmount,
             'Completed',
+            'poker',
             `Tournament Registration Refund: ${tournamentName} (ID: ${tournamentId})`
           ]);
 

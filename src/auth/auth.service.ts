@@ -1406,6 +1406,132 @@ export class AuthService {
   }
 
   /**
+   * Player requests a Club Buy-In while seated at a table.
+   * Creates a buy-in REQUEST that goes to staff (cashier/admin) in real-time.
+   * When staff approves, the player's TABLE balance increases.
+   * Wallet is always 0 when seated (everything moved to table on seating).
+   */
+  async playerTableBuyInRequest(playerId: string, clubId: string, amount: number, notes?: string) {
+    try {
+      // 1. Validate player exists and belongs to club
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+      });
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      // 2. Verify player is currently seated at a table
+      const waitlistEntry = await this.dataSource.query(
+        `SELECT * FROM waitlist_entries
+         WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'
+         LIMIT 1`,
+        [playerId, clubId],
+      );
+
+      if (!waitlistEntry || waitlistEntry.length === 0) {
+        throw new BadRequestException('You must be seated at a table to request a buy-in');
+      }
+
+      const seatInfo = waitlistEntry[0];
+      const tableNumber = seatInfo.table_number;
+      const seatNumber = seatInfo.requested_seat;
+
+      // 3. Get table info
+      const tableData = await this.dataSource.query(
+        `SELECT id, table_number FROM tables
+         WHERE club_id = $1 AND table_number = $2 LIMIT 1`,
+        [clubId, tableNumber],
+      );
+      const tableId = tableData && tableData.length > 0 ? tableData[0].id : null;
+
+      // 4. Check for existing pending buy-in request
+      const existingPending = await this.dataSource.query(
+        `SELECT id FROM buyin_requests
+         WHERE club_id = $1 AND player_id = $2 AND status = 'pending'
+         LIMIT 1`,
+        [clubId, playerId],
+      );
+
+      if (existingPending && existingPending.length > 0) {
+        throw new BadRequestException('You already have a pending buy-in request. Please wait for approval.');
+      }
+
+      // 5. Calculate current table balance for context
+      const balanceResult = await this.dataSource.query(
+        `SELECT
+           COALESCE(SUM(CASE
+             WHEN UPPER(type) IN ('BUY IN', 'CREDIT') THEN amount
+             WHEN UPPER(type) IN ('DEPOSIT') AND notes LIKE '%table checkout%' THEN -amount
+             ELSE 0
+           END), 0) AS table_balance
+         FROM financial_transactions
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+        [clubId, playerId],
+      );
+      const currentTableBalance = Number(balanceResult[0]?.table_balance || 0);
+
+      // 6. Create buy-in request
+      await this.dataSource.query(
+        `INSERT INTO buyin_requests
+         (club_id, player_id, table_id, table_number, seat_number, requested_amount, current_table_balance, status, requested_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW(), NOW(), NOW())`,
+        [clubId, playerId, tableId, tableNumber, seatNumber, amount, currentTableBalance],
+      );
+
+      console.log(`📋 [BUYIN REQUEST] Player ${player.name} requested ₹${amount} buy-in at Table ${tableNumber} (current table balance: ₹${currentTableBalance})`);
+
+      return {
+        success: true,
+        message: `Buy-in request for ₹${amount.toLocaleString()} submitted. Waiting for staff approval.`,
+        amount,
+        tableNumber,
+        seatNumber,
+        currentTableBalance,
+        status: 'pending',
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      console.error('❌ [BUYIN REQUEST] Error:', error);
+      throw new BadRequestException(`Failed to submit buy-in request: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get player's buy-in requests (history + pending status)
+   */
+  async getPlayerBuyInRequests(playerId: string, clubId: string) {
+    try {
+      const requests = await this.dataSource.query(
+        `SELECT id, table_number, seat_number, requested_amount, current_table_balance,
+                status, requested_at, processed_at, rejection_reason, created_at
+         FROM buyin_requests
+         WHERE club_id = $1 AND player_id = $2
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [clubId, playerId],
+      );
+
+      return requests.map((r: any) => ({
+        id: r.id,
+        tableNumber: r.table_number,
+        seatNumber: r.seat_number,
+        requestedAmount: Number(r.requested_amount),
+        currentTableBalance: r.current_table_balance ? Number(r.current_table_balance) : null,
+        status: r.status,
+        requestedAt: r.requested_at,
+        processedAt: r.processed_at,
+        rejectionReason: r.rejection_reason,
+      }));
+    } catch (error) {
+      console.error('❌ [BUYIN REQUESTS] Error:', error);
+      throw new BadRequestException('Failed to fetch buy-in requests');
+    }
+  }
+
+  /**
    * Get player transactions
    */
   async getPlayerTransactions(playerId: string, clubId: string, limit: number = 50, offset: number = 0) {
@@ -2170,7 +2296,11 @@ export class AuthService {
       return {
         tables: mappedTables,
         totalAvailable: mappedTables.length,
-        totalTables: mappedTables.length
+        totalTables: mappedTables.length,
+        gameAccess: {
+          pokerEnabled: club.pokerEnabled !== false,
+          rummyEnabled: club.rummyEnabled || false,
+        },
       };
     } catch (err) {
       console.error('Get available tables error:', err);

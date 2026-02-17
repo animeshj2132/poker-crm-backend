@@ -71,6 +71,9 @@ export class Staff {
   @Column({ type: 'varchar', nullable: true, name: 'custom_role_name' })
   customRoleName!: string | null;
 
+  @Column({ type: 'varchar', nullable: true, name: 'game_type' })
+  gameType!: string | null;
+
   @Column({ type: 'text', nullable: true, name: 'suspended_reason' })
   suspendedReason!: string | null;
 

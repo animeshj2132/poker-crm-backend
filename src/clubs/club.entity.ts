@@ -58,6 +58,9 @@ export class Club {
   @Column({ type: 'boolean', default: false, name: 'rummy_enabled' })
   rummyEnabled!: boolean;
 
+  @Column({ type: 'boolean', default: true, name: 'poker_enabled' })
+  pokerEnabled!: boolean;
+
   @ManyToOne(() => Tenant, (tenant) => tenant.clubs, { nullable: false })
   @JoinColumn({ name: 'tenant_id' })
   tenant!: Tenant;

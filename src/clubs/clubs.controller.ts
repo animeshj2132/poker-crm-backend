@@ -93,6 +93,7 @@ import { EditTransactionDto } from './dto/edit-transaction.dto';
 import { CancelTransactionDto } from './dto/cancel-transaction.dto';
 import { FinancialOverridesService } from './services/financial-overrides.service';
 import { ProcessDealerCashoutDto } from './dto/process-dealer-cashout.dto';
+import { ProcessManagerCashoutDto } from './dto/process-manager-cashout.dto';
 import { UpdateTipSettingsDto } from './dto/update-tip-settings.dto';
 import { BonusService } from './services/bonus.service';
 import { CreatePlayerBonusDto } from './dto/create-player-bonus.dto';
@@ -5474,6 +5475,15 @@ export class ClubsController {
         throw new NotFoundException('Club not found');
       }
 
+      // Game access check: enforce master admin game type restrictions
+      // Poker access covers poker tables (cash, high stakes, private) AND poker tournaments
+      if (dto.tableType === TableType.RUMMY && !club.rummyEnabled) {
+        throw new ForbiddenException('Rummy is not enabled for this club. Contact Master Admin to enable.');
+      }
+      if ([TableType.CASH, TableType.HIGH_STAKES, TableType.PRIVATE, TableType.TOURNAMENT].includes(dto.tableType) && !club.pokerEnabled) {
+        throw new ForbiddenException('Poker is not enabled for this club. Contact Master Admin to enable.');
+      }
+
       // For Super Admin, validate tenant
       if (tenantId && !headerClubId) {
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
@@ -6492,7 +6502,7 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('tableId', new ParseUUIDPipe()) tableId: string,
-    @Body() body: { settlements: Array<{ playerId: string; amount: number }> },
+    @Body() body: { settlements: Array<{ playerId: string; amount: number }>; rakeAmount?: number },
     @Req() req?: Request
   ) {
     try {
@@ -6502,10 +6512,13 @@ export class ClubsController {
       }
 
       // Settle all players (creates transactions, unseat all, reset table seats)
+      // Also records rake if rakeAmount is provided
       const settlementResult = await this.buyOutRequestService.settleAllPlayersOnTable(
         clubId,
         tableId,
-        body.settlements
+        body.settlements,
+        body.rakeAmount,
+        userId,
       );
 
       // End the table session (mark as CLOSED, clear session notes)
@@ -6527,6 +6540,7 @@ export class ClubsController {
         success: true,
         message: 'All players settled and session ended successfully',
         settlementResult,
+        rake: settlementResult.rake || null,
         table: {
           id: table.id,
           tableNumber: table.tableNumber,
@@ -12473,6 +12487,7 @@ export class ClubsController {
         skinColor: club.skinColor,
         gradient: club.gradient,
         rummyEnabled: club.rummyEnabled || false,
+        pokerEnabled: club.pokerEnabled !== false,
         tenant: {
           id: club.tenant.id,
           name: club.tenant.name
@@ -12603,6 +12618,105 @@ export class ClubsController {
       console.error('Error in updateClubStatus:', error);
       throw error;
     }
+  }
+
+  /**
+   * Update club game access toggles (Master Admin only)
+   * PUT /api/clubs/:id/game-access
+   * Controls which game types a club can use: poker (tables + tournaments), rummy (tables + tournaments)
+   */
+  @Put(':id/game-access')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  async updateClubGameAccess(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { pokerEnabled?: boolean; rummyEnabled?: boolean },
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      const changes: string[] = [];
+
+      if (body.pokerEnabled !== undefined && body.pokerEnabled !== club.pokerEnabled) {
+        changes.push(`pokerEnabled: ${club.pokerEnabled} → ${body.pokerEnabled}`);
+        club.pokerEnabled = body.pokerEnabled;
+      }
+      if (body.rummyEnabled !== undefined && body.rummyEnabled !== club.rummyEnabled) {
+        changes.push(`rummyEnabled: ${club.rummyEnabled} → ${body.rummyEnabled}`);
+        club.rummyEnabled = body.rummyEnabled;
+      }
+      if (changes.length === 0) {
+        return { success: true, message: 'No changes to apply', club: { id: club.id, name: club.name, pokerEnabled: club.pokerEnabled, rummyEnabled: club.rummyEnabled } };
+      }
+
+      await this.clubsService.updateClub(clubId, {
+        pokerEnabled: club.pokerEnabled,
+        rummyEnabled: club.rummyEnabled,
+      });
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: userId,
+            staffName: user?.displayName || user?.email || 'Master Admin',
+            staffRole: 'Master Admin',
+            actionType: 'club_game_access_updated',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Updated game access for club ${club.name}: ${changes.join(', ')}`,
+            targetType: 'club',
+            targetId: clubId,
+            targetName: club.name,
+            metadata: { changes, pokerEnabled: club.pokerEnabled, rummyEnabled: club.rummyEnabled },
+            ipAddress: (req as any)?.ip || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined,
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for game access update:', auditError);
+      }
+
+      return {
+        success: true,
+        message: `Game access updated: ${changes.join(', ')}`,
+        club: {
+          id: club.id,
+          name: club.name,
+          pokerEnabled: club.pokerEnabled,
+          rummyEnabled: club.rummyEnabled,
+        },
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      console.error('Error in updateClubGameAccess:', error);
+      throw new BadRequestException(`Failed to update game access: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get club game access settings
+   * GET /api/clubs/:id/game-access
+   */
+  @Get(':id/game-access')
+  async getClubGameAccess(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+  ) {
+    const club = await this.clubsService.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+    return {
+      clubId: club.id,
+      clubName: club.name,
+      pokerEnabled: club.pokerEnabled,
+      rummyEnabled: club.rummyEnabled,
+    };
   }
 
   /**
@@ -12854,6 +12968,12 @@ export class ClubsController {
     @Req() req?: Request
   ) {
     try {
+      // Game access check: tournaments are part of poker access
+      const club = await this.clubsService.findById(clubId);
+      if (club && !club.pokerEnabled) {
+        throw new ForbiddenException('Poker is not enabled for this club. Tournaments require poker access. Contact Master Admin to enable.');
+      }
+
       const tournament = await this.tournamentsService.createTournament(clubId, userId, dto);
       
       // Audit log: Create tournament
@@ -14387,6 +14507,25 @@ export class ClubsController {
   }
 
   /**
+   * Get club tip summary (must be before :dealerId/summary to avoid route conflict)
+   * GET /api/clubs/:clubId/payroll/tips/club-summary
+   */
+  @Get(':clubId/payroll/tips/club-summary')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async getClubTipSummary(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+  ) {
+    try {
+      const summary = await this.payrollService.getClubTipSummary(clubId);
+      return { success: true, ...summary };
+    } catch (error) {
+      console.error('Error in getClubTipSummary:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get dealer tips summary
    * GET /api/clubs/:clubId/payroll/tips/:dealerId/summary?startDate=&endDate=
    */
@@ -14496,6 +14635,137 @@ export class ClubsController {
       return { success: true, ...result };
     } catch (error) {
       console.error('Error in getDealerCashouts:', error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // MANAGER TIPS & CASHOUTS
+  // =====================================================
+
+  /**
+   * Get managers for payroll
+   * GET /api/clubs/:clubId/payroll/managers
+   */
+  @Get(':clubId/payroll/managers')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async getManagersForPayroll(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+  ) {
+    try {
+      const managers = await this.payrollService.getManagersForPayroll(clubId);
+      return { success: true, managers };
+    } catch (error) {
+      console.error('Error in getManagersForPayroll:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get manager tip balance
+   * GET /api/clubs/:clubId/payroll/manager-tips/:managerId/balance
+   */
+  @Get(':clubId/payroll/manager-tips/:managerId/balance')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async getManagerTipBalance(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('managerId', new ParseUUIDPipe()) managerId: string,
+  ) {
+    try {
+      const balance = await this.payrollService.getManagerTipBalance(clubId, managerId);
+      return { success: true, ...balance };
+    } catch (error) {
+      console.error('Error in getManagerTipBalance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process manager cashout
+   * POST /api/clubs/:clubId/payroll/manager-cashout
+   */
+  @Post(':clubId/payroll/manager-cashout')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async processManagerCashout(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Body() processManagerCashoutDto: ProcessManagerCashoutDto,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const cashout = await this.payrollService.processManagerCashout(clubId, processManagerCashoutDto, userId);
+      
+      // Audit log: Process manager cashout
+      try {
+        if (userId && cashout) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'manager_cashout_processed',
+            actionCategory: ActionCategory.PAYROLL,
+            description: `Processed manager cashout of ₹${processManagerCashoutDto.amount} for manager ${processManagerCashoutDto.managerId} on ${processManagerCashoutDto.cashoutDate}`,
+            targetType: 'staff',
+            targetId: processManagerCashoutDto.managerId,
+            targetName: `Manager ${processManagerCashoutDto.managerId}`,
+            metadata: { 
+              managerId: processManagerCashoutDto.managerId,
+              amount: processManagerCashoutDto.amount,
+              cashoutDate: processManagerCashoutDto.cashoutDate
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for manager cashout processing:', auditError);
+      }
+      
+      return { success: true, cashout };
+    } catch (error) {
+      console.error('Error in processManagerCashout:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get manager cashouts with pagination
+   * GET /api/clubs/:clubId/payroll/manager-cashout
+   */
+  @Get(':clubId/payroll/manager-cashout')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async getManagerCashouts(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('managerId') managerId?: string,
+  ) {
+    try {
+      const result = await this.payrollService.getManagerCashouts(
+        clubId,
+        page ? parseInt(page) : 1,
+        limit ? parseInt(limit) : 10,
+        search,
+        startDate,
+        endDate,
+        managerId,
+      );
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Error in getManagerCashouts:', error);
       throw error;
     }
   }

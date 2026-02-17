@@ -21,6 +21,7 @@ export class FinancialTransactionsService {
     playerName: string;
     amount: number;
     notes?: string;
+    gameType?: string;
   }) {
     // Validate inputs
     if (!data.type) {
@@ -75,6 +76,7 @@ export class FinancialTransactionsService {
       playerName: data.playerName.trim(),
       amount: data.amount,
       notes: data.notes?.trim() || null,
+      gameType: data.gameType || null,
       status: shouldAutoComplete ? TransactionStatus.COMPLETED : TransactionStatus.PENDING,
       club
     });

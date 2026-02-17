@@ -4,11 +4,13 @@ import { Repository, Like, Between, ILike, IsNull } from 'typeorm';
 import { SalaryPayment, PayPeriod } from '../entities/salary-payment.entity';
 import { DealerTips, TipStatus } from '../entities/dealer-tips.entity';
 import { DealerCashout } from '../entities/dealer-cashout.entity';
+import { ManagerCashout } from '../entities/manager-cashout.entity';
 import { TipSettings } from '../entities/tip-settings.entity';
 import { Staff, StaffRole } from '../entities/staff.entity';
 import { ProcessSalaryDto } from '../dto/process-salary.dto';
 import { ProcessDealerTipsDto } from '../dto/process-dealer-tips.dto';
 import { ProcessDealerCashoutDto } from '../dto/process-dealer-cashout.dto';
+import { ProcessManagerCashoutDto } from '../dto/process-manager-cashout.dto';
 import { UpdateTipSettingsDto } from '../dto/update-tip-settings.dto';
 
 @Injectable()
@@ -20,6 +22,8 @@ export class PayrollService {
     private dealerTipsRepo: Repository<DealerTips>,
     @InjectRepository(DealerCashout)
     private dealerCashoutRepo: Repository<DealerCashout>,
+    @InjectRepository(ManagerCashout)
+    private managerCashoutRepo: Repository<ManagerCashout>,
     @InjectRepository(TipSettings)
     private tipSettingsRepo: Repository<TipSettings>,
     @InjectRepository(Staff)
@@ -237,6 +241,16 @@ export class PayrollService {
       throw new NotFoundException('Dealer not found');
     }
 
+    // Verify manager exists if provided
+    if (dto.managerId) {
+      const manager = await this.staffRepo.findOne({
+        where: { id: dto.managerId, club: { id: clubId }, role: StaffRole.MANAGER },
+      });
+      if (!manager) {
+        throw new NotFoundException('Floor manager not found');
+      }
+    }
+
     // Get tip settings for this specific dealer
     const settings = await this.getTipSettings(clubId, dto.dealerId);
 
@@ -249,6 +263,7 @@ export class PayrollService {
     const dealerTips = this.dealerTipsRepo.create({
       clubId,
       dealerId: dto.dealerId,
+      managerId: dto.managerId || undefined,
       tipDate: new Date(dto.tipDate),
       totalTips,
       clubHoldPercentage: settings.clubHoldPercentage,
@@ -265,7 +280,7 @@ export class PayrollService {
     const saved = await this.dealerTipsRepo.save(dealerTips);
     return this.dealerTipsRepo.findOne({
       where: { id: saved.id },
-      relations: ['dealer'],
+      relations: ['dealer', 'manager'],
     });
   }
 
@@ -282,6 +297,7 @@ export class PayrollService {
     const queryBuilder = this.dealerTipsRepo
       .createQueryBuilder('tips')
       .leftJoinAndSelect('tips.dealer', 'dealer')
+      .leftJoinAndSelect('tips.manager', 'manager')
       .where('tips.clubId = :clubId', { clubId })
       .orderBy('tips.tipDate', 'DESC')
       .addOrderBy('tips.createdAt', 'DESC');
@@ -386,6 +402,7 @@ export class PayrollService {
       cashoutDate: new Date(dto.cashoutDate),
       amount: dto.amount,
       notes: dto.notes,
+      gameType: dealer.gameType || undefined,
       processedBy: userId,
     });
 
@@ -461,6 +478,187 @@ export class PayrollService {
     });
 
     return dealers;
+  }
+
+  async getManagersForPayroll(clubId: string) {
+    const managers = await this.staffRepo.find({
+      where: { club: { id: clubId }, role: StaffRole.MANAGER },
+      order: { name: 'ASC' },
+    });
+
+    return managers;
+  }
+
+  // ====================
+  // MANAGER TIP BALANCE
+  // ====================
+
+  async getManagerTipBalance(clubId: string, managerId: string) {
+    // Sum all floor_manager_amount assigned to this manager
+    const tipAgg = await this.dealerTipsRepo
+      .createQueryBuilder('tips')
+      .select('COALESCE(SUM(tips.floor_manager_amount), 0)', 'totalManagerShare')
+      .addSelect('COUNT(tips.id)', 'tipCount')
+      .where('tips.club_id = :clubId', { clubId })
+      .andWhere('tips.manager_id = :managerId', { managerId })
+      .getRawOne<{ totalManagerShare: string; tipCount: string }>();
+
+    // Sum all cashouts already processed for this manager
+    const cashoutAgg = await this.managerCashoutRepo
+      .createQueryBuilder('cashout')
+      .select('COALESCE(SUM(cashout.amount), 0)', 'totalCashouts')
+      .where('cashout.club_id = :clubId', { clubId })
+      .andWhere('cashout.manager_id = :managerId', { managerId })
+      .getRawOne<{ totalCashouts: string }>();
+
+    const totalManagerShare = Number(tipAgg?.totalManagerShare || 0);
+    const totalCashouts = Number(cashoutAgg?.totalCashouts || 0);
+    const availableBalance = totalManagerShare - totalCashouts;
+
+    return {
+      totalManagerShare,
+      totalCashouts,
+      availableBalance,
+      tipCount: Number(tipAgg?.tipCount || 0),
+    };
+  }
+
+  // ====================
+  // MANAGER CASHOUTS
+  // ====================
+
+  async processManagerCashout(clubId: string, dto: ProcessManagerCashoutDto, userId?: string) {
+    // Verify manager exists
+    const manager = await this.staffRepo.findOne({
+      where: { id: dto.managerId, club: { id: clubId }, role: StaffRole.MANAGER },
+    });
+
+    if (!manager) {
+      throw new NotFoundException('Manager not found');
+    }
+
+    // Get available balance
+    const balance = await this.getManagerTipBalance(clubId, dto.managerId);
+
+    if (Number(dto.amount) > balance.availableBalance + 0.0001) {
+      throw new BadRequestException(
+        `Cashout amount exceeds available tip balance. Available: ₹${balance.availableBalance.toFixed(
+          2,
+        )}, Requested: ₹${Number(dto.amount).toFixed(2)}`,
+      );
+    }
+
+    const cashout = this.managerCashoutRepo.create({
+      clubId,
+      managerId: dto.managerId,
+      cashoutDate: new Date(dto.cashoutDate),
+      amount: dto.amount,
+      notes: dto.notes,
+      gameType: manager.gameType || undefined,
+      processedBy: userId,
+    });
+
+    const saved = await this.managerCashoutRepo.save(cashout);
+    return this.managerCashoutRepo.findOne({
+      where: { id: saved.id },
+      relations: ['manager'],
+    });
+  }
+
+  async getManagerCashouts(
+    clubId: string,
+    page: number = 1,
+    limit: number = 10,
+    search?: string,
+    startDate?: string,
+    endDate?: string,
+    managerId?: string,
+  ) {
+    const queryBuilder = this.managerCashoutRepo
+      .createQueryBuilder('cashout')
+      .leftJoinAndSelect('cashout.manager', 'manager')
+      .where('cashout.clubId = :clubId', { clubId })
+      .orderBy('cashout.cashoutDate', 'DESC')
+      .addOrderBy('cashout.createdAt', 'DESC');
+
+    if (search) {
+      queryBuilder.andWhere('manager.name ILIKE :search', { search: `%${search}%` });
+    }
+
+    if (startDate && endDate) {
+      queryBuilder.andWhere('cashout.cashoutDate BETWEEN :startDate AND :endDate', {
+        startDate,
+        endDate,
+      });
+    }
+
+    if (managerId) {
+      queryBuilder.andWhere('cashout.managerId = :managerId', { managerId });
+    }
+
+    const [cashouts, total] = await queryBuilder
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    return {
+      cashouts,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  // ====================
+  // CLUB TIP SUMMARY
+  // ====================
+
+  async getClubTipSummary(clubId: string) {
+    // Aggregate all tips for the club
+    const tipAgg = await this.dealerTipsRepo
+      .createQueryBuilder('tips')
+      .select('COALESCE(SUM(tips.total_tips), 0)', 'totalTips')
+      .addSelect('COALESCE(SUM(tips.club_hold_amount), 0)', 'totalClubHold')
+      .addSelect('COALESCE(SUM(tips.dealer_share_amount), 0)', 'totalDealerShare')
+      .addSelect('COALESCE(SUM(tips.floor_manager_amount), 0)', 'totalManagerShare')
+      .addSelect('COUNT(tips.id)', 'tipCount')
+      .where('tips.club_id = :clubId', { clubId })
+      .getRawOne();
+
+    // Total dealer cashouts
+    const dealerCashoutAgg = await this.dealerCashoutRepo
+      .createQueryBuilder('cashout')
+      .select('COALESCE(SUM(cashout.amount), 0)', 'totalDealerCashouts')
+      .where('cashout.club_id = :clubId', { clubId })
+      .getRawOne();
+
+    // Total manager cashouts
+    const managerCashoutAgg = await this.managerCashoutRepo
+      .createQueryBuilder('cashout')
+      .select('COALESCE(SUM(cashout.amount), 0)', 'totalManagerCashouts')
+      .where('cashout.club_id = :clubId', { clubId })
+      .getRawOne();
+
+    const totalTips = Number(tipAgg?.totalTips || 0);
+    const totalClubHold = Number(tipAgg?.totalClubHold || 0);
+    const totalDealerShare = Number(tipAgg?.totalDealerShare || 0);
+    const totalManagerShare = Number(tipAgg?.totalManagerShare || 0);
+    const totalDealerCashouts = Number(dealerCashoutAgg?.totalDealerCashouts || 0);
+    const totalManagerCashouts = Number(managerCashoutAgg?.totalManagerCashouts || 0);
+
+    return {
+      totalTips,
+      totalClubHold,
+      totalDealerShare,
+      totalManagerShare,
+      totalDealerCashouts,
+      totalManagerCashouts,
+      pendingDealerPayouts: totalDealerShare - totalDealerCashouts,
+      pendingManagerPayouts: totalManagerShare - totalManagerCashouts,
+      clubNetRevenue: totalClubHold,
+      tipCount: Number(tipAgg?.tipCount || 0),
+    };
   }
 }
 

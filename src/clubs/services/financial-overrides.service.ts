@@ -6,6 +6,7 @@ import { PlayerBonus } from '../entities/player-bonus.entity';
 import { StaffBonus } from '../entities/staff-bonus.entity';
 import { SalaryPayment } from '../entities/salary-payment.entity';
 import { DealerCashout } from '../entities/dealer-cashout.entity';
+import { ManagerCashout } from '../entities/manager-cashout.entity';
 
 export interface UnifiedTransaction {
   id: string;
@@ -21,6 +22,7 @@ export interface UnifiedTransaction {
   overrideReason?: string;
   isOverridden?: boolean;
   transactionId?: string; // For financial transactions
+  gameType?: string; // 'poker' or 'rummy'
 }
 
 @Injectable()
@@ -36,6 +38,8 @@ export class FinancialOverridesService {
     private readonly salaryPaymentRepo: Repository<SalaryPayment>,
     @InjectRepository(DealerCashout)
     private readonly dealerCashoutRepo: Repository<DealerCashout>,
+    @InjectRepository(ManagerCashout)
+    private readonly managerCashoutRepo: Repository<ManagerCashout>,
   ) {}
 
   /**
@@ -75,6 +79,7 @@ export class FinancialOverridesService {
           overrideReason: tx.overrideReason,
           isOverridden: tx.isOverridden,
           transactionId: tx.id,
+          gameType: tx.gameType || undefined,
         });
       }
 
@@ -132,6 +137,39 @@ export class FinancialOverridesService {
               notes: cashout.notes,
               isOverridden,
               overrideReason,
+              gameType: cashout.gameType || cashout.dealer?.gameType || undefined,
+            });
+          }
+        }
+
+        // Manager cashouts (also under dealer-cashout sub-category)
+        if (!subCategory || subCategory === 'dealer-cashout') {
+          const managerCashouts = await this.managerCashoutRepo
+            .createQueryBuilder('cashout')
+            .leftJoinAndSelect('cashout.manager', 'manager')
+            .where('cashout.club_id = :clubId', { clubId })
+            .orderBy('cashout.cashout_date', 'DESC')
+            .getMany();
+
+          for (const cashout of managerCashouts) {
+            const isOverridden = cashout.notes?.includes('[OVERRIDE]') || false;
+            const overrideReason = isOverridden 
+              ? cashout.notes?.split('[OVERRIDE]')[1]?.trim() 
+              : undefined;
+            
+            transactions.push({
+              id: cashout.id,
+              type: 'Manager Cashout',
+              category: 'staff',
+              entityId: cashout.managerId,
+              entityName: cashout.manager?.name || 'Unknown',
+              amount: Number(cashout.amount || 0),
+              status: 'Completed',
+              date: cashout.cashoutDate || cashout.createdAt,
+              notes: cashout.notes,
+              isOverridden,
+              overrideReason,
+              gameType: cashout.gameType || cashout.manager?.gameType || undefined,
             });
           }
         }
@@ -157,6 +195,7 @@ export class FinancialOverridesService {
               status: 'Completed',
               date: bonus.processedAt || bonus.createdAt,
               notes: bonus.reason,
+              gameType: bonus.staff?.gameType || undefined,
             });
           }
 
@@ -187,6 +226,7 @@ export class FinancialOverridesService {
               notes: salary.notes,
               isOverridden,
               overrideReason,
+              gameType: salary.staff?.gameType || undefined,
             });
           }
         }

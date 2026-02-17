@@ -86,6 +86,7 @@ export class StaffManagementService {
     aadharDocumentUrl?: string;
     panDocumentUrl?: string;
     customRoleName?: string;
+    gameType?: string;
   }, createdBy: string) {
     // Validate KYC documents - both are required
     if (!data.aadharDocumentUrl) {
@@ -152,6 +153,7 @@ export class StaffManagementService {
       panDocumentUrl: data.panDocumentUrl || null,
       affiliateCode,
       customRoleName: data.customRoleName || null,
+      gameType: data.gameType || null,
       status: StaffStatus.ACTIVE,
       club: { id: clubId } as any,
     });

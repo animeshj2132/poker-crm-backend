@@ -1,4 +1,5 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class CreateClubWithBrandingDto {
   @IsString()
@@ -31,5 +32,16 @@ export class CreateClubWithBrandingDto {
   @IsString()
   @MaxLength(200)
   gradient?: string;
+
+  // Game access toggles
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  pokerEnabled?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  rummyEnabled?: boolean;
 }
 

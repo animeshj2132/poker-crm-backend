@@ -28,6 +28,11 @@ export enum TransactionStatus {
   FAILED = 'Failed'
 }
 
+export enum GameType {
+  POKER = 'poker',
+  RUMMY = 'rummy',
+}
+
 @Entity({ name: 'financial_transactions' })
 export class FinancialTransaction {
   @PrimaryGeneratedColumn('uuid')
@@ -50,6 +55,9 @@ export class FinancialTransaction {
 
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
+
+  @Column({ type: 'varchar', nullable: true, name: 'game_type' })
+  gameType!: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true, name: 'original_amount' })
   originalAmount?: number;

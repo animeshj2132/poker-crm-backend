@@ -25,5 +25,10 @@ export class CreateTransactionDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  gameType?: string;
 }
 

@@ -122,7 +122,7 @@ export class TenantsController {
   @Post('with-club')
   @Roles(GlobalRole.MASTER_ADMIN)
   @HttpCode(HttpStatus.CREATED)
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   async createTenantWithClub(@Body() dto: CreateTenantWithClubDto) {
     try {
       // Validate required fields
@@ -158,14 +158,16 @@ export class TenantsController {
         tenant.id
       );
 
-      // Create club with branding
+      // Create club with branding and game access
       const club = await this.clubsService.createWithBranding(tenant.id, {
         name: dto.clubName.trim(),
         description: dto.clubDescription || '',
         logoUrl: dto.logoUrl?.trim() || undefined,
         videoUrl: dto.videoUrl?.trim() || undefined,
         skinColor: dto.skinColor?.trim() || '#10b981',
-        gradient: dto.gradient?.trim() || 'emerald-green-teal'
+        gradient: dto.gradient?.trim() || 'emerald-green-teal',
+        pokerEnabled: dto.pokerEnabled,
+        rummyEnabled: dto.rummyEnabled,
       });
 
       return {
@@ -185,7 +187,9 @@ export class TenantsController {
           logoUrl: club.logoUrl,
           videoUrl: club.videoUrl,
           skinColor: club.skinColor,
-          gradient: club.gradient
+          gradient: club.gradient,
+          pokerEnabled: club.pokerEnabled,
+          rummyEnabled: club.rummyEnabled,
         }
       };
     } catch (e) {
@@ -222,7 +226,7 @@ export class TenantsController {
   @Post(':id/clubs')
   @Roles(GlobalRole.MASTER_ADMIN)
   @HttpCode(HttpStatus.CREATED)
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   async createClubWithBranding(
     @Param('id', new ParseUUIDPipe()) tenantId: string,
     @Body() dto: CreateClubWithBrandingDto
@@ -241,7 +245,9 @@ export class TenantsController {
         logoUrl: dto.logoUrl?.trim() || undefined,
         videoUrl: dto.videoUrl?.trim() || undefined,
         skinColor: dto.skinColor?.trim() || undefined,
-        gradient: dto.gradient?.trim() || undefined
+        gradient: dto.gradient?.trim() || undefined,
+        pokerEnabled: dto.pokerEnabled,
+        rummyEnabled: dto.rummyEnabled,
       });
       return club;
     } catch (e) {

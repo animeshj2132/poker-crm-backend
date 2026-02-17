@@ -333,9 +333,9 @@ export class TournamentsService {
             // Create refund transaction
             await queryRunner.query(`
               INSERT INTO financial_transactions (
-                club_id, player_id, player_name, type, amount, status, notes, created_at, updated_at
+                club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
               )
-              VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
             `, [
               clubId,
               participant.player_id,
@@ -343,6 +343,7 @@ export class TournamentsService {
               'Refund',
               buyInAmount,
               'Completed',
+              'poker',
               `Tournament Cancelled - Refund: ${tournament.name} (ID: ${tournamentId})`
             ]);
           }
@@ -439,8 +440,8 @@ export class TournamentsService {
         if (availableBalance > 0) {
           // Create BUY_IN transaction for entire balance
           await queryRunner.query(
-            `INSERT INTO financial_transactions (club_id, player_id, player_name, amount, type, status, notes)
-             VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', $5)`,
+            `INSERT INTO financial_transactions (club_id, player_id, player_name, amount, type, status, game_type, notes)
+             VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', 'poker', $5)`,
             [
               clubId,
               participant.player_id,
@@ -526,8 +527,8 @@ export class TournamentsService {
         // Create transaction record
         await queryRunner.query(
           `INSERT INTO financial_transactions 
-           (club_id, player_id, amount, type, status, description, processed_by)
-           VALUES ($1, $2, $3, 'CREDIT', 'COMPLETED', 'Tournament prize - Position ' || $4, 'SYSTEM')`,
+           (club_id, player_id, amount, type, status, game_type, description, processed_by)
+           VALUES ($1, $2, $3, 'CREDIT', 'COMPLETED', 'poker', 'Tournament prize - Position ' || $4, 'SYSTEM')`,
           [clubId, winner.player_id, winner.prize_amount, winner.finishing_position]
         );
       }

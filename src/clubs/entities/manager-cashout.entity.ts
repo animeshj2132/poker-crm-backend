@@ -9,8 +9,8 @@ import {
 import { Club } from '../club.entity';
 import { Staff } from './staff.entity';
 
-@Entity({ name: 'dealer_cashouts' })
-export class DealerCashout {
+@Entity({ name: 'manager_cashouts' })
+export class ManagerCashout {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
@@ -21,12 +21,12 @@ export class DealerCashout {
   @JoinColumn({ name: 'club_id' })
   club!: Club;
 
-  @Column({ type: 'uuid', name: 'dealer_id' })
-  dealerId!: string;
+  @Column({ type: 'uuid', name: 'manager_id' })
+  managerId!: string;
 
   @ManyToOne(() => Staff)
-  @JoinColumn({ name: 'dealer_id' })
-  dealer!: Staff;
+  @JoinColumn({ name: 'manager_id' })
+  manager!: Staff;
 
   @Column({ type: 'date', name: 'cashout_date' })
   cashoutDate!: Date;
@@ -46,4 +46,3 @@ export class DealerCashout {
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }
-
