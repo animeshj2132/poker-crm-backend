@@ -12,6 +12,13 @@ export class TournamentsService {
     private dataSource: DataSource,
   ) {}
 
+  /**
+   * Determine game type from tournament data (poker vs rummy)
+   */
+  private getGameType(tournament: any): string {
+    return tournament.rummy_variant ? 'rummy' : 'poker';
+  }
+
   // Get all tournaments for a club
   async getTournaments(clubId: string) {
     const query = `
@@ -114,9 +121,9 @@ export class TournamentsService {
       INSERT INTO tournaments (
         club_id, name, buy_in, prize_pool, max_players, start_time, status, structure,
         rummy_variant, number_of_deals, points_per_deal, drop_points, max_points,
-        deal_duration, min_players
+        deal_duration, min_players, late_registration
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
       ) RETURNING *
     `;
 
@@ -140,6 +147,7 @@ export class TournamentsService {
       dto.max_points || null,
       dto.deal_duration || null,
       dto.min_players || null,
+      dto.late_registration || null,
     ];
 
     const result = await this.dataSource.query(query, values);
@@ -234,6 +242,10 @@ export class TournamentsService {
     if (dto.min_players !== undefined) {
       updates.push(`min_players = $${paramIndex++}`);
       values.push(dto.min_players || null);
+    }
+    if (dto.late_registration !== undefined) {
+      updates.push(`late_registration = $${paramIndex++}`);
+      values.push(dto.late_registration || null);
     }
 
     // Handle poker-specific fields in structure JSONB column
@@ -330,7 +342,8 @@ export class TournamentsService {
           for (const participant of registeredPlayers) {
             console.log(`💰 [TOURNAMENT DELETE] Refunding ₹${buyInAmount} to player ${participant.player_id} (${participant.player_name})`);
             
-            // Create refund transaction
+            // Create refund transaction with correct game type
+            const gameType = this.getGameType(tournament);
             await queryRunner.query(`
               INSERT INTO financial_transactions (
                 club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
@@ -343,8 +356,8 @@ export class TournamentsService {
               'Refund',
               buyInAmount,
               'Completed',
-              'poker',
-              `Tournament Cancelled - Refund: ${tournament.name} (ID: ${tournamentId})`
+              gameType,
+              `${gameType.charAt(0).toUpperCase() + gameType.slice(1)} Tournament Cancelled - Refund: ${tournament.name} (ID: ${tournamentId})`
             ]);
           }
 
@@ -438,16 +451,18 @@ export class TournamentsService {
         const availableBalance = balanceResult[0]?.total ? Number(balanceResult[0].total) : 0;
 
         if (availableBalance > 0) {
-          // Create BUY_IN transaction for entire balance
+          const gameType = this.getGameType(tournament);
+          // Create BUY_IN transaction for entire balance with correct game type
           await queryRunner.query(
             `INSERT INTO financial_transactions (club_id, player_id, player_name, amount, type, status, game_type, notes)
-             VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', 'poker', $5)`,
+             VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', $6, $5)`,
             [
               clubId,
               participant.player_id,
               participant.player_name,
               availableBalance,
-              `Tournament buy-in - ${tournament.name || 'Tournament'} (Full balance: ₹${availableBalance.toFixed(2)})`
+              `${gameType.charAt(0).toUpperCase() + gameType.slice(1)} Tournament buy-in - ${tournament.name || 'Tournament'} (Full balance: ₹${availableBalance.toFixed(2)})`,
+              gameType
             ]
           );
 
@@ -457,13 +472,33 @@ export class TournamentsService {
         }
       }
 
-      // Update tournament status to active
+      const sessionStartedAt = new Date().toISOString();
+
+      // Update tournament status to active and set session start time
       const result = await queryRunner.query(
         `UPDATE tournaments 
-         SET status = 'active', updated_at = NOW()
+         SET status = 'active', session_started_at = $3, updated_at = NOW()
          WHERE club_id = $1 AND id = $2
          RETURNING *`,
-        [clubId, tournamentId]
+        [clubId, tournamentId, sessionStartedAt]
+      );
+
+      // Set session_started_at on all tournament_players entries
+      await queryRunner.query(
+        `UPDATE tournament_players 
+         SET session_started_at = $2, is_exited = false
+         WHERE tournament_id = $1`,
+        [tournamentId, sessionStartedAt]
+      );
+
+      // Also update tournament_registrations entries into tournament_players if not already there
+      await queryRunner.query(
+        `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited)
+         SELECT tr.tournament_id, tr.player_id, true, $2, false
+         FROM tournament_registrations tr
+         WHERE tr.tournament_id = $1 AND tr.status = 'registered'
+         ON CONFLICT (tournament_id, player_id) DO UPDATE SET session_started_at = $2, is_active = true, is_exited = false`,
+        [tournamentId, sessionStartedAt]
       );
 
       await queryRunner.commitTransaction();
@@ -477,6 +512,92 @@ export class TournamentsService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  // Pause an active tournament
+  async pauseTournament(clubId: string, tournamentId: string) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Only active tournaments can be paused');
+    }
+
+    if (tournament.paused_at) {
+      throw new BadRequestException('Tournament is already paused');
+    }
+
+    const pausedAt = new Date().toISOString();
+
+    const result = await this.dataSource.query(
+      `UPDATE tournaments 
+       SET paused_at = $3, updated_at = NOW()
+       WHERE club_id = $1 AND id = $2
+       RETURNING *`,
+      [clubId, tournamentId, pausedAt]
+    );
+
+    console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused`);
+    return result[0];
+  }
+
+  // Resume a paused tournament
+  async resumeTournament(clubId: string, tournamentId: string) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Only active tournaments can be resumed');
+    }
+
+    if (!tournament.paused_at) {
+      throw new BadRequestException('Tournament is not paused');
+    }
+
+    // Calculate how long it was paused
+    const pausedAt = new Date(tournament.paused_at).getTime();
+    const now = Date.now();
+    const pausedSeconds = Math.floor((now - pausedAt) / 1000);
+    const currentTotalPaused = parseInt(tournament.total_paused_seconds) || 0;
+    const newTotalPaused = currentTotalPaused + pausedSeconds;
+
+    const result = await this.dataSource.query(
+      `UPDATE tournaments 
+       SET paused_at = NULL, total_paused_seconds = $3, updated_at = NOW()
+       WHERE club_id = $1 AND id = $2
+       RETURNING *`,
+      [clubId, tournamentId, newTotalPaused]
+    );
+
+    console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s)`);
+    return result[0];
+  }
+
+  // Stop/End a tournament without winners (forced stop)
+  async stopTournament(clubId: string, tournamentId: string) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Only active tournaments can be stopped');
+    }
+
+    // Update status to completed
+    const result = await this.dataSource.query(
+      `UPDATE tournaments 
+       SET status = 'completed', paused_at = NULL, updated_at = NOW()
+       WHERE club_id = $1 AND id = $2
+       RETURNING *`,
+      [clubId, tournamentId]
+    );
+
+    // Mark all active players as inactive
+    await this.dataSource.query(
+      `UPDATE tournament_players 
+       SET is_active = false
+       WHERE tournament_id = $1 AND is_active = true`,
+      [tournamentId]
+    );
+
+    console.log(`🛑 [TOURNAMENT STOP] Tournament ${tournament.name} stopped (forced end without winners)`);
+    return result[0];
   }
 
   // End tournament with winners
@@ -500,8 +621,18 @@ export class TournamentsService {
         [clubId, tournamentId]
       );
 
+      const gameType = this.getGameType(tournament);
+      const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
+
       // Update winners in tournament_players table and player balances
       for (const winner of dto.winners) {
+        // Get player name for the transaction
+        const playerResult = await queryRunner.query(
+          `SELECT name FROM players WHERE id = $1 AND club_id = $2`,
+          [winner.player_id, clubId]
+        );
+        const playerName = playerResult?.[0]?.name || 'Unknown Player';
+
         // Update tournament_players
         await queryRunner.query(
           `INSERT INTO tournament_players 
@@ -515,22 +646,22 @@ export class TournamentsService {
           [tournamentId, winner.player_id, winner.finishing_position, winner.prize_amount]
         );
 
-        // Update player balance
-        await queryRunner.query(
-          `UPDATE players 
-           SET current_balance = current_balance + $1,
-               updated_at = NOW()
-           WHERE id = $2 AND club_id = $3`,
-          [winner.prize_amount, winner.player_id, clubId]
-        );
-
-        // Create transaction record
-        await queryRunner.query(
-          `INSERT INTO financial_transactions 
-           (club_id, player_id, amount, type, status, game_type, description, processed_by)
-           VALUES ($1, $2, $3, 'CREDIT', 'COMPLETED', 'poker', 'Tournament prize - Position ' || $4, 'SYSTEM')`,
-          [clubId, winner.player_id, winner.prize_amount, winner.finishing_position]
-        );
+        // Create transaction record (CREDIT to player wallet)
+        if (winner.prize_amount > 0) {
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, game_type, notes)
+             VALUES ($1, $2, $3, $4, 'CREDIT', 'Completed', $5, $6)`,
+            [
+              clubId,
+              winner.player_id,
+              playerName,
+              winner.prize_amount,
+              gameType,
+              `${gameLabel} Tournament Prize - ${tournament.name} - Position #${winner.finishing_position} (₹${Number(winner.prize_amount).toLocaleString()})`
+            ]
+          );
+        }
       }
 
       await queryRunner.commitTransaction();
@@ -548,9 +679,9 @@ export class TournamentsService {
   // Get tournament players/registrations
   async getTournamentPlayers(clubId: string, tournamentId: string) {
     // Verify tournament exists
-    await this.getTournamentById(clubId, tournamentId);
+    const tournament = await this.getTournamentById(clubId, tournamentId);
 
-    // First try tournament_players table
+    // First try tournament_players table - include balance info
     const query1 = `
       SELECT 
         p.id,
@@ -564,11 +695,33 @@ export class TournamentsService {
         tp.finishing_position,
         tp.prize_amount,
         tp.is_active,
-        'registered' as registration_status
+        tp.session_started_at,
+        tp.is_exited,
+        tp.exited_at,
+        tp.exit_balance,
+        tp.rebuy_count,
+        tp.addon_count,
+        tp.total_invested,
+        'registered' as registration_status,
+        COALESCE((
+          SELECT SUM(
+            CASE 
+              WHEN ft.type IN ('DEPOSIT', 'BUY_IN', 'CREDIT') THEN ft.amount
+              WHEN ft.type IN ('WITHDRAWAL', 'CASHOUT', 'DEBIT') THEN -ft.amount
+              ELSE 0
+            END
+          ) FROM financial_transactions ft 
+          WHERE ft.club_id = $2 AND ft.player_id = p.id AND ft.status = 'Completed'
+        ), 0) as wallet_balance,
+        COALESCE((
+          SELECT SUM(ft.amount) FROM financial_transactions ft 
+          WHERE ft.club_id = $2 AND ft.player_id = p.id AND ft.status = 'Completed' AND ft.type = 'CREDIT'
+        ), 0) as total_credits
       FROM tournament_players tp
       INNER JOIN players p ON p.id = tp.player_id
       WHERE tp.tournament_id = $1 AND p.club_id = $2
       ORDER BY 
+        CASE WHEN tp.is_exited THEN 1 ELSE 0 END,
         CASE WHEN tp.finishing_position IS NOT NULL THEN tp.finishing_position ELSE 9999 END,
         tp.registered_at DESC
     `;
@@ -590,7 +743,25 @@ export class TournamentsService {
           NULL as finishing_position,
           NULL as prize_amount,
           true as is_active,
-          tr.status as registration_status
+          NULL as session_started_at,
+          false as is_exited,
+          NULL as exited_at,
+          0 as exit_balance,
+          tr.status as registration_status,
+          COALESCE((
+            SELECT SUM(
+              CASE 
+                WHEN ft.type IN ('DEPOSIT', 'BUY_IN', 'CREDIT') THEN ft.amount
+                WHEN ft.type IN ('WITHDRAWAL', 'CASHOUT', 'DEBIT') THEN -ft.amount
+                ELSE 0
+              END
+            ) FROM financial_transactions ft 
+            WHERE ft.club_id = $2 AND ft.player_id = p.id AND ft.status = 'Completed'
+          ), 0) as wallet_balance,
+          COALESCE((
+            SELECT SUM(ft.amount) FROM financial_transactions ft 
+            WHERE ft.club_id = $2 AND ft.player_id = p.id AND ft.status = 'Completed' AND ft.type = 'CREDIT'
+          ), 0) as total_credits
         FROM tournament_registrations tr
         INNER JOIN players p ON p.id = tr.player_id
         WHERE tr.tournament_id = $1 AND p.club_id = $2
@@ -628,6 +799,225 @@ export class TournamentsService {
 
     const result = await this.dataSource.query(query, [tournamentId]);
     return result;
+  }
+
+  // Exit a player from an active tournament
+  async exitTournamentPlayer(
+    clubId: string,
+    tournamentId: string,
+    playerId: string,
+    exitBalance: number = 0,
+    notes?: string,
+  ) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Can only exit players from active tournaments');
+    }
+
+    // Check player is in the tournament and not already exited
+    const playerCheck = await this.dataSource.query(
+      `SELECT tp.*, p.name as player_name 
+       FROM tournament_players tp
+       INNER JOIN players p ON p.id = tp.player_id
+       WHERE tp.tournament_id = $1 AND tp.player_id = $2`,
+      [tournamentId, playerId]
+    );
+
+    if (!playerCheck || playerCheck.length === 0) {
+      throw new NotFoundException('Player not found in this tournament');
+    }
+
+    const playerEntry = playerCheck[0];
+    if (playerEntry.is_exited) {
+      throw new BadRequestException('Player has already exited this tournament');
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const exitedAt = new Date().toISOString();
+
+      // Mark player as exited in tournament_players (clear session_started_at to end their session)
+      await queryRunner.query(
+        `UPDATE tournament_players 
+         SET is_exited = true, exited_at = $3, exit_balance = $4, is_active = false, session_started_at = NULL
+         WHERE tournament_id = $1 AND player_id = $2`,
+        [tournamentId, playerId, exitedAt, exitBalance]
+      );
+
+      // If exit_balance > 0, credit it back to the player with correct game type
+      if (exitBalance > 0) {
+        const gameType = this.getGameType(tournament);
+        const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
+        await queryRunner.query(
+          `INSERT INTO financial_transactions 
+           (club_id, player_id, player_name, amount, type, status, game_type, notes)
+           VALUES ($1, $2, $3, $4, 'CREDIT', 'Completed', $6, $5)`,
+          [
+            clubId,
+            playerId,
+            playerEntry.player_name,
+            exitBalance,
+            notes || `${gameLabel} Tournament exit cashout - ${tournament.name}`,
+            gameType
+          ]
+        );
+
+        console.log(`💰 [TOURNAMENT EXIT] Credited ₹${exitBalance} to player ${playerEntry.player_name}`);
+      } else {
+        console.log(`🔴 [TOURNAMENT EXIT] Player ${playerEntry.player_name} exited with ₹0 (bust)`);
+      }
+
+      await queryRunner.commitTransaction();
+
+      return {
+        success: true,
+        message: `Player ${playerEntry.player_name} exited tournament${exitBalance > 0 ? ` with ₹${exitBalance}` : ' (bust)'}`,
+        exitBalance,
+        exitedAt,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ [TOURNAMENT EXIT] Error:', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  // Rebuy / Re-entry for an exited player
+  async rebuyTournamentPlayer(
+    clubId: string,
+    tournamentId: string,
+    playerId: string,
+    type: 'rebuy' | 'reentry' | 'addon' = 'rebuy',
+  ) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Tournament is not active');
+    }
+
+    // Parse tournament structure for settings
+    let structure = tournament.structure || {};
+    if (typeof structure === 'string') {
+      try { structure = JSON.parse(structure); } catch { structure = {}; }
+    }
+
+    const allowRebuys = structure.allow_rebuys || tournament.allow_rebuys || false;
+    const allowReentry = structure.allow_reentry || tournament.allow_reentry || false;
+    const allowAddon = structure.allow_addon || tournament.allow_addon || false;
+    const lateRegistrationMinutes = structure.late_registration || tournament.late_registration || 0;
+    const buyInAmount = parseFloat(tournament.buy_in) || 0;
+
+    // Validate permission
+    if (type === 'rebuy' && !allowRebuys) {
+      throw new BadRequestException('Rebuys are not allowed in this tournament');
+    }
+    if (type === 'reentry' && !allowReentry) {
+      throw new BadRequestException('Re-entry is not allowed in this tournament');
+    }
+    if (type === 'addon' && !allowAddon) {
+      throw new BadRequestException('Add-ons are not allowed in this tournament');
+    }
+
+    // Check late registration window for re-entry
+    if (type === 'reentry' && lateRegistrationMinutes > 0 && tournament.session_started_at) {
+      const sessionStart = new Date(tournament.session_started_at).getTime();
+      const now = Date.now();
+      const elapsedMinutes = (now - sessionStart) / (1000 * 60);
+      if (elapsedMinutes > lateRegistrationMinutes) {
+        throw new BadRequestException(`Late registration/re-entry window has closed (${lateRegistrationMinutes} minutes)`);
+      }
+    }
+
+    // Check player exists
+    const playerCheck = await this.dataSource.query(
+      `SELECT tp.*, p.name as player_name 
+       FROM tournament_players tp
+       INNER JOIN players p ON p.id = tp.player_id
+       WHERE tp.tournament_id = $1 AND tp.player_id = $2`,
+      [tournamentId, playerId]
+    );
+
+    if (!playerCheck || playerCheck.length === 0) {
+      throw new NotFoundException('Player not found in this tournament');
+    }
+
+    const playerEntry = playerCheck[0];
+
+    // For rebuy/reentry, player must be exited
+    if ((type === 'rebuy' || type === 'reentry') && !playerEntry.is_exited) {
+      throw new BadRequestException('Player must be exited to rebuy or re-enter');
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // Deduct buy-in from player balance with correct game type
+      const gameType = this.getGameType(tournament);
+      const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
+      if (buyInAmount > 0) {
+        await queryRunner.query(
+          `INSERT INTO financial_transactions 
+           (club_id, player_id, player_name, amount, type, status, game_type, notes)
+           VALUES ($1, $2, $3, $4, 'BUY_IN', 'Completed', $6, $5)`,
+          [
+            clubId,
+            playerId,
+            playerEntry.player_name,
+            buyInAmount,
+            `${gameLabel} Tournament ${type} - ${tournament.name}`,
+            gameType
+          ]
+        );
+      }
+
+      // Update tournament_players
+      if (type === 'rebuy' || type === 'reentry') {
+        await queryRunner.query(
+          `UPDATE tournament_players 
+           SET is_exited = false, is_active = true, exited_at = NULL, exit_balance = 0,
+               rebuy_count = rebuy_count + 1,
+               total_invested = COALESCE(total_invested, 0) + $3,
+               session_started_at = $4
+           WHERE tournament_id = $1 AND player_id = $2`,
+          [tournamentId, playerId, buyInAmount, new Date().toISOString()]
+        );
+      } else {
+        // Addon - player stays in, just add chips investment
+        await queryRunner.query(
+          `UPDATE tournament_players 
+           SET addon_count = addon_count + 1,
+               total_invested = COALESCE(total_invested, 0) + $3
+           WHERE tournament_id = $1 AND player_id = $2`,
+          [tournamentId, playerId, buyInAmount]
+        );
+      }
+
+      await queryRunner.commitTransaction();
+
+      const actionLabel = type === 'rebuy' ? 'Rebuy' : type === 'reentry' ? 'Re-entry' : 'Add-on';
+      console.log(`🔄 [TOURNAMENT ${actionLabel.toUpperCase()}] Player ${playerEntry.player_name} - ₹${buyInAmount}`);
+
+      return {
+        success: true,
+        message: `${actionLabel} successful for ${playerEntry.player_name} (₹${buyInAmount})`,
+        type,
+        amount: buyInAmount,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error(`❌ [TOURNAMENT REBUY] Error:`, error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 }
 

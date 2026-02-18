@@ -216,6 +216,180 @@ export class PlayerChatService {
   }
 
   /**
+   * Get all chat sessions for a player (including closed), with pagination
+   */
+  async getPlayerSessions(
+    playerId: string,
+    clubId: string,
+    page: number = 1,
+    limit: number = 10,
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+
+      const player = await this.playersRepo.findOne({
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club'],
+      });
+
+      if (!player) {
+        throw new NotFoundException('Player not found');
+      }
+
+      const query = this.sessionRepo.createQueryBuilder('session')
+        .leftJoinAndSelect('session.club', 'club')
+        .leftJoinAndSelect('session.player', 'player')
+        .leftJoinAndSelect('session.assignedStaff', 'assignedStaff')
+        .where('club.id = :clubId', { clubId })
+        .andWhere('player.id = :playerId', { playerId })
+        .andWhere('session.sessionType = :type', { type: ChatSessionType.PLAYER });
+
+      const total = await query.getCount();
+      const sessions = await query
+        .orderBy('session.lastMessageAt', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit)
+        .getMany();
+
+      const sessionsWithMeta = await Promise.all(
+        sessions.map(async (session) => {
+          const messageCount = await this.messageRepo.count({
+            where: { session: { id: session.id } }
+          });
+
+          const lastMessage = await this.messageRepo.findOne({
+            where: { session: { id: session.id } },
+            order: { createdAt: 'DESC' }
+          });
+
+          return {
+            id: session.id,
+            subject: session.subject,
+            status: session.status,
+            messageCount,
+            lastMessage: lastMessage?.message || null,
+            lastMessageSender: lastMessage?.senderType === MessageSenderType.STAFF ? 'staff' : 'player',
+            assignedStaffName: session.assignedStaff?.name || null,
+            createdAt: session.createdAt.toISOString(),
+            lastMessageAt: session.lastMessageAt.toISOString(),
+            closedAt: session.closedAt?.toISOString() || null,
+          };
+        })
+      );
+
+      return {
+        sessions: sessionsWithMeta,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      };
+    } catch (err) {
+      console.error('Get player sessions error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException ||
+        err instanceof ForbiddenException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get sessions');
+    }
+  }
+
+  /**
+   * Get messages for a specific session (used for viewing closed ticket history)
+   */
+  async getSessionMessages(
+    playerId: string,
+    clubId: string,
+    sessionId: string,
+    page: number = 1,
+    limit: number = 50,
+  ) {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(playerId)) {
+        throw new BadRequestException('Invalid player ID format');
+      }
+      if (!uuidRegex.test(clubId)) {
+        throw new BadRequestException('Invalid club ID format');
+      }
+      if (!uuidRegex.test(sessionId)) {
+        throw new BadRequestException('Invalid session ID format');
+      }
+
+      const session = await this.sessionRepo.findOne({
+        where: {
+          id: sessionId,
+          club: { id: clubId },
+          player: { id: playerId },
+          sessionType: ChatSessionType.PLAYER
+        },
+        relations: ['player']
+      });
+
+      if (!session) {
+        throw new NotFoundException('Chat session not found');
+      }
+
+      const total = await this.messageRepo.count({
+        where: { session: { id: sessionId } }
+      });
+
+      const messages = await this.messageRepo.find({
+        where: { session: { id: sessionId } },
+        relations: ['senderStaff', 'senderPlayer'],
+        order: { createdAt: 'ASC' },
+        take: limit,
+        skip: (page - 1) * limit
+      });
+
+      // Mark staff messages as read when player views
+      await this.messageRepo.update(
+        {
+          session: { id: sessionId },
+          isRead: false,
+          senderType: MessageSenderType.STAFF
+        },
+        {
+          isRead: true,
+          readAt: new Date()
+        }
+      );
+
+      return {
+        messages: messages.map(msg => ({
+          id: msg.id,
+          message: msg.message,
+          sender: msg.senderType === MessageSenderType.PLAYER ? 'player' : 'staff',
+          sender_name: msg.senderName,
+          timestamp: msg.createdAt.toISOString(),
+          isFromStaff: msg.senderType === MessageSenderType.STAFF
+        })),
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      };
+    } catch (err) {
+      console.error('Get session messages error:', err);
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException ||
+        err instanceof ForbiddenException
+      ) {
+        throw err;
+      }
+      throw new BadRequestException('Failed to get session messages');
+    }
+  }
+
+  /**
    * Get active chat session from unified chat system
    */
   async getActiveSession(playerId: string, clubId: string) {

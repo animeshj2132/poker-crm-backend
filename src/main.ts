@@ -2,12 +2,18 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { StorageService } from './storage/storage.service';
 import { ValidationPipe } from '@nestjs/common';
+import { RedisIoAdapter } from './events/redis-io.adapter';
 import * as http from 'http';
 import * as https from 'https';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('api');
+
+  // Set up Redis WebSocket adapter for reliable real-time messaging
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis();
+  app.useWebSocketAdapter(redisIoAdapter);
   
   // Build allowed origins from environment variables
   const allowedOrigins = [

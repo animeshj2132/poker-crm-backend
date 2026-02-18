@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Query,
+  Param,
   Headers,
   BadRequestException,
 } from '@nestjs/common';
@@ -64,6 +65,62 @@ export class PlayerChatController {
       clubId.trim(),
       body.message.trim(),
       body.playerName || undefined
+    );
+  }
+
+  /**
+   * Get all chat sessions for a player (including closed), with pagination
+   * GET /api/player-chat/sessions
+   */
+  @Get('sessions')
+  async getPlayerSessions(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? Math.min(parseInt(limit, 10), 10) : 10;
+    return this.chatService.getPlayerSessions(
+      playerId.trim(),
+      clubId.trim(),
+      pageNum,
+      limitNum,
+    );
+  }
+
+  /**
+   * Get messages for a specific session (for viewing closed ticket history)
+   * GET /api/player-chat/sessions/:sessionId/messages
+   */
+  @Get('sessions/:sessionId/messages')
+  async getSessionMessages(
+    @Param('sessionId') sessionId: string,
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? Math.min(parseInt(limit, 10), 50) : 50;
+    return this.chatService.getSessionMessages(
+      playerId.trim(),
+      clubId.trim(),
+      sessionId,
+      pageNum,
+      limitNum,
     );
   }
 

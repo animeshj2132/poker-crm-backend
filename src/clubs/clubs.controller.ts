@@ -13224,6 +13224,153 @@ export class ClubsController {
   }
 
   /**
+   * Pause an active tournament
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/pause
+   */
+  @Post(':clubId/tournaments/:tournamentId/pause')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async pauseTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const tournament = await this.tournamentsService.pauseTournament(clubId, tournamentId);
+
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_paused',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Paused tournament ${tournament.name}`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: tournament.name,
+            metadata: { tournamentName: tournament.name },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament pause:', auditError);
+      }
+
+      return { success: true, tournament, message: 'Tournament paused successfully' };
+    } catch (error) {
+      console.error('Error in pauseTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Resume a paused tournament
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/resume
+   */
+  @Post(':clubId/tournaments/:tournamentId/resume')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async resumeTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const tournament = await this.tournamentsService.resumeTournament(clubId, tournamentId);
+
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_resumed',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Resumed tournament ${tournament.name}`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: tournament.name,
+            metadata: { tournamentName: tournament.name },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament resume:', auditError);
+      }
+
+      return { success: true, tournament, message: 'Tournament resumed successfully' };
+    } catch (error) {
+      console.error('Error in resumeTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Stop a tournament (forced end without winners)
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/stop
+   */
+  @Post(':clubId/tournaments/:tournamentId/stop')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @UseGuards(RolesGuard)
+  async stopTournament(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Headers('x-user-id') userId?: string,
+    @Req() req?: Request
+  ) {
+    try {
+      const tournament = await this.tournamentsService.stopTournament(clubId, tournamentId);
+
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_stopped',
+            actionCategory: ActionCategory.TOURNAMENT,
+            description: `Force stopped tournament ${tournament.name} without declaring winners`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: tournament.name,
+            metadata: { tournamentName: tournament.name },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament stop:', auditError);
+      }
+
+      return { success: true, tournament, message: 'Tournament stopped successfully' };
+    } catch (error) {
+      console.error('Error in stopTournament:', error);
+      throw error;
+    }
+  }
+
+  /**
    * End tournament with winners
    * POST /api/clubs/:clubId/tournaments/:tournamentId/end
    */
@@ -13313,6 +13460,85 @@ export class ClubsController {
       return { success: true, winners };
     } catch (error) {
       console.error('Error in getTournamentWinners:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Exit a player from an active tournament
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/exit-player
+   */
+  @Post(':clubId/tournaments/:tournamentId/exit-player')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async exitTournamentPlayer(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Body() body: { playerId: string; exitBalance?: number; notes?: string },
+    @Headers('x-user-id') userId?: string,
+  ) {
+    try {
+      const result = await this.tournamentsService.exitTournamentPlayer(
+        clubId,
+        tournamentId,
+        body.playerId,
+        body.exitBalance || 0,
+        body.notes,
+      );
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'tournament_player_exited',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Exited player from tournament with balance ₹${body.exitBalance || 0}`,
+            targetType: 'tournament',
+            targetId: tournamentId,
+            targetName: `Tournament ${tournamentId}`,
+            metadata: { playerId: body.playerId, exitBalance: body.exitBalance || 0 },
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament player exit:', auditError);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error in exitTournamentPlayer:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Rebuy / Re-entry / Add-on for a tournament player
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/rebuy
+   */
+  @Post(':clubId/tournaments/:tournamentId/rebuy')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async rebuyTournamentPlayer(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Body() body: { playerId: string; type?: 'rebuy' | 'reentry' | 'addon' },
+  ) {
+    try {
+      return await this.tournamentsService.rebuyTournamentPlayer(
+        clubId,
+        tournamentId,
+        body.playerId,
+        body.type || 'rebuy',
+      );
+    } catch (error) {
+      console.error('Error in rebuyTournamentPlayer:', error);
       throw error;
     }
   }

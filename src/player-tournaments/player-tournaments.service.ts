@@ -72,7 +72,10 @@ export class PlayerTournamentsService {
           current_players as "registeredPlayers",
           start_time as "startDate", 
           status,
-          structure
+          structure,
+          session_started_at,
+          late_registration,
+          rummy_variant
         FROM tournaments 
         WHERE club_id = $1 
           AND status NOT IN ('completed', 'cancelled')
@@ -81,18 +84,30 @@ export class PlayerTournamentsService {
       `, [clubId, limit]) as Tournament[];
       console.log('🏆 [TOURNAMENTS] Found tournaments:', tournamentsData.length, tournamentsData);
 
-      const tournaments = tournamentsData.map((t: any) => ({
-        id: t.id,
-        name: t.name,
-        description: t.description,
-        startDate: t.startDate,
-        buyIn: parseFloat(t.buy_in),
-        prizePool: parseFloat(t.prize_pool),
-        maxPlayers: t.max_players,
-        registeredPlayers: t.registeredPlayers || 0,
-        status: t.status,
-        structure: t.structure,
-      }));
+      const tournaments = tournamentsData.map((t: any) => {
+        // Parse structure to extract late_registration if stored in JSONB
+        let structure = t.structure || {};
+        if (typeof structure === 'string') {
+          try { structure = JSON.parse(structure); } catch { structure = {}; }
+        }
+        const lateRegistrationMinutes = t.late_registration || structure.late_registration || 0;
+
+        return {
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          startDate: t.startDate,
+          buyIn: parseFloat(t.buy_in),
+          prizePool: parseFloat(t.prize_pool),
+          maxPlayers: t.max_players,
+          registeredPlayers: t.registeredPlayers || 0,
+          status: t.status,
+          structure: t.structure,
+          sessionStartedAt: t.session_started_at || null,
+          lateRegistrationMinutes,
+          gameType: t.rummy_variant ? 'rummy' : 'poker',
+        };
+      });
 
       return {
         tournaments,
@@ -221,7 +236,8 @@ export class PlayerTournamentsService {
 
       // Check if tournament exists and is available
       const tournament = await this.playersRepo.query(`
-        SELECT id, name, max_players, current_players, status, start_time, buy_in
+        SELECT id, name, max_players, current_players, status, start_time, buy_in, rummy_variant,
+               session_started_at, structure
         FROM tournaments
         WHERE id = $1 AND club_id = $2
       `, [tournamentId, clubId]);
@@ -234,6 +250,31 @@ export class PlayerTournamentsService {
       const allowedStatuses = ['scheduled', 'upcoming', 'registration_open', 'registering', 'active'];
       if (!allowedStatuses.includes(tourn.status)) {
         throw new BadRequestException(`Tournament is not accepting registrations (status: ${tourn.status})`);
+      }
+
+      // If tournament is active, enforce late registration window
+      if (tourn.status === 'active' && tourn.session_started_at) {
+        let structure = tourn.structure || {};
+        if (typeof structure === 'string') {
+          try { structure = JSON.parse(structure); } catch { structure = {}; }
+        }
+        const lateRegistrationMinutes = structure.late_registration || tourn.late_registration || 0;
+
+        if (lateRegistrationMinutes > 0) {
+          const sessionStart = new Date(tourn.session_started_at).getTime();
+          const now = Date.now();
+          const elapsedMinutes = (now - sessionStart) / (1000 * 60);
+          if (elapsedMinutes > lateRegistrationMinutes) {
+            throw new BadRequestException(
+              `Late registration window has closed. Registration was allowed for ${lateRegistrationMinutes} minutes after tournament start.`
+            );
+          }
+        } else {
+          // No late registration configured — don't allow new registrations once active
+          throw new BadRequestException(
+            'This tournament does not allow late registration. Registration closed when the tournament started.'
+          );
+        }
       }
 
       if (tourn.current_players >= tourn.max_players) {
@@ -318,6 +359,10 @@ export class PlayerTournamentsService {
         if (buyInRequired > 0) {
           console.log(`💰 [TOURNAMENT REG] Deducting ₹${buyInRequired} from player ${playerId}`);
           
+          // Determine game type from tournament (poker or rummy)
+          const gameType = tourn.rummy_variant ? 'rummy' : 'poker';
+          const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
+
           // Create financial transaction for tournament registration fee
           const transactionResult = await queryRunner.query(`
             INSERT INTO financial_transactions (
@@ -332,8 +377,8 @@ export class PlayerTournamentsService {
             'Buy In',
             buyInRequired,
             'Completed',
-            'poker',
-            `Tournament Registration: ${tourn.name} (ID: ${tournamentId})`
+            gameType,
+            `${gameLabel} Tournament Registration: ${tourn.name} (ID: ${tournamentId})`
           ]);
 
           console.log(`💰 [TOURNAMENT REG] Transaction created: ${transactionResult[0].id}`);
@@ -439,11 +484,13 @@ export class PlayerTournamentsService {
 
       // Get tournament details for refund
       const tournament = await this.playersRepo.query(`
-        SELECT name, buy_in FROM tournaments WHERE id = $1 AND club_id = $2
+        SELECT name, buy_in, rummy_variant FROM tournaments WHERE id = $1 AND club_id = $2
       `, [tournamentId, clubId]);
 
       const buyInAmount = tournament && tournament.length > 0 ? parseFloat(tournament[0].buy_in) : 0;
       const tournamentName = tournament && tournament.length > 0 ? tournament[0].name : 'Unknown Tournament';
+      const cancelGameType = tournament && tournament.length > 0 && tournament[0].rummy_variant ? 'rummy' : 'poker';
+      const cancelGameLabel = cancelGameType.charAt(0).toUpperCase() + cancelGameType.slice(1);
 
       // Use transaction to ensure atomicity
       const queryRunner = this.dataSource.createQueryRunner();
@@ -481,8 +528,8 @@ export class PlayerTournamentsService {
             'Refund',
             buyInAmount,
             'Completed',
-            'poker',
-            `Tournament Registration Refund: ${tournamentName} (ID: ${tournamentId})`
+            cancelGameType,
+            `${cancelGameLabel} Tournament Registration Refund: ${tournamentName} (ID: ${tournamentId})`
           ]);
 
           console.log(`💰 [TOURNAMENT CANCEL] Refund completed for player ${playerId}`);

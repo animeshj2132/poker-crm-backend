@@ -680,6 +680,34 @@ export class WaitlistSeatingService {
           console.log(`[BUY-IN AMOUNT] Player: ${entry.playerName}, ID: ${entry.playerId}, Amount: ${buyInAmount}, Seated: ${entry.seatedAt}, Transactions found: ${allTransactions.length}`);
         }
         
+        // Get player's overall wallet balance
+        let walletBalance = 0;
+        if (entry.playerId) {
+          const balanceResult = await this.waitlistRepo.manager.query(
+            `SELECT SUM(
+              CASE 
+                WHEN type IN ('DEPOSIT', 'BUY_IN', 'CREDIT') THEN amount
+                WHEN type IN ('WITHDRAWAL', 'CASHOUT', 'DEBIT') THEN -amount
+                ELSE 0
+              END
+            ) as total FROM financial_transactions 
+            WHERE player_id = $1 AND status = 'Completed'`,
+            [entry.playerId]
+          );
+          walletBalance = balanceResult && balanceResult.length > 0 ? parseFloat(balanceResult[0].total) || 0 : 0;
+        }
+
+        // Get player's total credits (outstanding)
+        let totalCredits = 0;
+        if (entry.playerId) {
+          const creditsResult = await this.waitlistRepo.manager.query(
+            `SELECT COALESCE(SUM(amount), 0) as total FROM financial_transactions
+             WHERE player_id = $1 AND type = 'CREDIT' AND status = 'Completed'`,
+            [entry.playerId]
+          );
+          totalCredits = creditsResult && creditsResult.length > 0 ? parseFloat(creditsResult[0].total) || 0 : 0;
+        }
+
         return {
           playerId: entry.playerId,
           playerName: entry.playerName || 'Unknown',
@@ -687,7 +715,9 @@ export class WaitlistSeatingService {
           seatedAt: entry.seatedAt,
           tableNumber: entry.tableNumber,
           buyInAmount: buyInAmount,
-          sessionBuyInAmount: buyInAmount, // Add both for compatibility
+          sessionBuyInAmount: buyInAmount,
+          walletBalance: walletBalance,
+          totalCredits: totalCredits,
         };
       })
     );
