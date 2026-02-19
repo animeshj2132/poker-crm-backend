@@ -1,10 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { UsersService } from '../users/users.service';
 import { UsersModule } from '../users/users.module';
 import { ClubsModule } from '../clubs/clubs.module';
+import { EventsModule } from '../events/events.module';
 import { UserTenantRole } from '../users/user-tenant-role.entity';
 import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
@@ -19,6 +20,7 @@ import { ApiKeyAuthGuard } from './api-key.guard';
   imports: [
     UsersModule,
     ClubsModule,
+    forwardRef(() => EventsModule),
     TypeOrmModule.forFeature([
       UserTenantRole,
       UserClubRole,

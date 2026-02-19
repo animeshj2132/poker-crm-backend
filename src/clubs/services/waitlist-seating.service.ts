@@ -5,7 +5,7 @@ import { WaitlistEntry, WaitlistStatus } from '../entities/waitlist-entry.entity
 import { Table, TableStatus, TableType } from '../entities/table.entity';
 import { Club } from '../club.entity';
 import { Player } from '../entities/player.entity';
-import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
+import { FinancialTransaction, TransactionType, TransactionStatus, WALLET_BALANCE_SQL, CREDIT_BALANCE_SQL } from '../entities/financial-transaction.entity';
 import { EventsService } from '../../events/events.service';
 
 @Injectable()
@@ -243,31 +243,16 @@ export class WaitlistSeatingService {
       throw new NotFoundException('Player not found');
     }
 
-    // Calculate player's ENTIRE available balance (will take it all)
-    // DEBUG: Check all transactions first
-    const allTransactions = await this.dataSource.query(
-      `SELECT id, type, amount, status, created_at FROM financial_transactions 
-       WHERE club_id = $1 AND player_id = $2 
-       ORDER BY created_at DESC`,
-      [clubId, entry.playerId]
-    );
-    
-    console.log(`🔍 [ASSIGN SEAT DEBUG] Player ${entry.playerName} (${entry.playerId}) ALL transactions:`, allTransactions);
-    
-    // Fixed: Use UPPER() for case-insensitive type and status checks
+    // Calculate player's wallet balance (real money, not on a table)
     const completedTransactions = await this.dataSource.query(
-      `SELECT SUM(
-        CASE 
-          WHEN UPPER(type) IN ('DEPOSIT', 'CREDIT') THEN amount
-          WHEN UPPER(type) IN ('WITHDRAWAL', 'CASHOUT', 'BUY_IN', 'DEBIT') THEN -amount
-          ELSE 0
-        END
-      ) as total FROM financial_transactions 
+      `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions 
       WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
       [clubId, entry.playerId]
     );
 
     const availableBalance = completedTransactions[0]?.total ? Number(completedTransactions[0].total) : 0;
+    
+    console.log(`🔍 [ASSIGN SEAT] Player ${entry.playerName} wallet balance: ₹${availableBalance}`);
     
     // CRITICAL: Check if player has credit available (for credit-only players)
     const creditEnabled = (player as any).creditEnabled || false;
@@ -333,24 +318,24 @@ export class WaitlistSeatingService {
       const savedTable = await queryRunner.manager.save(table);
       const savedEntry = await queryRunner.manager.save(entry);
 
-      // CRITICAL: Create buy-in transaction for ENTIRE cash balance (player brings all money to table)
-      if (availableBalance > 0) {
-        const buyInTransaction = queryRunner.manager.create(FinancialTransaction, {
+      // Transfer cash from wallet to table (only if wallet > 0)
+      const cashToTable = Math.max(0, availableBalance);
+      if (cashToTable > 0) {
+        const tableBuyIn = queryRunner.manager.create(FinancialTransaction, {
           club: { id: clubId } as any,
           playerId: player.id,
           playerName: player.name,
-          amount: availableBalance,
-          type: TransactionType.BUY_IN,
+          amount: cashToTable,
+          type: TransactionType.TABLE_BUY_IN,
           status: TransactionStatus.COMPLETED,
-          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Cash: ₹${availableBalance.toFixed(2)})`
+          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Cash: ₹${cashToTable.toFixed(2)})`
         });
 
-        await queryRunner.manager.save(buyInTransaction);
-        console.log(`✅ [TABLE SEATING] Took cash balance ₹${availableBalance} from player ${player.name} for table`);
+        await queryRunner.manager.save(tableBuyIn);
+        console.log(`✅ [TABLE SEATING] Moved ₹${cashToTable} from wallet to table for player ${player.name}`);
       }
 
-      // CRITICAL: Auto-apply approved credit when joining table
-      // If player has approved credit, automatically apply it to table balance
+      // Auto-apply approved credit as table balance
       if (availableCredit > 0) {
         const creditTransaction = queryRunner.manager.create(FinancialTransaction, {
           club: { id: clubId } as any,
@@ -359,13 +344,14 @@ export class WaitlistSeatingService {
           amount: availableCredit,
           type: TransactionType.CREDIT,
           status: TransactionStatus.COMPLETED,
-          notes: `Auto-applied approved credit on table join - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
+          notes: `Credit applied on table join - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
         });
 
         await queryRunner.manager.save(creditTransaction);
-        console.log(`✅ [TABLE SEATING] Auto-applied approved credit ₹${availableCredit} for player ${player.name}`);
-        console.log(`   Table Balance: ₹${availableBalance} cash + ₹${availableCredit} credit = ₹${availableBalance + availableCredit} total`);
+        console.log(`✅ [TABLE SEATING] Applied credit ₹${availableCredit} for player ${player.name}`);
       }
+
+      console.log(`   Table Balance: ₹${cashToTable} cash + ₹${availableCredit} credit = ₹${cashToTable + availableCredit} total`);
 
       await queryRunner.commitTransaction();
     
@@ -665,13 +651,13 @@ export class WaitlistSeatingService {
           
           console.log(`[DEBUG] All transactions for player ${entry.playerName}:`, allTransactions);
           
-          // Sum all BUY_IN transactions for this player (don't filter by date for now)
+          // Sum all table buy-in transactions (both old 'Buy In' and new 'Table Buy In') + Credit
           const result = await this.waitlistRepo.manager.query(
             `SELECT COALESCE(SUM(amount), 0) as total_buy_in
              FROM financial_transactions
              WHERE player_id = $1 
-             AND type = 'Buy In'
-             AND status = 'Completed'`,
+             AND UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT')
+             AND UPPER(status) = 'COMPLETED'`,
             [entry.playerId]
           );
           
@@ -680,29 +666,23 @@ export class WaitlistSeatingService {
           console.log(`[BUY-IN AMOUNT] Player: ${entry.playerName}, ID: ${entry.playerId}, Amount: ${buyInAmount}, Seated: ${entry.seatedAt}, Transactions found: ${allTransactions.length}`);
         }
         
-        // Get player's overall wallet balance
+        // Wallet balance = real money not on table (can be negative)
         let walletBalance = 0;
         if (entry.playerId) {
           const balanceResult = await this.waitlistRepo.manager.query(
-            `SELECT SUM(
-              CASE 
-                WHEN type IN ('DEPOSIT', 'BUY_IN', 'CREDIT') THEN amount
-                WHEN type IN ('WITHDRAWAL', 'CASHOUT', 'DEBIT') THEN -amount
-                ELSE 0
-              END
-            ) as total FROM financial_transactions 
-            WHERE player_id = $1 AND status = 'Completed'`,
+            `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions 
+            WHERE player_id = $1 AND UPPER(status) = 'COMPLETED'`,
             [entry.playerId]
           );
           walletBalance = balanceResult && balanceResult.length > 0 ? parseFloat(balanceResult[0].total) || 0 : 0;
         }
 
-        // Get player's total credits (outstanding)
+        // Outstanding credit balance (credit given - credit paid back)
         let totalCredits = 0;
         if (entry.playerId) {
           const creditsResult = await this.waitlistRepo.manager.query(
-            `SELECT COALESCE(SUM(amount), 0) as total FROM financial_transactions
-             WHERE player_id = $1 AND type = 'CREDIT' AND status = 'Completed'`,
+            `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions
+             WHERE player_id = $1 AND UPPER(status) = 'COMPLETED'`,
             [entry.playerId]
           );
           totalCredits = creditsResult && creditsResult.length > 0 ? parseFloat(creditsResult[0].total) || 0 : 0;

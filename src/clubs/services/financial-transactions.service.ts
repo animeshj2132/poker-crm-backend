@@ -61,13 +61,16 @@ export class FinancialTransactionsService {
     const club = await this.clubsRepo.findOne({ where: { id: clubId } });
     if (!club) throw new NotFoundException('Club not found');
 
-    // CRITICAL FIX: Club Buy-In transactions should be COMPLETED immediately
-    // Only Credit requests need approval
     const shouldAutoComplete = [
       TransactionType.DEPOSIT,
       TransactionType.BUY_IN,
       TransactionType.WITHDRAWAL,
-      TransactionType.CASHOUT
+      TransactionType.CASHOUT,
+      TransactionType.CLUB_BUY_IN,
+      TransactionType.CLUB_BUY_OUT,
+      TransactionType.TABLE_BUY_IN,
+      TransactionType.TABLE_BUY_OUT,
+      TransactionType.DEBIT,
     ].includes(data.type);
 
     const transaction = this.transactionsRepo.create({
@@ -197,8 +200,8 @@ export class FinancialTransactionsService {
 
       if (player) {
         // Determine if transaction increases or decreases balance
-        const isCredit = [TransactionType.DEPOSIT, TransactionType.BONUS, TransactionType.CREDIT, TransactionType.REFUND].includes(transaction.type);
-        const isDebit = [TransactionType.CASHOUT, TransactionType.WITHDRAWAL, TransactionType.BUY_IN].includes(transaction.type);
+        const isCredit = [TransactionType.DEPOSIT, TransactionType.BONUS, TransactionType.CREDIT, TransactionType.REFUND, TransactionType.CLUB_BUY_IN, TransactionType.TABLE_BUY_OUT].includes(transaction.type);
+        const isDebit = [TransactionType.CASHOUT, TransactionType.WITHDRAWAL, TransactionType.BUY_IN, TransactionType.CLUB_BUY_OUT, TransactionType.TABLE_BUY_IN, TransactionType.DEBIT].includes(transaction.type);
 
         // Adjust player balance based on transaction type and amount difference
         // Note: This is a simplified approach. You may need to adjust based on your balance calculation logic

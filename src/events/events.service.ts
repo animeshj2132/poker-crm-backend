@@ -472,6 +472,61 @@ export class EventsService {
     }
   }
 
+  // Emit new buy-in request to ALL staff subscribed to this club
+  emitBuyInRequest(clubId: string, request: any) {
+    const clients = this.clubSubscriptions.get(clubId);
+    if (clients && clients.size > 0) {
+      this.server.emit('buyin:new-request', {
+        clubId,
+        request: {
+          id: request.id,
+          playerId: request.player_id,
+          playerName: request.player_name,
+          tableNumber: request.table_number,
+          seatNumber: request.seat_number,
+          requestedAmount: Number(request.requested_amount),
+          currentTableBalance: Number(request.current_table_balance || 0),
+          requestedAt: request.requested_at,
+          status: request.status,
+        }
+      });
+      this.logger.log(`Emitted buyin:new-request for club ${clubId} to ${clients.size} clients`);
+    }
+  }
+
+  // Emit new buy-out request (call time) to ALL staff subscribed to this club
+  emitBuyOutRequest(clubId: string, request: any) {
+    const clients = this.clubSubscriptions.get(clubId);
+    if (clients && clients.size > 0) {
+      this.server.emit('buyout:new-request', {
+        clubId,
+        request: {
+          id: request.id,
+          playerId: request.player_id,
+          playerName: request.player_name,
+          tableNumber: request.table_number,
+          seatNumber: request.seat_number,
+          requestedAmount: Number(request.requested_amount || 0),
+          currentTableBalance: Number(request.current_table_balance || 0),
+          callTimeStartedAt: request.call_time_started_at,
+          requestedAt: request.requested_at,
+          status: request.status,
+        }
+      });
+      this.logger.log(`Emitted buyout:new-request for club ${clubId} to ${clients.size} clients`);
+    }
+  }
+
+  // Emit buy-in/buy-out request status change to player
+  emitBuyRequestStatusChange(playerId: string, clubId: string, type: 'buyin' | 'buyout', request: any) {
+    this.emitToRecipientWithGuarantee('player', playerId, `${type}:status-changed`, {
+      clubId,
+      playerId,
+      type,
+      request,
+    });
+  }
+
   emitNewChatMessageDirect(clubId: string, sessionId: string, message: any, recipientStaffUserId: string) {
     this.emitToRecipientWithGuarantee('staff', recipientStaffUserId, 'chat:new-message-direct', {
       clubId,

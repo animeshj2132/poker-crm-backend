@@ -18,7 +18,7 @@ import { ClubSettingsService } from './services/club-settings.service';
 import { AuditLogsService } from './services/audit-logs.service';
 import { StaffRole, StaffStatus } from './entities/staff.entity';
 import { CreditRequestStatus } from './entities/credit-request.entity';
-import { TransactionType, TransactionStatus } from './entities/financial-transaction.entity';
+import { TransactionType, TransactionStatus, WALLET_BALANCE_SQL } from './entities/financial-transaction.entity';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { CreateCreditRequestDto } from './dto/create-credit-request.dto';
@@ -1039,6 +1039,24 @@ export class ClubsController {
       }
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
       await this.usersService.removeClubRole(userId, clubId, role as ClubRole);
+
+      try {
+        const user = await this.usersService.findById(userId);
+        await this.auditLogsService.logAction({
+          clubId,
+          staffName: 'Super Admin',
+          staffRole: 'Super Admin',
+          actionType: 'club_user_role_removed',
+          actionCategory: ActionCategory.STAFF_MANAGEMENT,
+          description: `Removed role ${role} from user ${user?.displayName || user?.email || userId}`,
+          targetType: 'user',
+          targetId: userId,
+          targetName: user?.displayName || user?.email || userId,
+          metadata: { role, userId },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for role removal:', auditError);
+      }
     } catch (e) {
       throw e;
     }
@@ -1726,6 +1744,24 @@ export class ClubsController {
         body.baseSalary,
         body.salaryType || 'Monthly',
       );
+
+      try {
+        await this.auditLogsService.logAction({
+          clubId,
+          staffName: 'Admin',
+          staffRole: 'Admin',
+          actionType: 'staff_salary_updated',
+          actionCategory: ActionCategory.PAYROLL,
+          description: `Updated salary for staff ${staff?.name || staffId} to ₹${body.baseSalary} (${body.salaryType || 'Monthly'})`,
+          targetType: 'staff',
+          targetId: staffId,
+          targetName: staff?.name || staffId,
+          metadata: { baseSalary: body.baseSalary, salaryType: body.salaryType || 'Monthly' },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for staff salary update:', auditError);
+      }
+
       return { success: true, staff, message: 'Staff salary updated successfully' };
     } catch (error) {
       console.error('Error in updateStaffSalary:', error);
@@ -4137,7 +4173,25 @@ export class ClubsController {
         throw new BadRequestException('Setting key is required');
       }
       await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
-      return this.clubSettingsService.setSetting(clubId, key.trim(), dto.value);
+      const result = await this.clubSettingsService.setSetting(clubId, key.trim(), dto.value);
+
+      try {
+        await this.auditLogsService.logAction({
+          clubId,
+          staffName: 'Super Admin',
+          staffRole: 'Super Admin',
+          actionType: 'club_setting_updated',
+          actionCategory: ActionCategory.SYSTEM,
+          description: `Updated club setting: ${key.trim()}`,
+          targetType: 'setting',
+          targetName: key.trim(),
+          metadata: { key: key.trim(), value: dto.value },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for setting update:', auditError);
+      }
+
+      return result;
     } catch (e) {
       throw e;
     }
@@ -6562,6 +6616,29 @@ export class ClubsController {
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
 
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'session_settled_and_ended',
+            actionCategory: ActionCategory.TABLE_MANAGEMENT,
+            description: `Settled all players and ended session on table ${table.tableNumber}`,
+            targetType: 'table',
+            targetId: tableId,
+            targetName: `Table ${table.tableNumber}`,
+            metadata: { settlements: body.settlements?.length, rakeAmount: body.rakeAmount },
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for settle and end:', auditError);
+      }
+
       return {
         success: true,
         message: 'All players settled and session ended successfully',
@@ -6663,6 +6740,23 @@ export class ClubsController {
 
       // Update table notes
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      try {
+        await this.auditLogsService.logAction({
+          clubId,
+          staffName: 'Admin',
+          staffRole: 'Admin',
+          actionType: 'session_params_updated',
+          actionCategory: ActionCategory.TABLE_MANAGEMENT,
+          description: `Updated session parameters for table ${table.tableNumber}`,
+          targetType: 'table',
+          targetId: tableId,
+          targetName: `Table ${table.tableNumber}`,
+          metadata: { minPlayTime, callTime, cashOutWindow, sessionTimeout },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for session params update:', auditError);
+      }
 
       return {
         message: 'Session parameters updated successfully',
@@ -9059,8 +9153,8 @@ export class ClubsController {
       return {
         players: await Promise.all(validPlayers.map(async (p) => {
           try {
-            // Calculate credit used from approved credit requests (use limit field, not amount)
             let creditUsed = 0;
+            let walletBalance = 0;
             try {
               const approvedRequests = await this.dataSource.query(
                 `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
@@ -9072,6 +9166,17 @@ export class ClubsController {
               creditUsed = 0;
             }
 
+            try {
+              const balanceResult = await this.dataSource.query(
+                `SELECT ${WALLET_BALANCE_SQL} as balance FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
+                [clubId, p.id]
+              );
+              walletBalance = balanceResult[0]?.balance ? Number(balanceResult[0].balance) : 0;
+            } catch (balanceError) {
+              console.warn(`Failed to calculate balance for player ${p.id}:`, balanceError);
+              walletBalance = 0;
+            }
+
             return {
               id: p.id,
               name: p.name || 'Unknown',
@@ -9079,14 +9184,15 @@ export class ClubsController {
               phoneNumber: p.phoneNumber || null,
               playerId: p.playerId || null,
               status: p.status || 'Active',
-              kycStatus: p.kycStatus || 'pending', // ✅ Include KYC status
+              kycStatus: p.kycStatus || 'pending',
+              balance: walletBalance,
               totalSpent: Number(p.totalSpent) || 0,
               totalCommission: Number(p.totalCommission) || 0,
               affiliateCode: p.affiliate ? (p.affiliate as any).code : null,
               notes: p.notes || null,
-              creditEnabled: (p as any).creditEnabled || false, // ✅ Include credit enabled
-              creditLimit: Number((p as any).creditLimit || 0), // ✅ Include credit limit
-              creditUsed: creditUsed, // ✅ Include credit used
+              creditEnabled: (p as any).creditEnabled || false,
+              creditLimit: Number((p as any).creditLimit || 0),
+              creditUsed: creditUsed,
               createdAt: p.createdAt,
               updatedAt: p.updatedAt
             };
@@ -10022,7 +10128,34 @@ export class ClubsController {
       }
 
       const reviewerId = userId || tenantId || 'system';
-      return await this.playerFieldUpdateService.approveRequest(requestId, reviewerId);
+      const result = await this.playerFieldUpdateService.approveRequest(requestId, reviewerId);
+
+      try {
+        let actorName = 'Admin';
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          actorName = staff?.name || user?.displayName || user?.email || 'Admin';
+        }
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: userId,
+          staffName: actorName,
+          staffRole: 'Admin',
+          actionType: 'field_update_approved',
+          actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+          description: `Approved player field update request ${requestId}`,
+          targetType: 'player',
+          targetId: requestId,
+          targetName: `Field Update ${requestId}`,
+          metadata: { requestId, reviewerId },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for field update approval:', auditError);
+      }
+
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -10067,7 +10200,34 @@ export class ClubsController {
       }
 
       const reviewerId = userId || tenantId || 'system';
-      return await this.playerFieldUpdateService.rejectRequest(requestId, reviewerId, body.reason.trim());
+      const result = await this.playerFieldUpdateService.rejectRequest(requestId, reviewerId, body.reason.trim());
+
+      try {
+        let actorName = 'Admin';
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          actorName = staff?.name || user?.displayName || user?.email || 'Admin';
+        }
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: userId,
+          staffName: actorName,
+          staffRole: 'Admin',
+          actionType: 'field_update_rejected',
+          actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+          description: `Rejected player field update request ${requestId}: ${body.reason.trim()}`,
+          targetType: 'player',
+          targetId: requestId,
+          targetName: `Field Update ${requestId}`,
+          metadata: { requestId, reviewerId, reason: body.reason.trim() },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for field update rejection:', auditError);
+      }
+
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
         throw e;
@@ -10839,8 +10999,7 @@ export class ClubsController {
           pf.rating,
           pf.created_at,
           p.id as player_id,
-          p.first_name,
-          p.last_name,
+          p.name as player_name,
           p.email
         FROM player_feedback pf
         JOIN players p ON pf.player_id = p.id
@@ -10866,7 +11025,7 @@ export class ClubsController {
           createdAt: item.created_at,
           player: {
             id: item.player_id,
-            name: `${item.first_name || ''} ${item.last_name || ''}`.trim() || 'Unknown',
+            name: item.player_name || 'Unknown',
             email: item.email,
           },
         })),
@@ -13529,14 +13688,44 @@ export class ClubsController {
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
     @Body() body: { playerId: string; type?: 'rebuy' | 'reentry' | 'addon' },
+    @Headers('x-user-id') userId?: string,
   ) {
     try {
-      return await this.tournamentsService.rebuyTournamentPlayer(
+      const result = await this.tournamentsService.rebuyTournamentPlayer(
         clubId,
         tournamentId,
         body.playerId,
         body.type || 'rebuy',
       );
+
+      try {
+        let actorName = 'Admin';
+        let actorRole = 'Admin';
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
+          actorName = staff?.name || user?.displayName || user?.email || 'Admin';
+          actorRole = staff?.role || 'Admin';
+        }
+        await this.auditLogsService.logAction({
+          clubId,
+          staffId: userId,
+          staffName: actorName,
+          staffRole: actorRole,
+          actionType: `tournament_${body.type || 'rebuy'}`,
+          actionCategory: ActionCategory.TOURNAMENT,
+          description: `Processed ${body.type || 'rebuy'} for player ${body.playerId} in tournament`,
+          targetType: 'tournament',
+          targetId: tournamentId,
+          targetName: `Tournament ${tournamentId}`,
+          metadata: { playerId: body.playerId, type: body.type || 'rebuy' },
+        });
+      } catch (auditError) {
+        console.error('Failed to create audit log for tournament rebuy:', auditError);
+      }
+
+      return result;
     } catch (error) {
       console.error('Error in rebuyTournamentPlayer:', error);
       throw error;

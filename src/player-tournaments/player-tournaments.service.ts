@@ -74,7 +74,8 @@ export class PlayerTournamentsService {
           status,
           structure,
           session_started_at,
-          late_registration,
+          paused_at,
+          total_paused_seconds,
           rummy_variant
         FROM tournaments 
         WHERE club_id = $1 
@@ -85,12 +86,11 @@ export class PlayerTournamentsService {
       console.log('🏆 [TOURNAMENTS] Found tournaments:', tournamentsData.length, tournamentsData);
 
       const tournaments = tournamentsData.map((t: any) => {
-        // Parse structure to extract late_registration if stored in JSONB
         let structure = t.structure || {};
         if (typeof structure === 'string') {
           try { structure = JSON.parse(structure); } catch { structure = {}; }
         }
-        const lateRegistrationMinutes = t.late_registration || structure.late_registration || 0;
+        const lateRegistrationMinutes = structure.late_registration || 0;
 
         return {
           id: t.id,
@@ -104,6 +104,8 @@ export class PlayerTournamentsService {
           status: t.status,
           structure: t.structure,
           sessionStartedAt: t.session_started_at || null,
+          pausedAt: t.paused_at || null,
+          totalPausedSeconds: parseInt(t.total_paused_seconds) || 0,
           lateRegistrationMinutes,
           gameType: t.rummy_variant ? 'rummy' : 'poker',
         };
@@ -258,7 +260,7 @@ export class PlayerTournamentsService {
         if (typeof structure === 'string') {
           try { structure = JSON.parse(structure); } catch { structure = {}; }
         }
-        const lateRegistrationMinutes = structure.late_registration || tourn.late_registration || 0;
+        const lateRegistrationMinutes = structure.late_registration || 0;
 
         if (lateRegistrationMinutes > 0) {
           const sessionStart = new Date(tourn.session_started_at).getTime();
@@ -570,6 +572,75 @@ export class PlayerTournamentsService {
       }
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       throw new BadRequestException(`Failed to cancel registration: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Get player's status in a specific tournament
+   */
+  async getPlayerTournamentStatus(playerId: string, clubId: string, tournamentId: string) {
+    try {
+      const result = await this.dataSource.query(`
+        SELECT 
+          tp.player_id,
+          tp.is_active,
+          tp.is_exited,
+          tp.exited_at,
+          tp.exit_balance,
+          tp.session_started_at,
+          tp.rebuy_count,
+          tp.addon_count,
+          tp.total_invested,
+          tp.registered_at,
+          tp.finishing_position,
+          tp.prize_amount,
+          t.status as tournament_status,
+          t.session_started_at as tournament_session_started_at,
+          t.paused_at as tournament_paused_at,
+          t.total_paused_seconds as tournament_total_paused_seconds,
+          t.buy_in,
+          t.structure
+        FROM tournament_players tp
+        INNER JOIN tournaments t ON t.id = tp.tournament_id
+        WHERE tp.tournament_id = $1 AND tp.player_id = $2 AND t.club_id = $3
+      `, [tournamentId, playerId, clubId]);
+
+      if (!result || result.length === 0) {
+        return { inTournament: false };
+      }
+
+      const row = result[0];
+      let structure = row.structure || {};
+      if (typeof structure === 'string') {
+        try { structure = JSON.parse(structure); } catch { structure = {}; }
+      }
+
+      return {
+        inTournament: true,
+        isActive: row.is_active,
+        isExited: row.is_exited,
+        exitedAt: row.exited_at,
+        exitBalance: parseFloat(row.exit_balance) || 0,
+        sessionStartedAt: row.session_started_at,
+        rebuyCount: row.rebuy_count || 0,
+        addonCount: row.addon_count || 0,
+        totalInvested: parseFloat(row.total_invested) || 0,
+        registeredAt: row.registered_at,
+        finishingPosition: row.finishing_position,
+        prizeAmount: parseFloat(row.prize_amount) || 0,
+        tournamentStatus: row.tournament_status,
+        tournamentSessionStartedAt: row.tournament_session_started_at,
+        tournamentPausedAt: row.tournament_paused_at,
+        tournamentTotalPausedSeconds: parseInt(row.tournament_total_paused_seconds) || 0,
+        buyIn: parseFloat(row.buy_in) || 0,
+        allowRebuys: structure.allow_rebuys || false,
+        allowReentry: structure.allow_reentry || false,
+        allowAddon: structure.allow_addon || false,
+        lateRegistration: parseInt(structure.late_registration) || 0,
+      };
+    } catch (err) {
+      console.error('Get player tournament status error:', err);
+      return { inTournament: false };
     }
   }
 

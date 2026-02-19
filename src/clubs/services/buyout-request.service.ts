@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { BuyOutRequest, BuyOutRequestStatus } from '../entities/buyout-request.entity';
 import { Player } from '../entities/player.entity';
-import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
+import { FinancialTransaction, TransactionType, TransactionStatus, WALLET_BALANCE_SQL, CREDIT_BALANCE_SQL } from '../entities/financial-transaction.entity';
 import { RakeCollection } from '../entities/rake-collection.entity';
 import { Table } from '../entities/table.entity';
 import { ApproveBuyOutDto } from '../dto/approve-buyout.dto';
@@ -86,7 +86,7 @@ export class BuyOutRequestService {
     await queryRunner.startTransaction();
 
     try {
-      // Update request status using raw query
+      // Update request status
       await queryRunner.query(
         `UPDATE buyout_requests 
          SET status = 'approved', processed_by = $1, processed_at = NOW(), updated_at = NOW()
@@ -94,14 +94,12 @@ export class BuyOutRequestService {
         [userId, requestId]
       );
 
-      // Get player name for transaction
       const playerData = await queryRunner.query(
         `SELECT name FROM players WHERE id = $1`,
         [playerId]
       );
       const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
-      // Determine game type from the table
       let gameType = 'poker';
       if (requestData.table_number) {
         const tableData = await queryRunner.query(
@@ -111,126 +109,53 @@ export class BuyOutRequestService {
         if (tableData?.[0]?.table_type === 'RUMMY') gameType = 'rummy';
       }
 
-      // CRITICAL: Calculate credit used while at table
-      // Get all CREDIT transactions while player was seated
-      const creditTransactions = await queryRunner.query(
-        `SELECT SUM(amount) as total FROM financial_transactions 
-         WHERE club_id = $1 AND player_id = $2 AND UPPER(type) = 'CREDIT' AND UPPER(status) = 'COMPLETED'
-         AND created_at >= (
-           SELECT seated_at FROM waitlist_entries 
-           WHERE player_id = $2 AND club_id = $1 AND status = 'SEATED' 
-           LIMIT 1
-         )`,
+      // Calculate outstanding credit balance (Credit given - Debit paybacks)
+      const creditResult = await queryRunner.query(
+        `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions 
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
         [clubId, playerId]
       );
-      const creditUsed = creditTransactions[0]?.total ? Number(creditTransactions[0].total) : 0;
-      
-      console.log(`💰 [BUYOUT] Player ${playerName}:`);
-      console.log(`   Table cashout amount: ₹${amount}`);
-      console.log(`   Credit used at table: ₹${creditUsed}`);
+      const creditOwed = Math.max(0, creditResult[0]?.total ? Number(creditResult[0].total) : 0);
 
-      // CRITICAL LOGIC: Credit Payback
-      // If credit was used, it must be paid back first from the cashout amount
-      if (creditUsed > 0) {
-        if (amount >= creditUsed) {
-          // Case 1: Player has enough to pay back credit
-          const remainingAmount = amount - creditUsed;
-          
-          console.log(`   ✅ Player has enough to pay back credit`);
-          console.log(`   Paying back credit: ₹${creditUsed}`);
-          console.log(`   Remaining for wallet: ₹${remainingAmount}`);
-          
-          // Return table money to wallet (full amount)
-          await queryRunner.query(
-            `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
-            [
-              clubId,
-              playerId,
-              playerName,
-              amount,
-              gameType,
-              `Table checkout - ₹${amount} (₹${creditUsed} credit payback + ₹${remainingAmount} profit)`
-            ]
-          );
-          
-          // Create DEBIT transaction to mark credit as paid back
-          await queryRunner.query(
-            `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
-            [
-              clubId,
-              playerId,
-              playerName,
-              creditUsed,
-              gameType,
-              `Credit payback from table cashout - ₹${creditUsed} credit paid back`
-            ]
-          );
-          
-          console.log(`   Final wallet balance: ₹${remainingAmount} (positive)`);
-        } else {
-          // Case 2: Player doesn't have enough to pay back credit - owes money
-          const shortfall = creditUsed - amount;
-          
-          console.log(`   ⚠️ Player doesn't have enough to pay back credit`);
-          console.log(`   Shortfall: ₹${shortfall}`);
-          console.log(`   Player owes club: ₹${shortfall}`);
-          
-          // Return what they have from table
-          await queryRunner.query(
-            `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
-            [
-              clubId,
-              playerId,
-              playerName,
-              amount,
-              gameType,
-              `Table checkout - ₹${amount} (partial credit payback, still owes ₹${shortfall})`
-            ]
-          );
-          
-          // Create DEBIT for the partial payback
-          await queryRunner.query(
-            `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
-            [
-              clubId,
-              playerId,
-              playerName,
-              amount,
-              gameType,
-              `Partial credit payback - ₹${amount} of ₹${creditUsed} credit paid back`
-            ]
-          );
-          
-          console.log(`   Final wallet balance: -₹${shortfall} (NEGATIVE - cashier must collect)`);
-        }
-      } else {
-        // No credit used, just return cash to wallet
+      console.log(`💰 [BUYOUT] Player ${playerName}:`);
+      console.log(`   Exit amount (chips left): ₹${amount}`);
+      console.log(`   Outstanding credit owed: ₹${creditOwed}`);
+
+      // Step 1: Table Buy Out - return ALL chips from table to wallet
+      await queryRunner.query(
+        `INSERT INTO financial_transactions 
+         (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'Table Buy Out', 'Completed', $5, $6, NOW(), NOW())`,
+        [
+          clubId, playerId, playerName, amount, gameType,
+          `Table buy-out - Table ${requestData.table_number} - ₹${amount} returned from table to wallet`
+        ]
+      );
+
+      // Step 2: Settle credit - Debit the FULL credit amount owed
+      // This may push wallet negative, which is correct behavior
+      if (creditOwed > 0) {
         await queryRunner.query(
           `INSERT INTO financial_transactions 
            (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
+           VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
           [
-            clubId,
-            playerId,
-            playerName,
-            amount,
-            gameType,
-            `Table checkout - ₹${amount} (no credit used)`
+            clubId, playerId, playerName, creditOwed, gameType,
+            `Credit settlement on table exit - ₹${creditOwed} credit repaid (Table ${requestData.table_number})`
           ]
         );
-        
-        console.log(`   No credit used, wallet gets full amount: ₹${amount}`);
+
+        const netWalletChange = amount - creditOwed;
+        if (netWalletChange >= 0) {
+          console.log(`   ✅ Credit fully settled. Net wallet change: +₹${netWalletChange}`);
+        } else {
+          console.log(`   ⚠️ Credit settled but wallet goes negative by ₹${Math.abs(netWalletChange)}`);
+        }
+      } else {
+        console.log(`   No credit to settle, full amount goes to wallet`);
       }
 
-      // Unseat the player from the waitlist and get table info
+      // Unseat the player
       await queryRunner.query(
         `UPDATE waitlist_entries 
          SET status = 'completed', updated_at = NOW()
@@ -238,7 +163,6 @@ export class BuyOutRequestService {
         [playerId, clubId]
       );
 
-      // Decrement table's current seats count
       if (requestData.table_number) {
         await queryRunner.query(
           `UPDATE tables 
@@ -252,9 +176,10 @@ export class BuyOutRequestService {
 
       return {
         success: true,
-        message: 'Buy-out request approved and balance updated',
+        message: 'Buy-out approved and balance settled',
         requestId: requestId,
         amount: amount,
+        creditSettled: creditOwed,
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -321,39 +246,53 @@ export class BuyOutRequestService {
       const settlementGameType = tableData?.[0]?.table_type === 'RUMMY' ? 'rummy' : 'poker';
 
       for (const { playerId, amount } of settlements) {
-        // Get player name
         const playerData = await queryRunner.query(
           `SELECT name FROM players WHERE id = $1`,
           [playerId]
         );
         const playerName = playerData && playerData.length > 0 ? playerData[0].name : 'Unknown Player';
 
-        // Get waitlist entry info
         const waitlistData = await queryRunner.query(
           `SELECT requested_seat FROM waitlist_entries WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
           [playerId, clubId]
         );
         const seatNumber = waitlistData && waitlistData.length > 0 ? waitlistData[0].requested_seat : null;
 
-        // CRITICAL: Create settlement transaction (DEPOSIT) - returns table balance to wallet
-        // Can result in negative wallet balance if player used more credit than cash
+        // Step 1: Table Buy Out - return chips from table to wallet
         await queryRunner.query(
           `INSERT INTO financial_transactions 
            (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, 'Deposit', 'Completed', $5, $6, NOW(), NOW())`,
+           VALUES ($1, $2, $3, $4, 'Table Buy Out', 'Completed', $5, $6, NOW(), NOW())`,
           [
-            clubId,
-            playerId,
-            playerName,
-            amount,
-            settlementGameType,
-            `Call time settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} - Returning table balance to wallet`
+            clubId, playerId, playerName, amount, settlementGameType,
+            `Table settlement - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} - ₹${amount} returned to wallet`
           ]
         );
-        
-        console.log(`💰 [SETTLEMENT] Returned ₹${amount} from table to wallet for player ${playerName}`);
 
-        // Unseat the player from the waitlist
+        // Step 2: Settle any outstanding credit
+        const creditResult = await queryRunner.query(
+          `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions 
+           WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+          [clubId, playerId]
+        );
+        const creditOwed = Math.max(0, creditResult[0]?.total ? Number(creditResult[0].total) : 0);
+
+        if (creditOwed > 0) {
+          await queryRunner.query(
+            `INSERT INTO financial_transactions 
+             (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
+            [
+              clubId, playerId, playerName, creditOwed, settlementGameType,
+              `Credit settlement on table close - ₹${creditOwed} credit repaid (Table ${tableNumber})`
+            ]
+          );
+          console.log(`💰 [SETTLEMENT] Player ${playerName}: ₹${amount} table buy-out, ₹${creditOwed} credit settled`);
+        } else {
+          console.log(`💰 [SETTLEMENT] Player ${playerName}: ₹${amount} table buy-out, no credit to settle`);
+        }
+
+        // Unseat the player
         await queryRunner.query(
           `UPDATE waitlist_entries 
            SET status = 'completed', updated_at = NOW()
@@ -361,7 +300,7 @@ export class BuyOutRequestService {
           [playerId, clubId]
         );
 
-        results.push({ playerId, playerName, amount, settled: true });
+        results.push({ playerId, playerName, amount, creditSettled: creditOwed, settled: true });
       }
 
       // Record rake collection if provided

@@ -4,8 +4,9 @@ export class CreateTournamentDto {
   @IsString()
   name!: string;
 
+  @IsOptional()
   @IsString()
-  tournament_type!: string;
+  tournament_type?: string;
 
   @IsNumber()
   buy_in!: number;
@@ -14,11 +15,13 @@ export class CreateTournamentDto {
   @IsNumber()
   entry_fee?: number;
 
+  @IsOptional()
   @IsNumber()
-  starting_chips!: number;
+  starting_chips?: number;
 
+  @IsOptional()
   @IsString()
-  blind_structure!: string;
+  blind_structure?: string;
 
   @IsOptional()
   @IsNumber()

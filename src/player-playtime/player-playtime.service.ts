@@ -4,6 +4,9 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  Inject,
+  forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -11,6 +14,7 @@ import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table } from '../clubs/entities/table.entity';
+import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class PlayerPlaytimeService {
@@ -23,6 +27,7 @@ export class PlayerPlaytimeService {
     private readonly tablesRepo: Repository<Table>,
     private readonly clubsService: ClubsService,
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   /**
@@ -369,13 +374,25 @@ export class PlayerPlaytimeService {
         throw new ConflictException('Call time already requested. Please wait for admin approval.');
       }
 
-      // Create buy-out request (FIXED parameter order)
       await this.dataSource.query(
         `INSERT INTO buyout_requests 
         (club_id, player_id, table_id, table_number, seat_number, status, call_time_started_at, requested_at, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), NOW(), NOW(), NOW())`,
         [clubId, playerId, actualTableId, seatedEntry.tableNumber, seatedEntry.requestedSeat || seatedEntry.tableNumber]
       );
+
+      // Emit WebSocket event to ALL staff subscribed to this club
+      if (this.eventsService) {
+        this.eventsService.emitBuyOutRequest(clubId, {
+          player_id: playerId,
+          player_name: player.name,
+          table_number: seatedEntry.tableNumber,
+          seat_number: seatedEntry.requestedSeat,
+          call_time_started_at: new Date().toISOString(),
+          requested_at: new Date().toISOString(),
+          status: 'pending',
+        });
+      }
 
       return {
         success: true,

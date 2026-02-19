@@ -9,13 +9,27 @@ import { UpdatePlayerProfileDto } from './dto/update-player-profile.dto';
 import { ChangePlayerPasswordDto } from './dto/change-player-password.dto';
 import { ChangeStaffPasswordDto } from './dto/change-staff-password.dto';
 import { PlayerResetPasswordDto } from './dto/player-reset-password.dto';
+import { AuditLogsService } from '../clubs/services/audit-logs.service';
+import { ActionCategory } from '../clubs/dto/create-audit-log.dto';
+import { DataSource } from 'typeorm';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
-    private readonly usersService: UsersService
+    private readonly usersService: UsersService,
+    private readonly auditLogsService: AuditLogsService,
+    private readonly dataSource: DataSource,
   ) {}
+
+  private async getPlayerName(playerId: string, clubId: string): Promise<string> {
+    try {
+      const rows = await this.dataSource.query(
+        `SELECT name FROM players WHERE id = $1 AND club_id = $2`, [playerId, clubId]
+      );
+      return rows?.[0]?.name || 'Player';
+    } catch { return 'Player'; }
+  }
 
   @Get('me')
   async me(@Headers('x-api-key') apiKey?: string) {
@@ -95,7 +109,7 @@ export class AuthController {
   @Post('player/signup')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async playerSignup(@Body() dto: PlayerSignupDto) {
-    return this.authService.playerSignup(
+    const result = await this.authService.playerSignup(
       dto.clubCode,
       dto.firstName,
       dto.lastName,
@@ -105,6 +119,18 @@ export class AuthController {
       dto.nickname,
       dto.referralCode
     );
+    try {
+      const cId = result?.club?.id;
+      if (cId) {
+        await this.auditLogsService.logAction({
+          clubId: cId, staffName: `${dto.firstName} ${dto.lastName}`.trim(), staffRole: 'Player',
+          actionType: 'player_signed_up', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+          description: `New player signed up: ${dto.firstName} ${dto.lastName} (${dto.email})`,
+          targetType: 'player', targetId: result?.player?.id, targetName: `${dto.firstName} ${dto.lastName}`.trim(),
+        });
+      }
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -132,7 +158,17 @@ export class AuthController {
       throw new BadRequestException('Invalid PAN card format. Expected: ABCDE1234F');
     }
 
-    return this.authService.submitPanCard(body.playerId.trim(), body.clubId.trim(), panCard);
+    const result = await this.authService.submitPanCard(body.playerId.trim(), body.clubId.trim(), panCard);
+    try {
+      const pName = await this.getPlayerName(body.playerId.trim(), body.clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: body.clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'pan_card_submitted', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+        description: `Player ${pName} submitted PAN card`,
+        targetType: 'player', targetId: body.playerId.trim(), targetName: pName,
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -173,7 +209,7 @@ export class AuthController {
     if (!dto) {
       throw new BadRequestException('Request body is required');
     }
-    return this.authService.updatePlayerProfile(
+    const result = await this.authService.updatePlayerProfile(
       playerId.trim(),
       clubId.trim(),
       dto.firstName,
@@ -181,6 +217,17 @@ export class AuthController {
       dto.phoneNumber,
       dto.nickname
     );
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_profile_updated', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+        description: `Player ${pName} updated their profile`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { firstName: dto.firstName, lastName: dto.lastName, phoneNumber: dto.phoneNumber, nickname: dto.nickname },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -206,12 +253,25 @@ export class AuthController {
     if (!dto.clubCode || !dto.clubCode.trim()) {
       throw new BadRequestException('Club code is required');
     }
-    return this.authService.resetPlayerPassword(
+    const result = await this.authService.resetPlayerPassword(
       dto.email.trim(),
       dto.currentPassword.trim(),
       dto.newPassword.trim(),
       dto.clubCode.trim()
     );
+    try {
+      const clubRows = await this.dataSource.query(`SELECT id FROM clubs WHERE code = $1 LIMIT 1`, [dto.clubCode.trim()]);
+      const cId = clubRows?.[0]?.id;
+      if (cId) {
+        await this.auditLogsService.logAction({
+          clubId: cId, staffName: dto.email.trim(), staffRole: 'Player',
+          actionType: 'player_password_reset', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+          description: `Player ${dto.email.trim()} reset their password`,
+          targetType: 'player', targetName: dto.email.trim(),
+        });
+      }
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -234,12 +294,22 @@ export class AuthController {
     if (!dto) {
       throw new BadRequestException('Request body is required');
     }
-    return this.authService.changePlayerPassword(
+    const result = await this.authService.changePlayerPassword(
       playerId.trim(),
       clubId.trim(),
       dto.currentPassword,
       dto.newPassword
     );
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_password_changed', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+        description: `Player ${pName} changed their password`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -307,13 +377,24 @@ export class AuthController {
     if (!clubId || !clubId.trim()) {
       throw new BadRequestException('x-club-id header is required');
     }
-    return this.authService.joinWaitlist(
+    const result = await this.authService.joinWaitlist(
       playerId.trim(),
       clubId.trim(),
       body?.tableType,
       body?.partySize || 1,
       body?.requestedSeat
     );
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_joined_waitlist', actionCategory: ActionCategory.TABLE_MANAGEMENT,
+        description: `Player ${pName} joined waitlist${body?.tableType ? ` for ${body.tableType}` : ''}`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { tableType: body?.tableType, partySize: body?.partySize },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -353,7 +434,17 @@ export class AuthController {
     if (!entryId || !entryId.trim()) {
       throw new BadRequestException('Entry ID is required');
     }
-    return this.authService.cancelWaitlist(playerId.trim(), clubId.trim(), entryId.trim());
+    const result = await this.authService.cancelWaitlist(playerId.trim(), clubId.trim(), entryId.trim());
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_cancelled_waitlist', actionCategory: ActionCategory.TABLE_MANAGEMENT,
+        description: `Player ${pName} cancelled waitlist entry`,
+        targetType: 'waitlist', targetId: entryId.trim(), targetName: pName,
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -440,7 +531,18 @@ export class AuthController {
     
     console.log('💳 [CREDIT REQUEST] Parsed amount:', amount);
     
-    return this.authService.requestCredit(playerId.trim(), clubId.trim(), amount, body.notes);
+    const result = await this.authService.requestCredit(playerId.trim(), clubId.trim(), amount, body.notes);
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_credit_requested', actionCategory: ActionCategory.FINANCIAL,
+        description: `Player ${pName} requested credit of ₹${amount}`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { amount, notes: body.notes },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -516,7 +618,17 @@ export class AuthController {
     if (!body) {
       throw new BadRequestException('Order data is required');
     }
-    return this.authService.placeFnbOrder(playerId.trim(), clubId.trim(), body);
+    const result = await this.authService.placeFnbOrder(playerId.trim(), clubId.trim(), body);
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_fnb_order_placed', actionCategory: ActionCategory.FNB,
+        description: `Player ${pName} placed an F&B order`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -560,7 +672,18 @@ export class AuthController {
     if (!body || !body.message) {
       throw new BadRequestException('Feedback message is required');
     }
-    return this.authService.submitPlayerFeedback(playerId.trim(), clubId.trim(), body.message, body.rating);
+    const result = await this.authService.submitPlayerFeedback(playerId.trim(), clubId.trim(), body.message, body.rating);
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_feedback_submitted', actionCategory: ActionCategory.SYSTEM,
+        description: `Player ${pName} submitted feedback${body.rating ? ` (${body.rating}/5 stars)` : ''}`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { rating: body.rating },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -610,13 +733,67 @@ export class AuthController {
       throw new BadRequestException('Request body is required');
     }
 
-    return this.authService.requestProfileFieldChange(
+    const result = await this.authService.requestProfileFieldChange(
       playerId.trim(),
       clubId.trim(),
       body.fieldName || '',
       body.currentValue ?? null,
       body.requestedValue || '',
     );
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_profile_change_requested', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+        description: `Player ${pName} requested ${body.fieldName} change from "${body.currentValue || ''}" to "${body.requestedValue}"`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { fieldName: body.fieldName, currentValue: body.currentValue, requestedValue: body.requestedValue },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
+  }
+
+  @Get('player/profile-change-requests')
+  async getProfileChangeRequests(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+
+    return this.authService.getPlayerProfileChangeRequests(
+      playerId.trim(),
+      clubId.trim(),
+    );
+  }
+
+  @Post('player/profile-change-request/:requestId/dismiss')
+  async dismissProfileChangeRequest(
+    @Param('requestId') requestId: string,
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+
+    const result = await this.authService.dismissProfileChangeRequest(requestId, playerId.trim());
+    try {
+      if (clubId?.trim()) {
+        const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+        await this.auditLogsService.logAction({
+          clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+          actionType: 'profile_change_request_dismissed', actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+          description: `Player ${pName} dismissed profile change request`,
+          targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        });
+      }
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**
@@ -653,7 +830,18 @@ export class AuthController {
       throw new BadRequestException('Amount must be a positive number');
     }
 
-    return this.authService.playerTableBuyInRequest(playerId.trim(), clubId.trim(), amount, body.notes);
+    const result = await this.authService.playerTableBuyInRequest(playerId.trim(), clubId.trim(), amount, body.notes);
+    try {
+      const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
+      await this.auditLogsService.logAction({
+        clubId: clubId.trim(), staffName: pName, staffRole: 'Player',
+        actionType: 'player_table_buyin_requested', actionCategory: ActionCategory.FINANCIAL,
+        description: `Player ${pName} requested table buy-in of ₹${amount}`,
+        targetType: 'player', targetId: playerId.trim(), targetName: pName,
+        metadata: { amount, notes: body.notes },
+      });
+    } catch (e) { console.error('Audit log error:', e); }
+    return result;
   }
 
   /**

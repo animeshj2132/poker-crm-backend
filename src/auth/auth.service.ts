@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException, ForbiddenException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { GlobalRole } from '../common/rbac/roles';
 import { UsersService } from '../users/users.service';
 import { ClubsService } from '../clubs/clubs.service';
@@ -19,6 +19,7 @@ import { WaitlistSeatingService } from '../clubs/services/waitlist-seating.servi
 import { CreditRequestsService } from '../clubs/services/credit-requests.service';
 import { AffiliatesService } from '../clubs/services/affiliates.service';
 import { FnbEnhancedService } from '../clubs/services/fnb-enhanced.service';
+import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class AuthService {
@@ -30,6 +31,7 @@ export class AuthService {
     private readonly creditRequestsService: CreditRequestsService,
     private readonly affiliatesService: AffiliatesService,
     private readonly fnbService: FnbEnhancedService,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService: EventsService,
     private readonly dataSource: DataSource,
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
     @InjectRepository(UserClubRole) private readonly userClubRoleRepo: Repository<UserClubRole>,
@@ -1263,57 +1265,47 @@ export class AuthService {
         transactions = [];
       }
 
-      // NEW CALCULATION: Separate cash balance and table balance
-      let cashBalance = 0; // Money in wallet (not on table)
-      let tableBalance = 0; // Money on table
-      let creditUsedOnTable = 0; // Credit used while on table
-      
-      console.log('💰 [BALANCE] Calculating balance from transactions...');
+      let cashBalance = 0; // Wallet balance (real money not on table, can be negative)
+      let tableBalance = 0; // Money currently on table
+      let creditUsedOnTable = 0; // Outstanding credit (Credit - Debit)
       
       for (const txn of transactions) {
         try {
           const amount = Number(txn.amount);
-          if (isNaN(amount)) {
-            console.warn('⚠️ [BALANCE] Invalid transaction amount:', txn.id, txn.amount);
-            continue;
-          }
-          console.log('💰 [BALANCE] Transaction:', txn.type, amount);
+          if (isNaN(amount)) continue;
+          const upperType = (txn.type || '').toUpperCase();
           
-          // CASH TRANSACTIONS (wallet)
-          if (txn.type === 'Deposit') {
+          // Wallet: real money flows (Credit NOT included - it's table-only money)
+          if (['DEPOSIT', 'CLUB BUY IN'].includes(upperType)) {
             cashBalance += amount;
-            console.log('  ➕ Deposit to wallet:', amount, '| New cash balance:', cashBalance);
-          } else if (['Cashout', 'Withdrawal'].includes(txn.type)) {
+          } else if (['CASHOUT', 'WITHDRAWAL', 'CLUB BUY OUT'].includes(upperType)) {
             cashBalance -= amount;
-            console.log('  ➖ Withdrawal from wallet:', amount, '| New cash balance:', cashBalance);
-          } 
-          // TABLE TRANSACTIONS
-          else if (txn.type === 'Buy In') {
-            // Money moved from wallet to table
+          } else if (['TABLE BUY IN', 'BUY IN'].includes(upperType)) {
             cashBalance -= amount;
             tableBalance += amount;
-            console.log('  🎲 Buy In - moved to table:', amount, '| Cash:', cashBalance, 'Table:', tableBalance);
-          }
-          // CREDIT TRANSACTIONS (debt - reduces cash balance, adds to table balance)
-          // Credit is a LOAN from the club - it's debt the player owes
-          else if (txn.type === 'Credit') {
-            cashBalance -= amount; // CRITICAL: Credit is debt, reduces cash balance
-            tableBalance += amount; // But adds to table so they can play
-            creditUsedOnTable += amount;
-            console.log('  💳 Credit used (DEBT):', amount, '| Cash:', cashBalance, 'Table:', tableBalance, 'Credit Used:', creditUsedOnTable);
-          }
-          // BONUS/REFUND (adds to wallet)
-          else if (['Bonus', 'Refund'].includes(txn.type)) {
+          } else if (['TABLE BUY OUT'].includes(upperType)) {
             cashBalance += amount;
-            console.log('  ➕ Bonus/Refund to wallet:', amount, '| New cash balance:', cashBalance);
+            tableBalance -= amount;
+          } else if (['CREDIT'].includes(upperType)) {
+            // Credit goes directly to table, wallet not affected
+            tableBalance += amount;
+            creditUsedOnTable += amount;
+          } else if (['DEBIT'].includes(upperType)) {
+            // Debit = credit payback, reduces wallet
+            cashBalance -= amount;
+            creditUsedOnTable -= amount;
+          } else if (['BONUS', 'REFUND'].includes(upperType)) {
+            cashBalance += amount;
           }
         } catch (calcError) {
-          console.error('❌ [BALANCE] Error calculating balance from transaction:', txn.id, calcError);
-          // Skip this transaction
+          console.error('Error calculating balance from transaction:', txn.id, calcError);
         }
       }
 
-      console.log('💰 [BALANCE] Calculated - Cash:', cashBalance, 'Table:', tableBalance, 'Credit Used:', creditUsedOnTable);
+      // Ensure creditUsedOnTable is never negative
+      creditUsedOnTable = Math.max(0, creditUsedOnTable);
+
+      console.log(`💰 [BALANCE] Cash: ₹${cashBalance}, Table: ₹${tableBalance}, Credit Outstanding: ₹${creditUsedOnTable}`);
 
       // Get table info (if seated)
       const waitlistEntry = await this.waitlistRepo.findOne({
@@ -1328,7 +1320,7 @@ export class AuthService {
       let tableId = null;
       let seatNumber = null;
 
-      if (waitlistEntry && waitlistEntry.tableNumber) {
+      if (waitlistEntry && waitlistEntry.tableNumber && waitlistEntry.status === WaitlistStatus.SEATED) {
         const table = await this.tablesRepo.findOne({
           where: { club: { id: clubId.trim() }, tableNumber: waitlistEntry.tableNumber }
         });
@@ -1336,13 +1328,10 @@ export class AuthService {
           tableId = table.id;
           seatNumber = waitlistEntry.tableNumber;
         }
-        
-        // If NOT seated, table balance should be 0 (this handles checkout cases)
-        if (!waitlistEntry || waitlistEntry.status !== WaitlistStatus.SEATED) {
-          console.log('⚠️ [BALANCE] Player not seated - zeroing table balance');
-          tableBalance = 0;
-          creditUsedOnTable = 0;
-        }
+      } else {
+        // Player not seated - table balance should be 0
+        tableBalance = 0;
+        creditUsedOnTable = 0;
       }
 
       // Wallet balance can go negative if using more credit than cash
@@ -1457,12 +1446,12 @@ export class AuthService {
         throw new BadRequestException('You already have a pending buy-in request. Please wait for approval.');
       }
 
-      // 5. Calculate current table balance for context
+      // 5. Calculate current table balance: Table Buy In + Credit - Table Buy Out
       const balanceResult = await this.dataSource.query(
         `SELECT
            COALESCE(SUM(CASE
-             WHEN UPPER(type) IN ('BUY IN', 'CREDIT') THEN amount
-             WHEN UPPER(type) IN ('DEPOSIT') AND notes LIKE '%table checkout%' THEN -amount
+             WHEN UPPER(type) IN ('TABLE BUY IN', 'BUY IN', 'CREDIT') THEN amount
+             WHEN UPPER(type) IN ('TABLE BUY OUT') THEN -amount
              ELSE 0
            END), 0) AS table_balance
          FROM financial_transactions
@@ -1480,6 +1469,20 @@ export class AuthService {
       );
 
       console.log(`📋 [BUYIN REQUEST] Player ${player.name} requested ₹${amount} buy-in at Table ${tableNumber} (current table balance: ₹${currentTableBalance})`);
+
+      // Emit WebSocket event to ALL staff subscribed to this club
+      if (this.eventsService) {
+        this.eventsService.emitBuyInRequest(clubId, {
+          player_id: playerId,
+          player_name: player.name,
+          table_number: tableNumber,
+          seat_number: seatNumber,
+          requested_amount: amount,
+          current_table_balance: currentTableBalance,
+          requested_at: new Date().toISOString(),
+          status: 'pending',
+        });
+      }
 
       return {
         success: true,
@@ -3168,7 +3171,49 @@ export class AuthService {
       throw new BadRequestException('Failed to submit profile change request');
     }
   }
+
+  async getPlayerProfileChangeRequests(playerId: string, clubId: string) {
+    try {
+      const results = await this.playersRepo.query(
+        `SELECT id, field_name, current_value, requested_value, status, review_notes, created_at, reviewed_at
+         FROM player_profile_change_requests
+         WHERE player_id = $1 AND club_id = $2
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [playerId, clubId],
+      );
+
+      return {
+        success: true,
+        requests: results.map((r: any) => ({
+          id: r.id,
+          fieldName: r.field_name,
+          currentValue: r.current_value,
+          requestedValue: r.requested_value,
+          status: r.status,
+          reviewNotes: r.review_notes,
+          createdAt: r.created_at,
+          reviewedAt: r.reviewed_at,
+        })),
+      };
+    } catch (err) {
+      console.error('Get profile change requests error:', err);
+      return { success: true, requests: [] };
+    }
+  }
+
+  async dismissProfileChangeRequest(requestId: string, playerId: string) {
+    try {
+      await this.playersRepo.query(
+        `DELETE FROM player_profile_change_requests
+         WHERE id = $1 AND player_id = $2 AND status = 'rejected'`,
+        [requestId, playerId],
+      );
+      return { success: true, message: 'Request dismissed' };
+    } catch (err) {
+      console.error('Dismiss profile change request error:', err);
+      throw new BadRequestException('Failed to dismiss request');
+    }
+  }
 }
-
-
 
