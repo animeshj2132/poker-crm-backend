@@ -138,13 +138,16 @@ export class PlayerDocumentsService {
       const existingDocs = (player as any).kycDocuments || [];
       const documents = Array.isArray(existingDocs) ? existingDocs : [];
 
-      // Create new document entry
       const newDocument = {
         id: `doc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         type: documentType,
+        documentType: documentType,
         name: data?.name || file?.originalname || 'Untitled Document',
+        fileName: data?.name || data?.fileName || file?.originalname || 'Untitled Document',
         url: fileUrl,
+        fileUrl: fileUrl,
         uploadedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
         status: 'pending',
         size: file?.size || 0,
         mimeType: file?.mimetype || 'application/octet-stream',

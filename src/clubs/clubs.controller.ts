@@ -10098,6 +10098,28 @@ export class ClubsController {
   }
 
   /**
+   * Get a player's KYC documents (admin view)
+   * GET /api/clubs/:id/players/:playerId/documents
+   */
+  @Get(':id/players/:playerId/documents')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  async getPlayerDocuments(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('playerId', ParseUUIDPipe) playerId: string,
+  ) {
+    try {
+      const result = await this.dataSource.query(
+        `SELECT kyc_documents FROM players WHERE id = $1 AND club_id = $2`,
+        [playerId, clubId]
+      );
+      const docs = result?.[0]?.kyc_documents || [];
+      return { documents: Array.isArray(docs) ? docs : [] };
+    } catch (e) {
+      throw new BadRequestException('Failed to get player documents');
+    }
+  }
+
+  /**
    * Approve a player field update request
    * POST /api/clubs/:id/player-field-updates/:requestId/approve
    */
