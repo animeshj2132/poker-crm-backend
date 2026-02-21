@@ -1265,9 +1265,34 @@ export class AuthService {
         transactions = [];
       }
 
-      let cashBalance = 0; // Wallet balance (real money not on table, can be negative)
-      let tableBalance = 0; // Money currently on table
-      let creditUsedOnTable = 0; // Outstanding credit (Credit - Debit)
+      // Get table info (if seated) - use playerId for reliable lookup
+      const waitlistEntry = await this.waitlistRepo.findOne({
+        where: {
+          club: { id: clubId.trim() },
+          playerId: player.id,
+          status: WaitlistStatus.SEATED
+        },
+        relations: ['club']
+      });
+
+      let tableId = null;
+      let seatNumber = null;
+      const isSeated = waitlistEntry && waitlistEntry.tableNumber && waitlistEntry.status === WaitlistStatus.SEATED;
+      const seatedAt = waitlistEntry?.seatedAt || null;
+
+      if (isSeated && waitlistEntry.tableNumber) {
+        const table = await this.tablesRepo.findOne({
+          where: { club: { id: clubId.trim() }, tableNumber: waitlistEntry.tableNumber }
+        });
+        if (table) {
+          tableId = table.id;
+          seatNumber = waitlistEntry.tableNumber;
+        }
+      }
+
+      let cashBalance = 0;
+      let tableBalance = 0;
+      let creditUsedOnTable = 0;
       
       for (const txn of transactions) {
         try {
@@ -1275,25 +1300,33 @@ export class AuthService {
           if (isNaN(amount)) continue;
           const upperType = (txn.type || '').toUpperCase();
           
-          // Wallet: real money flows (Credit NOT included - it's table-only money)
+          // Table balance: only count transactions from current session (after seated_at)
+          const isCurrentSession = isSeated && seatedAt && new Date(txn.createdAt) >= new Date(seatedAt);
+          
           if (['DEPOSIT', 'CLUB BUY IN'].includes(upperType)) {
             cashBalance += amount;
           } else if (['CASHOUT', 'WITHDRAWAL', 'CLUB BUY OUT'].includes(upperType)) {
             cashBalance -= amount;
           } else if (['TABLE BUY IN', 'BUY IN'].includes(upperType)) {
             cashBalance -= amount;
-            tableBalance += amount;
+            if (isCurrentSession) {
+              tableBalance += amount;
+            }
           } else if (['TABLE BUY OUT'].includes(upperType)) {
             cashBalance += amount;
-            tableBalance -= amount;
+            if (isCurrentSession) {
+              tableBalance -= amount;
+            }
           } else if (['CREDIT'].includes(upperType)) {
-            // Credit goes directly to table, wallet not affected
-            tableBalance += amount;
-            creditUsedOnTable += amount;
+            if (isCurrentSession) {
+              tableBalance += amount;
+              creditUsedOnTable += amount;
+            }
           } else if (['DEBIT'].includes(upperType)) {
-            // Debit = credit payback, reduces wallet
             cashBalance -= amount;
-            creditUsedOnTable -= amount;
+            if (isCurrentSession) {
+              creditUsedOnTable -= amount;
+            }
           } else if (['BONUS', 'REFUND'].includes(upperType)) {
             cashBalance += amount;
           }
@@ -1305,34 +1338,12 @@ export class AuthService {
       // Ensure creditUsedOnTable is never negative
       creditUsedOnTable = Math.max(0, creditUsedOnTable);
 
-      console.log(`💰 [BALANCE] Cash: ₹${cashBalance}, Table: ₹${tableBalance}, Credit Outstanding: ₹${creditUsedOnTable}`);
-
-      // Get table info (if seated)
-      const waitlistEntry = await this.waitlistRepo.findOne({
-        where: {
-          club: { id: clubId.trim() },
-          email: player.email,
-          status: WaitlistStatus.SEATED
-        },
-        relations: ['club']
-      });
-
-      let tableId = null;
-      let seatNumber = null;
-
-      if (waitlistEntry && waitlistEntry.tableNumber && waitlistEntry.status === WaitlistStatus.SEATED) {
-        const table = await this.tablesRepo.findOne({
-          where: { club: { id: clubId.trim() }, tableNumber: waitlistEntry.tableNumber }
-        });
-        if (table) {
-          tableId = table.id;
-          seatNumber = waitlistEntry.tableNumber;
-        }
-      } else {
-        // Player not seated - table balance should be 0
+      if (!isSeated) {
         tableBalance = 0;
         creditUsedOnTable = 0;
       }
+
+      console.log(`💰 [BALANCE] Cash: ₹${cashBalance}, Table: ₹${tableBalance}, Credit Outstanding: ₹${creditUsedOnTable}, Seated: ${!!isSeated}`);
 
       // Wallet balance can go negative if using more credit than cash
       const availableBalance = cashBalance;
@@ -1374,7 +1385,7 @@ export class AuthService {
         // Table info
         tableId,
         seatNumber: waitlistEntry?.tableNumber || null,
-        isSeated: waitlistEntry?.status === WaitlistStatus.SEATED,
+        isSeated: !!isSeated,
         
         // Credit info
         creditEnabled,
@@ -1446,7 +1457,8 @@ export class AuthService {
         throw new BadRequestException('You already have a pending buy-in request. Please wait for approval.');
       }
 
-      // 5. Calculate current table balance: Table Buy In + Credit - Table Buy Out
+      // 5. Calculate current table balance scoped to current session (since seated_at)
+      const seatedAt = seatInfo.seated_at || new Date(0);
       const balanceResult = await this.dataSource.query(
         `SELECT
            COALESCE(SUM(CASE
@@ -1455,8 +1467,9 @@ export class AuthService {
              ELSE 0
            END), 0) AS table_balance
          FROM financial_transactions
-         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
-        [clubId, playerId],
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'
+         AND created_at >= $3`,
+        [clubId, playerId, seatedAt],
       );
       const currentTableBalance = Number(balanceResult[0]?.table_balance || 0);
 

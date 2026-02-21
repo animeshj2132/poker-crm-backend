@@ -632,38 +632,32 @@ export class WaitlistSeatingService {
     console.log(`[SEATED PLAYERS] Found ${seatedEntries.length} seated entries:`, 
       seatedEntries.map(e => ({ playerId: e.playerId, playerName: e.playerName, seat: e.requestedSeat })));
 
-    // For each seated player, get their buy-in amount from financial transactions
+    // For each seated player, get their buy-in amount from financial transactions (current session only)
     const seatedPlayersWithBuyIn = await Promise.all(
       seatedEntries.map(async (entry) => {
         let buyInAmount = 0;
         
         if (entry.playerId) {
-          // Query to get total buy-in amount for this player at this table
-          // Get all transactions for this player to debug
-          const allTransactions = await this.waitlistRepo.manager.query(
-            `SELECT id, type, amount, status, created_at, notes
-             FROM financial_transactions
-             WHERE player_id = $1
-             ORDER BY created_at DESC
-             LIMIT 5`,
-            [entry.playerId]
-          );
-          
-          console.log(`[DEBUG] All transactions for player ${entry.playerName}:`, allTransactions);
-          
-          // Sum all table buy-in transactions (both old 'Buy In' and new 'Table Buy In') + Credit
+          // Calculate NET table balance for current session only (since seated_at)
+          const seatedAt = entry.seatedAt || new Date(0);
           const result = await this.waitlistRepo.manager.query(
-            `SELECT COALESCE(SUM(amount), 0) as total_buy_in
+            `SELECT COALESCE(SUM(
+               CASE
+                 WHEN UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
+                 WHEN UPPER(type) IN ('TABLE BUY OUT') THEN -amount
+                 ELSE 0
+               END
+             ), 0) as table_balance
              FROM financial_transactions
              WHERE player_id = $1 
-             AND UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT')
-             AND UPPER(status) = 'COMPLETED'`,
-            [entry.playerId]
+             AND UPPER(status) = 'COMPLETED'
+             AND created_at >= $2`,
+            [entry.playerId, seatedAt]
           );
           
-          buyInAmount = result && result.length > 0 ? parseFloat(result[0].total_buy_in) : 0;
+          buyInAmount = result && result.length > 0 ? Math.max(0, parseFloat(result[0].table_balance)) : 0;
           
-          console.log(`[BUY-IN AMOUNT] Player: ${entry.playerName}, ID: ${entry.playerId}, Amount: ${buyInAmount}, Seated: ${entry.seatedAt}, Transactions found: ${allTransactions.length}`);
+          console.log(`[TABLE BALANCE] Player: ${entry.playerName}, ID: ${entry.playerId}, Balance: ${buyInAmount}, Seated: ${entry.seatedAt}`);
         }
         
         // Wallet balance = real money not on table (can be negative)
