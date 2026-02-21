@@ -2335,7 +2335,8 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('requestId', new ParseUUIDPipe()) requestId: string,
-    @Req() req?: Request
+    @Body() body?: { reason?: string },
+    @Req() req?: Request,
   ) {
     try {
       // Edge case: Validate UUID format for clubId
@@ -2430,7 +2431,7 @@ export class ClubsController {
       // Edge case: Error handling for deny operation
       let deniedRequest;
       try {
-        deniedRequest = await this.creditRequestsService.deny(requestId, clubId);
+        deniedRequest = await this.creditRequestsService.deny(requestId, clubId, body?.reason);
       } catch (denyError) {
         console.error('Error denying credit request:', denyError);
         if (denyError instanceof BadRequestException || denyError instanceof ConflictException || denyError instanceof NotFoundException) {
@@ -3594,6 +3595,43 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to create upload URL: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  // ========== VIP Purchases (Admin View) ==========
+  @Get(':id/vip-purchases')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  async listVipPurchases(
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    try {
+      const p = parseInt(page || '1') || 1;
+      const l = Math.min(parseInt(limit || '10') || 10, 50);
+      const result = await this.dataSource.query(`
+        SELECT vp.id, vp.product_title, vp.points_spent, vp.status, vp.created_at,
+               pl.name as player_name, pl.phone as player_phone
+        FROM vip_purchases vp
+        JOIN players pl ON vp.player_id = pl.id
+        WHERE vp.club_id = $1
+        ORDER BY vp.created_at DESC
+        LIMIT $2 OFFSET $3
+      `, [clubId, l, (p - 1) * l]);
+
+      const countResult = await this.dataSource.query(
+        `SELECT COUNT(*) as total FROM vip_purchases WHERE club_id = $1`, [clubId]
+      );
+
+      return {
+        purchases: result,
+        total: parseInt(countResult[0]?.total) || 0,
+        page: p,
+        limit: l,
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException) throw e;
+      throw new BadRequestException('Failed to get VIP purchases');
     }
   }
 

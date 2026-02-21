@@ -2638,6 +2638,7 @@ export class AuthService {
           status,
           notes as "requestNote",
           credit_limit as "approvedLimit",
+          rejection_reason as "rejectedReason",
           created_at as "createdAt",
           updated_at as "updatedAt"
         FROM credit_requests 

@@ -131,7 +131,7 @@ export class CreditRequestsService {
     return savedRequest;
   }
 
-  async deny(id: string, clubId: string) {
+  async deny(id: string, clubId: string, reason?: string) {
     const request = await this.findOne(id, clubId);
 
     // Check if already processed
@@ -143,8 +143,9 @@ export class CreditRequestsService {
     }
 
     request.status = CreditRequestStatus.DENIED;
-    request.visibleToPlayer = false;
+    request.visibleToPlayer = true;
     request.limit = 0;
+    request.rejectionReason = reason?.trim() || null;
     const savedRequest = await this.creditRequestsRepo.save(request);
     
     // Emit real-time event

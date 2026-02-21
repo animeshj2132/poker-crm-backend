@@ -4,8 +4,10 @@ import {
   Post,
   Body,
   Query,
+  Param,
   Headers,
   BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { PlayerVipService } from './player-vip.service';
 
@@ -14,7 +16,7 @@ export class PlayerVipController {
   constructor(private readonly vipService: PlayerVipService) {}
 
   /**
-   * Get VIP points balance
+   * Get VIP points (weighted formula with real data)
    * GET /api/player-vip/points
    */
   @Get('points')
@@ -22,88 +24,50 @@ export class PlayerVipController {
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
   ) {
-    if (!playerId || !playerId.trim()) {
-      throw new BadRequestException('x-player-id header is required');
-    }
-    if (!clubId || !clubId.trim()) {
-      throw new BadRequestException('x-club-id header is required');
-    }
+    if (!playerId?.trim()) throw new BadRequestException('x-player-id header is required');
+    if (!clubId?.trim()) throw new BadRequestException('x-club-id header is required');
     return this.vipService.getVipPoints(playerId.trim(), clubId.trim());
   }
 
   /**
-   * Get club points balance
-   * GET /api/player-vip/club-points
+   * Get VIP products available for purchase
+   * GET /api/player-vip/products
    */
-  @Get('club-points')
-  async getClubPoints(
-    @Headers('x-player-id') playerId?: string,
+  @Get('products')
+  async getVipProducts(
     @Headers('x-club-id') clubId?: string,
   ) {
-    if (!playerId || !playerId.trim()) {
-      throw new BadRequestException('x-player-id header is required');
-    }
-    if (!clubId || !clubId.trim()) {
-      throw new BadRequestException('x-club-id header is required');
-    }
-    return this.vipService.getClubPoints(playerId.trim(), clubId.trim());
+    if (!clubId?.trim()) throw new BadRequestException('x-club-id header is required');
+    return this.vipService.getVipProducts(clubId.trim());
   }
 
   /**
-   * Get available rewards
-   * GET /api/player-vip/rewards
+   * Purchase a VIP product with points
+   * POST /api/player-vip/purchase
    */
-  @Get('rewards')
-  async getAvailableRewards(
-    @Headers('x-club-id') clubId?: string,
-  ) {
-    if (!clubId || !clubId.trim()) {
-      throw new BadRequestException('x-club-id header is required');
-    }
-    return this.vipService.getAvailableRewards(clubId.trim());
-  }
-
-  /**
-   * Redeem VIP points
-   * POST /api/player-vip/redeem
-   */
-  @Post('redeem')
-  async redeemPoints(
+  @Post('purchase')
+  async purchaseProduct(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
     @Body() body?: any,
   ) {
-    if (!playerId || !playerId.trim()) {
-      throw new BadRequestException('x-player-id header is required');
-    }
-    if (!clubId || !clubId.trim()) {
-      throw new BadRequestException('x-club-id header is required');
-    }
-    if (!body?.rewardId) {
-      throw new BadRequestException('rewardId is required');
-    }
-    if (!body?.pointsToRedeem || typeof body.pointsToRedeem !== 'number') {
-      throw new BadRequestException('pointsToRedeem is required and must be a number');
-    }
-    return this.vipService.redeemPoints(
-      playerId.trim(),
-      clubId.trim(),
-      body.rewardId,
-      body.pointsToRedeem,
-    );
+    if (!playerId?.trim()) throw new BadRequestException('x-player-id header is required');
+    if (!clubId?.trim()) throw new BadRequestException('x-club-id header is required');
+    if (!body?.productId) throw new BadRequestException('productId is required');
+    return this.vipService.purchaseProduct(playerId.trim(), clubId.trim(), body.productId);
+  }
+
+  /**
+   * Get player's VIP purchase history
+   * GET /api/player-vip/purchases
+   */
+  @Get('purchases')
+  async getPurchaseHistory(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId?.trim()) throw new BadRequestException('x-player-id header is required');
+    if (!clubId?.trim()) throw new BadRequestException('x-club-id header is required');
+    return this.vipService.getPurchaseHistory(playerId.trim(), clubId.trim());
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

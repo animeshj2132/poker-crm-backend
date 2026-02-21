@@ -41,6 +41,9 @@ export class CreditRequest {
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
+  @Column({ type: 'text', nullable: true, name: 'rejection_reason' })
+  rejectionReason!: string | null;
+
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
   club!: Club;
