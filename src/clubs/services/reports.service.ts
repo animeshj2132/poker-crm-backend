@@ -11,9 +11,19 @@ import { PlayerBonus } from '../entities/player-bonus.entity';
 import { StaffBonus } from '../entities/staff-bonus.entity';
 import { Table } from '../entities/table.entity';
 import { Club } from '../club.entity';
+import { RakeCollection } from '../entities/rake-collection.entity';
 import { GenerateReportDto, ReportType } from '../dto/generate-report.dto';
+import { CreditRequestStatus } from '../entities/credit-request.entity';
+import { TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
 import * as ExcelJS from 'exceljs';
 import * as PDFDocument from 'pdfkit';
+
+/** Standard report output: exact template columns and rows for Excel/PDF */
+export interface ReportSheet {
+  reportName: string;
+  headers: string[];
+  rows: Record<string, string | number>[];
+}
 
 @Injectable()
 export class ReportsService {
@@ -38,6 +48,8 @@ export class ReportsService {
     private readonly tableRepo: Repository<Table>,
     @InjectRepository(Club)
     private readonly clubRepo: Repository<Club>,
+    @InjectRepository(RakeCollection)
+    private readonly rakeCollectionRepo: Repository<RakeCollection>,
   ) {}
 
   /**
@@ -123,803 +135,579 @@ export class ReportsService {
     }
   }
 
-  private async generateIndividualPlayerReport(clubId: string, playerId: string, startDate: Date, endDate: Date) {
+  private formatReportDate(d: Date): string {
+    return d.toLocaleDateString('en-IN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  }
+
+  private isBuyInType(type: string): boolean {
+    return [TransactionType.DEPOSIT, TransactionType.BUY_IN, TransactionType.TABLE_BUY_IN, TransactionType.CLUB_BUY_IN].includes(type as TransactionType);
+  }
+
+  private isCashoutType(type: string): boolean {
+    return [TransactionType.CASHOUT, TransactionType.WITHDRAWAL, TransactionType.TABLE_BUY_OUT, TransactionType.CLUB_BUY_OUT].includes(type as TransactionType);
+  }
+
+  private async generateIndividualPlayerReport(clubId: string, playerId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
     const player = await this.playerRepo.findOne({
       where: { id: playerId, club: { id: clubId } }
     });
-
-    if (!player) {
-      throw new NotFoundException('Player not found');
-    }
+    if (!player) throw new NotFoundException('Player not found');
 
     const transactions = await this.transactionRepo.find({
-      where: {
-        playerId: playerId,
-        createdAt: Between(startDate, endDate)
-      },
+      where: { club: { id: clubId }, playerId, createdAt: Between(startDate, endDate) },
       order: { createdAt: 'DESC' }
     });
+    const completed = transactions.filter(t => t.status === TransactionStatus.COMPLETED);
 
-    const totalBuyIn = transactions
-      .filter(t => t.type === 'Deposit' || t.type === 'Buy In')
+    const totalDeposit = completed
+      .filter(t => this.isBuyInType(t.type))
       .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-    const totalCashOut = transactions
-      .filter(t => t.type === 'Cashout' || t.type === 'Withdrawal')
+    const totalCashout = completed
+      .filter(t => this.isCashoutType(t.type))
       .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-    const totalRakePaid = transactions
-      .filter(t => t.type === 'Rake')
-      .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-    const totalTipsPaid = transactions
-      .filter(t => t.type === 'Tip')
-      .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
     const bonuses = await this.playerBonusRepo.find({
-      where: {
-        playerId: playerId,
-        createdAt: Between(startDate, endDate)
-      }
+      where: { club: { id: clubId }, playerId, createdAt: Between(startDate, endDate) }
     });
-
     const totalBonus = bonuses.reduce((sum, b) => sum + parseFloat(b.bonusAmount.toString()), 0);
+    const creditTx = completed.filter(t => t.type === TransactionType.CREDIT);
+    const totalCredit = creditTx.reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
 
-    // Calculate net profit/loss
-    const netAmount = (totalCashOut + totalBonus) - totalBuyIn - totalRakePaid - totalTipsPaid;
-
-    // Calculate current balance across all time
-    const currentBalance = await this.calculatePlayerBalance(playerId);
-
-    // Group transactions by type for detailed breakdown
-    const transactionsByType = transactions.reduce((acc, t) => {
-      const type = t.type;
-      if (!acc[type]) {
-        acc[type] = { count: 0, total: 0 };
-      }
-      acc[type].count++;
-      acc[type].total += parseFloat(t.amount.toString());
-      return acc;
-    }, {} as Record<string, { count: number; total: number }>);
+    const nameParts = (player.name || '').trim().split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
 
     return {
-      title: 'Individual Player Report',
-      playerInfo: {
-        name: player.name,
-        email: player.email,
-        phone: player.phoneNumber,
-        registeredOn: player.createdAt,
-        kycStatus: player.kycStatus || 'Not Submitted',
-        currentBalance
-      },
-      summary: {
-        totalBuyIn,
-        totalCashOut,
-        totalRakePaid,
-        totalTipsPaid,
-        totalBonus,
-        netAmount,
-        totalTransactions: transactions.length,
-        transactionsByType
-      },
-      transactions: transactions.map(t => ({
-        date: t.createdAt,
-        type: t.type,
-        amount: parseFloat(t.amount.toString()),
-        status: t.status,
-        notes: t.notes || 'N/A',
-        isOverridden: t.isOverridden || false
-      })),
-      bonuses: bonuses.map(b => ({
-        date: b.createdAt,
-        amount: parseFloat(b.bonusAmount.toString()),
-        reason: b.reason || 'N/A',
-        processedBy: b.processedBy || 'System'
-      }))
+      reportName: 'Individual Report',
+      headers: ['Signup Date', 'First Name', 'Last Name', 'Phone Number', 'Email Address', 'KYC Status', 'Total Bonus', 'Total Credit', 'Total Deposit', 'Total Cashout'],
+      rows: [{
+        'Signup Date': this.formatReportDate(player.createdAt),
+        'First Name': firstName,
+        'Last Name': lastName,
+        'Phone Number': player.phoneNumber || '',
+        'Email Address': player.email || '',
+        'KYC Status': player.kycStatus || 'Not Submitted',
+        'Total Bonus': Number(totalBonus.toFixed(2)),
+        'Total Credit': Number(totalCredit.toFixed(2)),
+        'Total Deposit': Number(totalDeposit.toFixed(2)),
+        'Total Cashout': Number(totalCashout.toFixed(2))
+      }]
     };
   }
 
-  private async generateCumulativePlayerReport(clubId: string, startDate: Date, endDate: Date) {
+  private async generateCumulativePlayerReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet | { sections: ReportSheet[] }> {
+    const transactions = await this.transactionRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) }
+    });
+    const playerBonuses = await this.playerBonusRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) }
+    });
+    const completedTx = transactions.filter(t => t.status === TransactionStatus.COMPLETED);
+
+    const byDate: Record<string, { players: Set<string>; buyin: number; cashout: number; rake: number; tips: number; bonus: number }> = {};
+    for (const t of completedTx) {
+      const date = this.formatReportDate(t.createdAt);
+      if (!byDate[date]) byDate[date] = { players: new Set(), buyin: 0, cashout: 0, rake: 0, tips: 0, bonus: 0 };
+      byDate[date].players.add(t.playerId);
+      const amt = parseFloat(t.amount.toString());
+      if (this.isBuyInType(t.type)) byDate[date].buyin += amt;
+      else if (this.isCashoutType(t.type)) byDate[date].cashout += amt;
+      else if (t.type === TransactionType.RAKE) byDate[date].rake += amt;
+      else if (t.type === TransactionType.TIP) byDate[date].tips += amt;
+    }
+    for (const b of playerBonuses) {
+      const date = this.formatReportDate(b.createdAt);
+      if (!byDate[date]) byDate[date] = { players: new Set(), buyin: 0, cashout: 0, rake: 0, tips: 0, bonus: 0 };
+      byDate[date].bonus += parseFloat(b.bonusAmount.toString());
+    }
+
+    const sortedDates = Object.keys(byDate).sort();
+    const dateRows = sortedDates.map(date => {
+      const d = byDate[date];
+      return {
+        'Date': date,
+        'Total Players': d.players.size,
+        'Total Buyin': Number(d.buyin.toFixed(2)),
+        'Total Cashout': Number(d.cashout.toFixed(2)),
+        'Total Rake': Number(d.rake.toFixed(2)),
+        'Total Tips': Number(d.tips.toFixed(2)),
+        'Total Bonus': Number(d.bonus.toFixed(2))
+      };
+    });
+    const dateSheet: ReportSheet = {
+      reportName: 'Cumulative Player Report (By Date)',
+      headers: ['Date', 'Total Players', 'Total Buyin', 'Total Cashout', 'Total Rake', 'Total Tips', 'Total Bonus'],
+      rows: dateRows
+    };
+
+    // Per-player sheet with real names: Player Net = Total Cashout - Total Buyin (positive = player profit). Club Retained = Total Buyin - Total Cashout.
     const players = await this.playerRepo.find({
+      where: { club: { id: clubId } },
+      order: { name: 'ASC' }
+    });
+    const byPlayer: Record<string, { buyin: number; cashout: number; rake: number; tips: number; bonus: number }> = {};
+    for (const t of completedTx) {
+      const pid = t.playerId;
+      if (!byPlayer[pid]) byPlayer[pid] = { buyin: 0, cashout: 0, rake: 0, tips: 0, bonus: 0 };
+      const amt = parseFloat(t.amount.toString());
+      if (this.isBuyInType(t.type)) byPlayer[pid].buyin += amt;
+      else if (this.isCashoutType(t.type)) byPlayer[pid].cashout += amt;
+      else if (t.type === TransactionType.RAKE) byPlayer[pid].rake += amt;
+      else if (t.type === TransactionType.TIP) byPlayer[pid].tips += amt;
+    }
+    for (const b of playerBonuses) {
+      const pid = b.playerId;
+      if (!byPlayer[pid]) byPlayer[pid] = { buyin: 0, cashout: 0, rake: 0, tips: 0, bonus: 0 };
+      byPlayer[pid].bonus += parseFloat(b.bonusAmount.toString());
+    }
+
+    const playerIdsInRange = new Set(Object.keys(byPlayer));
+    const activePlayers = players.filter(p => playerIdsInRange.has(p.id));
+    let totalBuyinAll = 0;
+    let totalCashoutAll = 0;
+    let totalRakeAll = 0;
+    let totalTipsAll = 0;
+    let totalBonusAll = 0;
+    for (const pid of Object.keys(byPlayer)) {
+      totalBuyinAll += byPlayer[pid].buyin;
+      totalCashoutAll += byPlayer[pid].cashout;
+      totalRakeAll += byPlayer[pid].rake;
+      totalTipsAll += byPlayer[pid].tips;
+      totalBonusAll += byPlayer[pid].bonus;
+    }
+    const playerRows = activePlayers.map(p => {
+      const d = byPlayer[p.id] || { buyin: 0, cashout: 0, rake: 0, tips: 0, bonus: 0 };
+      const buyin = Number(d.buyin.toFixed(2));
+      const cashout = Number(d.cashout.toFixed(2));
+      const playerNet = cashout - d.buyin;
+      return {
+        'Name': p.name || 'N/A',
+        'Email': p.email || '',
+        'Phone Number': p.phoneNumber || '',
+        'Total Buyin': buyin,
+        'Total Cashout': cashout,
+        'Total Rake': Number(d.rake.toFixed(2)),
+        'Total Tips': Number(d.tips.toFixed(2)),
+        'Total Bonus': Number(d.bonus.toFixed(2)),
+        'Player Net': Number(playerNet.toFixed(2))
+      };
+    });
+    const clubRetained = Number((totalBuyinAll - totalCashoutAll).toFixed(2));
+    playerRows.push({
+      'Name': 'TOTAL (Club Retained)',
+      'Email': '',
+      'Phone Number': '',
+      'Total Buyin': Number(totalBuyinAll.toFixed(2)),
+      'Total Cashout': Number(totalCashoutAll.toFixed(2)),
+      'Total Rake': Number(totalRakeAll.toFixed(2)),
+      'Total Tips': Number(totalTipsAll.toFixed(2)),
+      'Total Bonus': Number(totalBonusAll.toFixed(2)),
+      'Player Net': clubRetained
+    });
+    const playerSheet: ReportSheet = {
+      reportName: 'Cumulative Player Report (Player Summary)',
+      headers: ['Name', 'Email', 'Phone Number', 'Total Buyin', 'Total Cashout', 'Total Rake', 'Total Tips', 'Total Bonus', 'Player Net'],
+      rows: playerRows
+    };
+
+    return { sections: [dateSheet, playerSheet] };
+  }
+
+  private async generateDailyTransactionsReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const transactions = await this.transactionRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate), status: TransactionStatus.COMPLETED }
+    });
+    const byDate: Record<string, { deposit: number; cashout: number }> = {};
+    for (const t of transactions) {
+      const date = this.formatReportDate(t.createdAt);
+      if (!byDate[date]) byDate[date] = { deposit: 0, cashout: 0 };
+      const amt = parseFloat(t.amount.toString());
+      if (this.isBuyInType(t.type)) byDate[date].deposit += amt;
+      else if (this.isCashoutType(t.type)) byDate[date].cashout += amt;
+    }
+    const sortedDates = Object.keys(byDate).sort();
+    const rows = sortedDates.map(date => ({
+      'Date': date,
+      'Total Deposit': Number(byDate[date].deposit.toFixed(2)),
+      'Total Cashout': Number(byDate[date].cashout.toFixed(2))
+    }));
+    return {
+      reportName: 'Daily Transaction Report',
+      headers: ['Date', 'Total Deposit', 'Total Cashout'],
+      rows
+    };
+  }
+
+  private async generateDailyRakeReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const collections = await this.rakeCollectionRepo.find({
+      where: { club: { id: clubId } },
+      order: { sessionDate: 'ASC' }
+    });
+    const filtered = collections.filter(c => {
+      const d = new Date(c.sessionDate);
+      return d >= startDate && d <= endDate;
+    });
+    const tableNumbers = [...new Set(filtered.map(c => c.tableNumber))].sort((a, b) => a - b).slice(0, 7);
+    const tableCols = tableNumbers.length > 0 ? tableNumbers.map((_, i) => `Table Name ${i + 1}`) : ['Table Name 1'];
+    const headers = ['Date', ...tableCols, 'Total Rake'];
+
+    const byDate: Record<string, Record<number, number>> = {};
+    for (const c of filtered) {
+      const date = this.formatReportDate(new Date(c.sessionDate));
+      if (!byDate[date]) byDate[date] = {};
+      const amt = Number(c.totalRakeAmount || 0);
+      byDate[date][c.tableNumber] = (byDate[date][c.tableNumber] || 0) + amt;
+    }
+    const sortedDates = Object.keys(byDate).sort();
+    const rows = sortedDates.map(date => {
+      const row: Record<string, string | number> = { 'Date': date };
+      let total = 0;
+      tableNumbers.forEach((tn, i) => {
+        const val = byDate[date][tn] || 0;
+        row[tableCols[i]] = Number(val.toFixed(2));
+        total += val;
+      });
+      row['Total Rake'] = Number(total.toFixed(2));
+      return row;
+    });
+
+    return { reportName: 'Daily Rake', headers, rows };
+  }
+
+  private async generatePerTableTransactionsReport(clubId: string, _tableNumber: string | undefined, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const transactions = await this.transactionRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) }
+    });
+    const collections = await this.rakeCollectionRepo.find({
       where: { club: { id: clubId } }
     });
+    const filteredRake = collections.filter(c => {
+      const d = new Date(c.sessionDate);
+      return d >= startDate && d <= endDate;
+    });
+    const tableNumbers = [...new Set(filteredRake.map(c => c.tableNumber))].sort((a, b) => a - b).slice(0, 6);
+    const tableCols = tableNumbers.map((_, i) => `Table Name ${i + 1}`);
+    const headers = ['Date', ...tableCols, 'Total Players', 'Total Buyin', 'Total Cashout', 'Total Rake'];
 
-    const playerData = await Promise.all(
-      players.map(async (player) => {
-        const transactions = await this.transactionRepo.find({
-          where: {
-            playerId: player.id,
-            createdAt: Between(startDate, endDate)
-          }
-        });
-
-        const totalBuyIn = transactions
-          .filter(t => t.type === 'Deposit' || t.type === 'Buy In')
-          .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-        const totalCashOut = transactions
-          .filter(t => t.type === 'Cashout' || t.type === 'Withdrawal')
-          .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-        const totalRake = transactions
-          .filter(t => t.type === 'Rake')
-          .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-        const totalTips = transactions
-          .filter(t => t.type === 'Tip')
-          .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-        const bonuses = await this.playerBonusRepo.find({
-          where: {
-            playerId: player.id,
-            createdAt: Between(startDate, endDate)
-          }
-        });
-
-        const totalBonus = bonuses.reduce((sum, b) => sum + parseFloat(b.bonusAmount.toString()), 0);
-
-        const netProfit = (totalCashOut + totalBonus) - totalBuyIn - totalRake - totalTips;
-        
-        // Calculate current balance across all time
-        const currentBalance = await this.calculatePlayerBalance(player.id);
-
-        return {
-          playerId: player.id,
-          name: player.name,
-          email: player.email,
-          phone: player.phoneNumber || 'N/A',
-          totalBuyIn,
-          totalCashOut,
-          totalRake,
-          totalTips,
-          totalBonus,
-          netProfit,
-          currentBalance,
-          transactionCount: transactions.length,
-          kycStatus: player.kycStatus || 'Not Submitted'
-        };
-      })
-    );
-
-    // Sort by net profit (highest to lowest)
-    playerData.sort((a, b) => b.netProfit - a.netProfit);
-
-    return {
-      title: 'Cumulative Player Report',
-      dateRange: {
-        startDate,
-        endDate
-      },
-      summary: {
-        totalPlayers: playerData.length,
-        totalBuyIn: playerData.reduce((sum, p) => sum + p.totalBuyIn, 0),
-        totalCashOut: playerData.reduce((sum, p) => sum + p.totalCashOut, 0),
-        totalRake: playerData.reduce((sum, p) => sum + p.totalRake, 0),
-        totalTips: playerData.reduce((sum, p) => sum + p.totalTips, 0),
-        totalBonuses: playerData.reduce((sum, p) => sum + p.totalBonus, 0),
-        totalNetProfit: playerData.reduce((sum, p) => sum + p.netProfit, 0),
-        totalCurrentBalance: playerData.reduce((sum, p) => sum + p.currentBalance, 0),
-        totalTransactions: playerData.reduce((sum, p) => sum + p.transactionCount, 0),
-        averageNetPerPlayer: playerData.length > 0 ? playerData.reduce((sum, p) => sum + p.netProfit, 0) / playerData.length : 0,
-        averageBalancePerPlayer: playerData.length > 0 ? playerData.reduce((sum, p) => sum + p.currentBalance, 0) / playerData.length : 0
-      },
-      players: playerData
-    };
-  }
-
-  private async generateDailyTransactionsReport(clubId: string, startDate: Date, endDate: Date) {
-    const transactions = await this.transactionRepo
-      .createQueryBuilder('transaction')
-      .where('transaction.club_id = :clubId', { clubId })
-      .andWhere('transaction.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .orderBy('transaction.created_at', 'DESC')
-      .getMany();
-
-    const byType = transactions.reduce((acc, t) => {
-      const type = t.type;
-      if (!acc[type]) {
-        acc[type] = { count: 0, amount: 0 };
-      }
-      acc[type].count++;
-      acc[type].amount += parseFloat(t.amount.toString());
-      return acc;
-    }, {} as Record<string, { count: number; amount: number }>);
-
-    const byStatus = transactions.reduce((acc, t) => {
-      const status = t.status;
-      if (!acc[status]) {
-        acc[status] = { count: 0, amount: 0 };
-      }
-      acc[status].count++;
-      acc[status].amount += parseFloat(t.amount.toString());
-      return acc;
-    }, {} as Record<string, { count: number; amount: number }>);
-
-    // Group by date for daily breakdown
-    const byDate = transactions.reduce((acc, t) => {
-      const date = t.createdAt.toISOString().split('T')[0];
-      if (!acc[date]) {
-        acc[date] = { count: 0, deposits: 0, withdrawals: 0, rake: 0, tips: 0, total: 0 };
-      }
-      acc[date].count++;
-      const amount = parseFloat(t.amount.toString());
-      if (t.type === 'Deposit' || t.type === 'Buy In') acc[date].deposits += amount;
-      else if (t.type === 'Cashout' || t.type === 'Withdrawal') acc[date].withdrawals += amount;
-      else if (t.type === 'Rake') acc[date].rake += amount;
-      else if (t.type === 'Tip') acc[date].tips += amount;
-      acc[date].total += amount;
-      return acc;
-    }, {} as Record<string, { count: number; deposits: number; withdrawals: number; rake: number; tips: number; total: number }>);
-
-    return {
-      title: 'Daily Transactions Report',
-      dateRange: {
-        startDate,
-        endDate
-      },
-      summary: {
-        totalTransactions: transactions.length,
-        totalAmount: transactions.reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0),
-        completedTransactions: transactions.filter(t => t.status === 'Completed').length,
-        pendingTransactions: transactions.filter(t => t.status === 'Pending').length,
-        byType,
-        byStatus,
-        byDate
-      },
-      transactions: transactions.map(t => ({
-        date: t.createdAt,
-        playerId: t.playerId,
-        playerName: t.playerName || 'N/A',
-        type: t.type,
-        amount: parseFloat(t.amount.toString()),
-        status: t.status,
-        notes: t.notes || 'N/A',
-        isOverridden: t.isOverridden || false,
-        overrideReason: t.overrideReason || null
-      }))
-    };
-  }
-
-  private async generateDailyRakeReport(clubId: string, startDate: Date, endDate: Date) {
-    const rakeTransactions = await this.transactionRepo
-      .createQueryBuilder('transaction')
-      .where('transaction.club_id = :clubId', { clubId })
-      .andWhere('transaction.type = :type', { type: 'Rake' })
-      .andWhere('transaction.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .orderBy('transaction.created_at', 'DESC')
-      .getMany();
-
-    const totalRake = rakeTransactions.reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
-    // Group by date for daily breakdown
-    const byDate = rakeTransactions.reduce((acc, t) => {
-      const date = t.createdAt.toISOString().split('T')[0];
-      if (!acc[date]) {
-        acc[date] = { count: 0, amount: 0, players: new Set() };
-      }
-      acc[date].count++;
-      acc[date].amount += parseFloat(t.amount.toString());
-      acc[date].players.add(t.playerId);
-      return acc;
-    }, {} as Record<string, { count: number; amount: number; players: Set<string> }>);
-
-    // Convert byDate to regular object (Set to count)
-    const byDateFormatted = Object.entries(byDate).map(([date, data]) => ({
-      date,
-      transactions: data.count,
-      totalRake: data.amount,
-      uniquePlayers: data.players.size,
-      averagePerTransaction: data.count > 0 ? data.amount / data.count : 0
-    }));
-
-    // Group by table if table info is in notes
-    const byTable = rakeTransactions.reduce((acc, t) => {
-      const tableInfo = t.notes || 'Unknown Table';
-      if (!acc[tableInfo]) {
-        acc[tableInfo] = { count: 0, amount: 0 };
-      }
-      acc[tableInfo].count++;
-      acc[tableInfo].amount += parseFloat(t.amount.toString());
-      return acc;
-    }, {} as Record<string, { count: number; amount: number }>);
-
-    return {
-      title: 'Daily Rake Report',
-      dateRange: {
-        startDate,
-        endDate
-      },
-      summary: {
-        totalRake,
-        totalTransactions: rakeTransactions.length,
-        averageRake: rakeTransactions.length > 0 ? totalRake / rakeTransactions.length : 0,
-        uniquePlayers: new Set(rakeTransactions.map(t => t.playerId)).size,
-        byDate: byDateFormatted,
-        byTable
-      },
-      transactions: rakeTransactions.map(t => ({
-        date: t.createdAt,
-        playerId: t.playerId,
-        playerName: t.playerName || 'N/A',
-        amount: parseFloat(t.amount.toString()),
-        tableInfo: t.notes || 'N/A',
-        status: t.status
-      }))
-    };
-  }
-
-  private async generatePerTableTransactionsReport(clubId: string, tableNumber: string | undefined, startDate: Date, endDate: Date) {
-    let query = this.transactionRepo.createQueryBuilder('transaction')
-      .where('transaction.club_id = :clubId', { clubId })
-      .andWhere('transaction.created_at BETWEEN :startDate AND :endDate', { startDate, endDate });
-
-    if (tableNumber) {
-      query = query.andWhere('transaction.notes ILIKE :tableNumber', { tableNumber: `%${tableNumber}%` });
+    const byDate: Record<string, { players: Set<string>; buyin: number; cashout: number; tableRake: Record<number, number> }> = {};
+    const completedTx = transactions.filter(t => t.status === TransactionStatus.COMPLETED);
+    for (const t of completedTx) {
+      const date = this.formatReportDate(t.createdAt);
+      if (!byDate[date]) byDate[date] = { players: new Set(), buyin: 0, cashout: 0, tableRake: {} };
+      byDate[date].players.add(t.playerId);
+      const amt = parseFloat(t.amount.toString());
+      if (this.isBuyInType(t.type)) byDate[date].buyin += amt;
+      else if (this.isCashoutType(t.type)) byDate[date].cashout += amt;
     }
+    for (const c of filteredRake) {
+      const date = this.formatReportDate(new Date(c.sessionDate));
+      if (!byDate[date]) byDate[date] = { players: new Set(), buyin: 0, cashout: 0, tableRake: {} };
+      const amt = Number(c.totalRakeAmount || 0);
+      byDate[date].tableRake[c.tableNumber] = (byDate[date].tableRake[c.tableNumber] || 0) + amt;
+    }
+    const sortedDates = Object.keys(byDate).sort();
+    const rows = sortedDates.map(date => {
+      const d = byDate[date];
+      const totalRakeFromCollections = Object.values(d.tableRake).reduce((a, b) => a + b, 0);
+      const row: Record<string, string | number> = {
+        'Date': date,
+        'Total Players': d.players.size,
+        'Total Buyin': Number(d.buyin.toFixed(2)),
+        'Total Cashout': Number(d.cashout.toFixed(2)),
+        'Total Rake': Number(totalRakeFromCollections.toFixed(2))
+      };
+      tableNumbers.forEach((tn, i) => {
+        row[tableCols[i]] = d.tableRake[tn] != null ? Number(d.tableRake[tn].toFixed(2)) : '';
+      });
+      return row;
+    });
 
-    const transactions = await query.orderBy('transaction.created_at', 'DESC').getMany();
+    return { reportName: 'Per Table Transaction Report', headers, rows };
+  }
 
-    const byType = transactions.reduce((acc, t) => {
-      const type = t.type;
-      if (!acc[type]) {
-        acc[type] = { count: 0, amount: 0 };
-      }
-      acc[type].count++;
-      acc[type].amount += parseFloat(t.amount.toString());
-      return acc;
-    }, {} as Record<string, { count: number; amount: number }>);
+  private creditStatusToTemplate(status: CreditRequestStatus): string {
+    if (status === CreditRequestStatus.APPROVED) return 'Success';
+    if (status === CreditRequestStatus.PENDING) return 'Pending';
+    if (status === CreditRequestStatus.DENIED) return 'Rejected';
+    return 'Failed';
+  }
 
-    const deposits = transactions.filter(t => t.type === 'Deposit' || t.type === 'Buy In').reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-    const cashouts = transactions.filter(t => t.type === 'Cashout' || t.type === 'Withdrawal').reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-    const rake = transactions.filter(t => t.type === 'Rake').reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
-
+  private async generateCreditTransactionsReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const creditRequests = await this.creditRequestRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) },
+      order: { createdAt: 'DESC' }
+    });
     return {
-      title: `Per Table Transactions Report${tableNumber ? ` - Table ${tableNumber}` : ' - All Tables'}`,
-      dateRange: {
-        startDate,
-        endDate
-      },
-      summary: {
-        totalTransactions: transactions.length,
-        totalAmount: transactions.reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0),
-        totalDeposits: deposits,
-        totalCashouts: cashouts,
-        totalRake: rake,
-        uniquePlayers: new Set(transactions.map(t => t.playerId)).size,
-        byType
-      },
-      transactions: transactions.map(t => ({
-        date: t.createdAt,
-        playerId: t.playerId,
-        playerName: t.playerName || 'N/A',
-        type: t.type,
-        amount: parseFloat(t.amount.toString()),
-        status: t.status,
-        tableInfo: t.notes || 'N/A'
+      reportName: 'Credit Transaction Report',
+      headers: ['Date', 'Player Name', 'Amount', 'Status'],
+      rows: creditRequests.map(c => ({
+        'Date': this.formatReportDate(c.createdAt),
+        'Player Name': c.playerName || '',
+        'Amount': Number(parseFloat(c.amount.toString()).toFixed(2)),
+        'Status': this.creditStatusToTemplate(c.status as CreditRequestStatus)
       }))
     };
   }
 
-  private async generateCreditTransactionsReport(clubId: string, startDate: Date, endDate: Date) {
-    const creditRequests = await this.creditRequestRepo
-      .createQueryBuilder('credit')
-      .where('credit.club_id = :clubId', { clubId })
-      .andWhere('credit.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .orderBy('credit.created_at', 'DESC')
-      .getMany();
+  private async generateExpensesReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const salaries = await this.salaryPaymentRepo.find({
+      where: { club: { id: clubId } },
+      relations: ['staff']
+    });
+    const tips = await this.dealerTipsRepo.find({
+      where: { clubId },
+      relations: ['dealer']
+    });
+    const cashouts = await this.dealerCashoutRepo.find({
+      where: { club: { id: clubId } },
+      relations: ['dealer']
+    });
+    const staffBonuses = await this.staffBonusRepo.find({
+      where: { club: { id: clubId } },
+      relations: ['staff']
+    });
 
-    const totalRequested = creditRequests.reduce((sum, c) => sum + parseFloat(c.amount.toString()), 0);
-    const approvedRequests = creditRequests.filter(c => c.status === 'Approved');
-    const totalApproved = approvedRequests.reduce((sum, c) => sum + parseFloat(c.amount.toString()), 0);
+    const byDate: Record<string, { bonus: number; salaries: number; tips: number; cashout: number }> = {};
+    const add = (dateStr: string, key: 'bonus' | 'salaries' | 'tips' | 'cashout', value: number) => {
+      if (!byDate[dateStr]) byDate[dateStr] = { bonus: 0, salaries: 0, tips: 0, cashout: 0 };
+      byDate[dateStr][key] += value;
+    };
+    salaries.filter(s => s.paymentDate && new Date(s.paymentDate) >= startDate && new Date(s.paymentDate) <= endDate).forEach(s => {
+      add(this.formatReportDate(new Date(s.paymentDate)), 'salaries', parseFloat(s.netAmount.toString()));
+    });
+    tips.filter(t => t.tipDate && new Date(t.tipDate) >= startDate && new Date(t.tipDate) <= endDate).forEach(t => {
+      const paidToDealer = Number(t.dealerShareAmount || 0) + Number(t.floorManagerAmount || 0);
+      add(this.formatReportDate(new Date(t.tipDate)), 'tips', paidToDealer);
+    });
+    cashouts.filter(c => c.cashoutDate && new Date(c.cashoutDate) >= startDate && new Date(c.cashoutDate) <= endDate).forEach(c => {
+      add(this.formatReportDate(new Date(c.cashoutDate)), 'cashout', parseFloat(c.amount.toString()));
+    });
+    staffBonuses.filter(b => b.createdAt && new Date(b.createdAt) >= startDate && new Date(b.createdAt) <= endDate).forEach(b => {
+      add(this.formatReportDate(b.createdAt), 'bonus', parseFloat(b.bonusAmount.toString()));
+    });
+
+    const sortedDates = Object.keys(byDate).sort();
+    const rows = sortedDates.map(date => {
+      const d = byDate[date];
+      const totalExpense = d.bonus + d.salaries + d.tips + d.cashout;
+      return {
+        'Date': date,
+        'Total Bonus': Number(d.bonus.toFixed(2)),
+        'Total Salaries': Number(d.salaries.toFixed(2)),
+        'Total Tips': Number(d.tips.toFixed(2)),
+        'Total Cashout': Number(d.cashout.toFixed(2)),
+        'Total Expense': Number(totalExpense.toFixed(2))
+      };
+    });
 
     return {
-      title: 'Credit Transactions Report',
-      summary: {
-        totalRequests: creditRequests.length,
-        approved: approvedRequests.length,
-        pending: creditRequests.filter(c => c.status === 'Pending').length,
-        rejected: creditRequests.filter(c => c.status === 'Denied').length,
-        totalRequested,
-        totalApproved
-      },
-      requests: creditRequests.map(c => ({
-        date: c.createdAt,
-        playerName: c.playerName,
-        amount: c.amount,
-        status: c.status,
-        notes: c.notes
-      }))
+      reportName: 'Consolidated Expense Report',
+      headers: ['Date', 'Total Bonus', 'Total Salaries', 'Total Tips', 'Total Cashout', 'Total Expense'],
+      rows
     };
   }
 
-  private async generateExpensesReport(clubId: string, startDate: Date, endDate: Date) {
-    const salaries = await this.salaryPaymentRepo
-      .createQueryBuilder('salary')
-      .leftJoinAndSelect('salary.staff', 'staff')
-      .where('salary.club_id = :clubId', { clubId })
-      .andWhere('salary.payment_date BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const tips = await this.dealerTipsRepo
-      .createQueryBuilder('tips')
-      .leftJoinAndSelect('tips.dealer', 'dealer')
-      .where('tips.club_id = :clubId', { clubId })
-      .andWhere('tips.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const cashouts = await this.dealerCashoutRepo
-      .createQueryBuilder('cashout')
-      .leftJoinAndSelect('cashout.dealer', 'dealer')
-      .where('cashout.club_id = :clubId', { clubId })
-      .andWhere('cashout.cashout_date BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const staffBonuses = await this.staffBonusRepo
-      .createQueryBuilder('bonus')
-      .leftJoinAndSelect('bonus.staff', 'staff')
-      .where('bonus.club_id = :clubId', { clubId })
-      .andWhere('bonus.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const totalSalaries = salaries.reduce((sum, s) => sum + parseFloat(s.netAmount.toString()), 0);
-    const totalTips = tips.reduce((sum, t) => sum + parseFloat(t.dealerShareAmount.toString()), 0);
-    const totalCashouts = cashouts.reduce((sum, c) => sum + parseFloat(c.amount.toString()), 0);
-    const totalBonuses = staffBonuses.reduce((sum, b) => sum + parseFloat(b.bonusAmount.toString()), 0);
-
+  private async generateBonusReport(clubId: string, startDate: Date, endDate: Date): Promise<ReportSheet> {
+    const playerBonuses = await this.playerBonusRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) },
+      relations: ['player']
+    });
+    const staffBonuses = await this.staffBonusRepo.find({
+      where: { club: { id: clubId }, createdAt: Between(startDate, endDate) },
+      relations: ['staff']
+    });
+    const playerRows = playerBonuses.map(b => ({
+      'Date': this.formatReportDate(b.createdAt),
+      'Name': (b as { player?: { name: string } }).player?.name ?? 'N/A',
+      'Player/Staff': 'Player',
+      'Amount': Number(parseFloat(b.bonusAmount.toString()).toFixed(2))
+    }));
+    const staffRows = staffBonuses.map(b => ({
+      'Date': this.formatReportDate(b.createdAt),
+      'Name': (b as { staff?: { name: string } }).staff?.name ?? 'N/A',
+      'Player/Staff': 'Staff',
+      'Amount': Number(parseFloat(b.bonusAmount.toString()).toFixed(2))
+    }));
+    const rows = [...playerRows, ...staffRows].sort((a, b) => (a['Date'] as string).localeCompare(b['Date'] as string));
     return {
-      title: 'Expenses Report',
-      summary: {
-        totalSalaries,
-        totalTips,
-        totalCashouts,
-        totalBonuses,
-        grandTotal: totalSalaries + totalTips + totalCashouts + totalBonuses
-      },
-      salaries: salaries.map(s => ({
-        date: s.paymentDate,
-        staffName: s.staff.name,
-        baseSalary: s.baseSalary,
-        overtime: s.overtimeAmount,
-        deductions: s.deductions,
-        netAmount: s.netAmount
-      })),
-      tips: tips.map(t => ({
-        date: t.createdAt,
-        dealerName: t.dealer.name,
-        amount: t.dealerShareAmount
-      })),
-      cashouts: cashouts.map(c => ({
-        date: c.cashoutDate,
-        dealerName: c.dealer.name,
-        amount: c.amount
-      })),
-      bonuses: staffBonuses.map(b => ({
-        date: b.createdAt,
-        staffName: b.staff.name,
-        amount: b.bonusAmount,
-        reason: b.reason
-      }))
+      reportName: 'Bonus Report',
+      headers: ['Date', 'Name', 'Player/Staff', 'Amount'],
+      rows
     };
   }
 
-  private async generateBonusReport(clubId: string, startDate: Date, endDate: Date) {
-    const playerBonuses = await this.playerBonusRepo
-      .createQueryBuilder('bonus')
-      .leftJoinAndSelect('bonus.player', 'player')
-      .where('bonus.club_id = :clubId', { clubId })
-      .andWhere('bonus.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const staffBonuses = await this.staffBonusRepo
-      .createQueryBuilder('bonus')
-      .leftJoinAndSelect('bonus.staff', 'staff')
-      .where('bonus.club_id = :clubId', { clubId })
-      .andWhere('bonus.created_at BETWEEN :startDate AND :endDate', { startDate, endDate })
-      .getMany();
-
-    const totalPlayerBonuses = playerBonuses.reduce((sum, b) => sum + parseFloat(b.bonusAmount.toString()), 0);
-    const totalStaffBonuses = staffBonuses.reduce((sum, b) => sum + parseFloat(b.bonusAmount.toString()), 0);
-
-    return {
-      title: 'Bonus Report',
-      summary: {
-        totalPlayerBonuses,
-        totalStaffBonuses,
-        grandTotal: totalPlayerBonuses + totalStaffBonuses,
-        playerBonusCount: playerBonuses.length,
-        staffBonusCount: staffBonuses.length
-      },
-      playerBonuses: playerBonuses.map(b => ({
-        date: b.createdAt,
-        playerName: b.player.name,
-        amount: b.bonusAmount,
-        reason: b.reason,
-        processedBy: b.processedBy
-      })),
-      staffBonuses: staffBonuses.map(b => ({
-        date: b.createdAt,
-        staffName: b.staff.name,
-        amount: b.bonusAmount,
-        reason: b.reason,
-        processedBy: b.processedBy
-      }))
-    };
-  }
-
-  private async generateCustomReport(clubId: string, reportTypes: ReportType[], startDate: Date, endDate: Date) {
-    const customData: any = {
-      title: 'Custom Report',
-      sections: []
-    };
-
+  private async generateCustomReport(clubId: string, reportTypes: ReportType[], startDate: Date, endDate: Date): Promise<{ sections: ReportSheet[] }> {
+    const sections: ReportSheet[] = [];
     for (const reportType of reportTypes) {
-      if (reportType === ReportType.CUSTOM) continue; // Skip custom in custom
-
-      let sectionData: any;
+      if (reportType === ReportType.CUSTOM) continue;
+      let sheetOrSections: ReportSheet | { sections: ReportSheet[] } | null = null;
       switch (reportType) {
         case ReportType.CUMULATIVE_PLAYER:
-          sectionData = await this.generateCumulativePlayerReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateCumulativePlayerReport(clubId, startDate, endDate);
           break;
         case ReportType.DAILY_TRANSACTIONS:
-          sectionData = await this.generateDailyTransactionsReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateDailyTransactionsReport(clubId, startDate, endDate);
           break;
         case ReportType.DAILY_RAKE:
-          sectionData = await this.generateDailyRakeReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateDailyRakeReport(clubId, startDate, endDate);
+          break;
+        case ReportType.PER_TABLE_TRANSACTIONS:
+          sheetOrSections = await this.generatePerTableTransactionsReport(clubId, undefined, startDate, endDate);
           break;
         case ReportType.CREDIT_TRANSACTIONS:
-          sectionData = await this.generateCreditTransactionsReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateCreditTransactionsReport(clubId, startDate, endDate);
           break;
         case ReportType.EXPENSES:
-          sectionData = await this.generateExpensesReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateExpensesReport(clubId, startDate, endDate);
           break;
         case ReportType.BONUS:
-          sectionData = await this.generateBonusReport(clubId, startDate, endDate);
+          sheetOrSections = await this.generateBonusReport(clubId, startDate, endDate);
+          break;
+        default:
           break;
       }
-
-      if (sectionData) {
-        customData.sections.push(sectionData);
+      if (sheetOrSections) {
+        if ('sections' in sheetOrSections) sections.push(...sheetOrSections.sections);
+        else sections.push(sheetOrSections);
       }
     }
-
-    return customData;
+    return { sections };
   }
 
-  private async generateExcel(data: any, reportType: ReportType, clubName: string): Promise<Buffer> {
+  private addSheetToWorkbook(workbook: ExcelJS.Workbook, sheet: ReportSheet, clubName: string): void {
+    const safeName = sheet.reportName.replace(/[:\\/?*\[\]]/g, '').slice(0, 31);
+    const worksheet = workbook.addWorksheet(safeName, { properties: { tabColor: { argb: 'FF92D050' } } });
+    let rowNum = 1;
+    worksheet.getCell(rowNum, 1).value = 'REPORT NAME';
+    worksheet.getCell(rowNum, 1).font = { bold: true };
+    worksheet.getCell(rowNum, 2).value = sheet.reportName;
+    worksheet.getCell(rowNum, 2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
+    rowNum += 1;
+    worksheet.getCell(rowNum, 1).value = clubName;
+    rowNum += 2;
+    sheet.headers.forEach((h, i) => {
+      worksheet.getCell(rowNum, i + 1).value = h;
+      worksheet.getCell(rowNum, i + 1).font = { bold: true };
+    });
+    rowNum += 1;
+    sheet.rows.forEach(r => {
+      sheet.headers.forEach((h, i) => {
+        const v = r[h];
+        worksheet.getCell(rowNum, i + 1).value = v !== undefined && v !== null && v !== '' ? v : '';
+      });
+      rowNum += 1;
+    });
+    worksheet.columns.forEach((col) => {
+      let maxLen = 12;
+      col.eachCell?.({ includeEmpty: true }, (cell: any) => {
+        const len = cell.value ? String(cell.value).length : 0;
+        if (len > maxLen) maxLen = len;
+      });
+      col.width = Math.min(maxLen + 2, 50);
+    });
+  }
+
+  private async generateExcel(data: ReportSheet | { sections: ReportSheet[] }, reportType: ReportType, clubName: string): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = clubName;
     workbook.created = new Date();
 
-    const worksheet = workbook.addWorksheet(data.title || 'Report');
-
-    // Add title
-    worksheet.mergeCells('A1:F1');
-    const titleCell = worksheet.getCell('A1');
-    titleCell.value = data.title;
-    titleCell.font = { size: 16, bold: true };
-    titleCell.alignment = { horizontal: 'center' };
-
-    // Add club name
-    worksheet.mergeCells('A2:F2');
-    const clubCell = worksheet.getCell('A2');
-    clubCell.value = clubName;
-    clubCell.font = { size: 12 };
-    clubCell.alignment = { horizontal: 'center' };
-
-    worksheet.addRow([]);
-
-    // Add summary
-    if (data.summary) {
-      worksheet.addRow(['Summary']).font = { bold: true };
-      Object.entries(data.summary).forEach(([key, value]) => {
-        worksheet.addRow([key, value]);
-      });
-      worksheet.addRow([]);
+    if ('sections' in data && Array.isArray(data.sections)) {
+      data.sections.forEach((sheet) => this.addSheetToWorkbook(workbook, sheet, clubName));
+    } else {
+      this.addSheetToWorkbook(workbook, data as ReportSheet, clubName);
     }
-
-    // Add data based on report type
-    if (reportType === ReportType.INDIVIDUAL_PLAYER && data.playerInfo) {
-      worksheet.addRow(['Player Information']).font = { bold: true };
-      Object.entries(data.playerInfo).forEach(([key, value]) => {
-        worksheet.addRow([key, value]);
-      });
-      worksheet.addRow([]);
-    }
-
-    // Add transactions/main data
-    if (data.transactions && data.transactions.length > 0) {
-      worksheet.addRow(['Transactions']).font = { bold: true };
-      const headers = Object.keys(data.transactions[0]);
-      worksheet.addRow(headers).font = { bold: true };
-      data.transactions.forEach((row: any) => {
-        worksheet.addRow(Object.values(row));
-      });
-    }
-
-    if (data.players && data.players.length > 0) {
-      worksheet.addRow(['Player Data']).font = { bold: true };
-      const headers = Object.keys(data.players[0]);
-      worksheet.addRow(headers).font = { bold: true };
-      data.players.forEach((row: any) => {
-        worksheet.addRow(Object.values(row));
-      });
-    }
-
-    // Auto-fit columns
-    worksheet.columns.forEach((column: any) => {
-      let maxLength = 0;
-      column.eachCell?.({ includeEmpty: true }, (cell: any) => {
-        const length = cell.value ? cell.value.toString().length : 10;
-        if (length > maxLength) {
-          maxLength = length;
-        }
-      });
-      column.width = maxLength < 10 ? 10 : maxLength + 2;
-    });
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
   }
 
-  private async generatePDF(data: any, reportType: ReportType, clubName: string): Promise<Buffer> {
+  private writeSheetToPDF(doc: PDFKit.PDFDocument, sheet: ReportSheet, clubName: string): void {
+    const margin = 50;
+    const pageWidth = 595.28;
+    const contentWidth = pageWidth - 2 * margin;
+    const fontSize = 9;
+    const rowHeight = 14;
+    const cellPad = 4;
+    const numCols = sheet.headers.length;
+    const colWidth = numCols > 0 ? contentWidth / numCols : contentWidth;
+    const gridColor = '#b0b0b0';
+    const gridWidth = 0.25;
+
+    const isNumber = (v: string | number): boolean => typeof v === 'number' && !isNaN(v);
+    const cellStr = (v: string | number | undefined | null): string => {
+      if (v === undefined || v === null || v === '') return '';
+      return isNumber(v) ? Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);
+    };
+
+    // Title block – same as Excel: REPORT NAME + report name, then club
+    doc.fontSize(10).font('Helvetica-Bold').text('REPORT NAME', margin, doc.y, { continued: true });
+    doc.font('Helvetica').text(`  ${sheet.reportName}`);
+    doc.fontSize(fontSize).text(clubName, margin, doc.y + 4);
+    doc.y += 28;
+
+    if (numCols === 0) {
+      doc.moveDown(1);
+      return;
+    }
+
+    const numRows = 1 + sheet.rows.length; // header + data
+    const tableTop = doc.y;
+    const tableHeight = numRows * rowHeight;
+
+    // Draw grid (Excel-style): vertical lines for each column, horizontal for each row
+    doc.strokeColor(gridColor).lineWidth(gridWidth);
+    for (let c = 0; c <= numCols; c++) {
+      const x = margin + c * colWidth;
+      doc.moveTo(x, tableTop).lineTo(x, tableTop + tableHeight).stroke();
+    }
+    for (let r = 0; r <= numRows; r++) {
+      const y = tableTop + r * rowHeight;
+      doc.moveTo(margin, y).lineTo(margin + contentWidth, y).stroke();
+    }
+
+    // Header row (bold) – same as Excel
+    doc.font('Helvetica-Bold').fontSize(fontSize);
+    let y = tableTop + (rowHeight - fontSize) / 2;
+    let x = margin;
+    sheet.headers.forEach((h) => {
+      doc.text(String(h), x + cellPad, y, { width: colWidth - cellPad * 2 });
+      x += colWidth;
+    });
+
+    // Data rows – same structure as Excel
+    doc.font('Helvetica').fontSize(fontSize);
+    sheet.rows.forEach((r, rowIdx) => {
+      y = tableTop + rowHeight + rowIdx * rowHeight + (rowHeight - fontSize) / 2;
+      x = margin;
+      sheet.headers.forEach((h) => {
+        doc.text(cellStr(r[h]), x + cellPad, y, { width: colWidth - cellPad * 2 });
+        x += colWidth;
+      });
+    });
+
+    doc.y = tableTop + tableHeight + 14;
+  }
+
+  private async generatePDF(data: ReportSheet | { sections: ReportSheet[] }, _reportType: ReportType, clubName: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ margin: 50, size: 'A4' });
       const chunks: Buffer[] = [];
-
       doc.on('data', (chunk: Buffer) => chunks.push(chunk));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
-      // Helper to format currency
-      const formatCurrency = (value: any): string => {
-        const num = typeof value === 'number' ? value : parseFloat(value.toString());
-        return `₹${num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      };
-
-      // Helper to format date
-      const formatDate = (value: any): string => {
-        if (!value) return 'N/A';
-        const date = new Date(value);
-        return date.toLocaleString('en-IN', { 
-          year: 'numeric', 
-          month: 'short', 
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-      };
-
-      // Title
-      doc.fontSize(20).font('Helvetica-Bold').text(data.title, { align: 'center' });
-      doc.fontSize(12).font('Helvetica').text(clubName, { align: 'center' });
-      doc.fontSize(10).text(`Generated on: ${formatDate(new Date())}`, { align: 'center' });
-      doc.moveDown();
-
-      // Date Range
-      if (data.dateRange) {
-        doc.fontSize(10).font('Helvetica').text(
-          `Period: ${formatDate(data.dateRange.startDate)} to ${formatDate(data.dateRange.endDate)}`,
-          { align: 'center' }
-        );
-        doc.moveDown();
-      }
-
-      // Summary Section
-      if (data.summary) {
-        doc.fontSize(14).font('Helvetica-Bold').text('Summary', { underline: true });
-        doc.fontSize(10).font('Helvetica');
-        
-        Object.entries(data.summary).forEach(([key, value]) => {
-          // Skip nested objects for now
-          if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            return;
-          }
-          
-          const formattedKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-          let formattedValue: string;
-          
-          if (typeof value === 'number' && (key.toLowerCase().includes('amount') || 
-              key.toLowerCase().includes('total') || key.toLowerCase().includes('rake') ||
-              key.toLowerCase().includes('deposit') || key.toLowerCase().includes('cashout') ||
-              key.toLowerCase().includes('bonus') || key.toLowerCase().includes('tip') ||
-              key.toLowerCase().includes('profit') || key.toLowerCase().includes('salary'))) {
-            formattedValue = formatCurrency(value);
-          } else if (typeof value === 'number') {
-            formattedValue = value.toLocaleString('en-IN');
-          } else {
-            formattedValue = String(value);
-          }
-          
-          doc.text(`${formattedKey}: ${formattedValue}`);
-        });
-        doc.moveDown();
-      }
-
-      // Player Information
-      if (data.playerInfo) {
-        doc.fontSize(14).font('Helvetica-Bold').text('Player Information', { underline: true });
-        doc.fontSize(10).font('Helvetica');
-        Object.entries(data.playerInfo).forEach(([key, value]) => {
-          const formattedKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-          const formattedValue = key.toLowerCase().includes('date') ? formatDate(value) : String(value);
-          doc.text(`${formattedKey}: ${formattedValue}`);
-        });
-        doc.moveDown();
-      }
-
-      // Detailed Transactions Table
-      if (data.transactions && data.transactions.length > 0) {
-        doc.fontSize(14).font('Helvetica-Bold').text('Transaction Details', { underline: true });
-        doc.fontSize(8).font('Helvetica');
-        
-        // Table header
-        const headers = Object.keys(data.transactions[0]);
-        doc.font('Helvetica-Bold').text(headers.join(' | '), { continued: false });
-        doc.font('Helvetica');
-        
-        // Table rows (limit to first 100 for PDF readability)
-        data.transactions.slice(0, 100).forEach((txn: any) => {
-          const row = Object.values(txn).map((val: any, idx) => {
-            const key = headers[idx];
-            if (key.toLowerCase().includes('date')) {
-              return formatDate(val);
-            } else if (key.toLowerCase().includes('amount') && typeof val === 'number') {
-              return formatCurrency(val);
-            } else {
-              return String(val);
-            }
-          }).join(' | ');
-          doc.text(row);
-        });
-        
-        if (data.transactions.length > 100) {
-          doc.moveDown();
-          doc.fontSize(10).font('Helvetica-Oblique').text(`... and ${data.transactions.length - 100} more transactions. Download Excel for full details.`);
+      const sheets = 'sections' in data && Array.isArray(data.sections) ? data.sections : [data as ReportSheet];
+      sheets.forEach((sheet, idx) => {
+        if (idx > 0) {
+          doc.addPage();
+          doc.y = 50;
+        } else {
+          doc.fontSize(8).fillColor('#666666').text(`Generated: ${new Date().toLocaleString('en-IN')}`, 50, 50, { align: 'right', width: 495 });
+          doc.y = 62;
+          doc.fillColor('black');
         }
-      }
-
-      // Player Data (for cumulative reports)
-      if (data.players && data.players.length > 0) {
-        doc.addPage();
-        doc.fontSize(14).font('Helvetica-Bold').text('Player Summary', { underline: true });
-        doc.fontSize(8).font('Helvetica');
-        
-        const headers = Object.keys(data.players[0]);
-        doc.font('Helvetica-Bold').text(headers.join(' | '), { continued: false });
-        doc.font('Helvetica');
-        
-        data.players.slice(0, 50).forEach((player: any) => {
-          const row = Object.values(player).map((val: any, idx) => {
-            const key = headers[idx];
-            if (key.toLowerCase().includes('date')) {
-              return formatDate(val);
-            } else if ((key.toLowerCase().includes('amount') || key.toLowerCase().includes('total') || 
-                       key.toLowerCase().includes('net') || key.toLowerCase().includes('profit')) && 
-                       typeof val === 'number') {
-              return formatCurrency(val);
-            } else {
-              return String(val);
-            }
-          }).join(' | ');
-          doc.text(row);
-        });
-        
-        if (data.players.length > 50) {
-          doc.moveDown();
-          doc.fontSize(10).font('Helvetica-Oblique').text(`... and ${data.players.length - 50} more players. Download Excel for full details.`);
-        }
-      }
-
-      // Bonuses section
-      if (data.bonuses && data.bonuses.length > 0) {
-        doc.addPage();
-        doc.fontSize(14).font('Helvetica-Bold').text('Bonuses', { underline: true });
-        doc.fontSize(9).font('Helvetica');
-        
-        data.bonuses.forEach((bonus: any, index: number) => {
-          doc.text(`${index + 1}. Date: ${formatDate(bonus.date)}, Amount: ${formatCurrency(bonus.amount)}, Reason: ${bonus.reason || 'N/A'}`);
-        });
-      }
+        this.writeSheetToPDF(doc, sheet, clubName);
+      });
 
       doc.end();
     });

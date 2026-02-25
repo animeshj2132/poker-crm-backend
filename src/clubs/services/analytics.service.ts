@@ -7,6 +7,7 @@ import { CreditRequest, CreditRequestStatus } from '../entities/credit-request.e
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
 import { WaitlistEntry, WaitlistStatus } from '../entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../entities/table.entity';
+import { ClubsService } from '../clubs.service';
 
 @Injectable()
 export class AnalyticsService {
@@ -16,9 +17,14 @@ export class AnalyticsService {
     @InjectRepository(CreditRequest) private readonly creditRequestsRepo: Repository<CreditRequest>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(WaitlistEntry) private readonly waitlistRepo: Repository<WaitlistEntry>,
-    @InjectRepository(Table) private readonly tableRepo: Repository<Table>
+    @InjectRepository(Table) private readonly tableRepo: Repository<Table>,
+    private readonly clubsService: ClubsService
   ) {}
 
+  /**
+   * Revenue = (tournament spend + table spend + rake + tips collected + FNB)
+   *           - (tournament paybacks + table cashouts + dealer tips paid).
+   */
   async getRevenueAnalytics(clubId: string, startDate?: Date, endDate?: Date) {
     const club = await this.clubsRepo.findOne({ where: { id: clubId } });
     if (!club) throw new NotFoundException('Club not found');
@@ -33,23 +39,9 @@ export class AnalyticsService {
     }
 
     const transactions = await this.transactionsRepo.find({ where });
+    const breakdown = await this.clubsService.getRevenueForPeriod(clubId, startDate, endDate);
 
-    const totalRevenue = transactions
-      .filter(t => t.type === TransactionType.DEPOSIT && t.status === TransactionStatus.COMPLETED)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    const totalWithdrawals = transactions
-      .filter(t => t.type === TransactionType.WITHDRAWAL && t.status === TransactionStatus.COMPLETED)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    const totalRake = transactions
-      .filter(t => t.type === TransactionType.RAKE && t.status === TransactionStatus.COMPLETED)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    const totalTips = transactions
-      .filter(t => t.type === TransactionType.TIP && t.status === TransactionStatus.COMPLETED)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
+    const round = (n: number) => Number(n.toFixed(2));
     const pendingTransactions = transactions.filter(t => t.status === TransactionStatus.PENDING).length;
     const failedTransactions = transactions.filter(t => t.status === TransactionStatus.FAILED).length;
 
@@ -60,14 +52,24 @@ export class AnalyticsService {
         endDate: endDate?.toISOString() || null
       },
       revenue: {
-        totalRevenue,
-        totalWithdrawals,
-        netRevenue: totalRevenue - totalWithdrawals,
-        totalRake,
-        totalTips,
-        tipHoldPercent: 0.15, // Default, can be from settings
-        clubTipShare: totalTips * 0.15,
-        staffTipShare: totalTips * 0.85
+        totalRevenue: round(breakdown.revenue),
+        totalWithdrawals: round(breakdown.tableCashouts + breakdown.tournamentPaybacks + breakdown.dealerTipsPaid),
+        netRevenue: round(breakdown.revenue),
+        totalRake: round(breakdown.rakeCollected),
+        totalTips: round(breakdown.tipsCollected + breakdown.dealerTipsPaid),
+        tipHoldPercent: 0.15,
+        clubTipShare: round(breakdown.tipsCollected),
+        staffTipShare: round(breakdown.dealerTipsPaid),
+        breakdown: {
+          tournamentSpend: round(breakdown.tournamentSpend),
+          tableSpend: round(breakdown.tableSpend),
+          rakeCollected: round(breakdown.rakeCollected),
+          tipsCollected: round(breakdown.tipsCollected),
+          fnbRevenue: round(breakdown.fnbRevenue),
+          tournamentPaybacks: round(breakdown.tournamentPaybacks),
+          tableCashouts: round(breakdown.tableCashouts),
+          dealerTipsPaid: round(breakdown.dealerTipsPaid)
+        }
       },
       transactions: {
         total: transactions.length,

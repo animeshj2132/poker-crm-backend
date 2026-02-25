@@ -9007,6 +9007,30 @@ export class ClubsController {
   // ========== MASTER_ADMIN PLAYER MANAGEMENT APIs ==========
 
   /**
+   * Lightweight player search for dropdowns (e.g. report config). Path chosen to avoid matching :id/players/:playerId (UUID).
+   * GET /api/clubs/:id/search-players?q=term
+   */
+  @Get(':id/search-players')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE, ClubRole.HR)
+  async searchPlayers(
+    @Param('id', ParseUUIDPipe) clubId: string,
+    @Query('q') q?: string,
+  ) {
+    const term = (q && typeof q === 'string' && q.trim().length >= 2) ? q.trim() : null;
+    if (!term) {
+      return { players: [] };
+    }
+    const searchParam = `%${term}%`;
+    const rows = await this.dataSource.query(
+      `SELECT id, name, email FROM players
+       WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)
+       ORDER BY name ASC LIMIT 50`,
+      [clubId, searchParam],
+    );
+    return { players: rows };
+  }
+
+  /**
    * Get all players for a club
    * GET /api/clubs/:id/players
    */
@@ -9133,30 +9157,44 @@ export class ClubsController {
       let total = 0;
       try {
         if (searchTerm) {
-          // Search through name, email, phoneNumber, playerId
-          const queryBuilder = this.playersRepo.createQueryBuilder('player')
-            .leftJoinAndSelect('player.affiliate', 'affiliate')
-            .leftJoinAndSelect('player.club', 'club')
-            .where('player.club_id = :clubId', { clubId });
-
-          if (status && status.trim()) {
-            queryBuilder.andWhere('player.status = :status', { status: status.trim() });
-          }
-
-          // Search in multiple fields
-          queryBuilder.andWhere(
-            '(LOWER(player.name) LIKE LOWER(:search) OR ' +
-            'LOWER(player.email) LIKE LOWER(:search) OR ' +
-            'LOWER(player.phone_number) LIKE LOWER(:search) OR ' +
-            'LOWER(player.player_id) LIKE LOWER(:search))',
-            { search: `%${searchTerm}%` }
+          // Search: raw SQL to avoid TypeORM query-builder issues (400 on search)
+          const searchParam = `%${searchTerm}%`;
+          const statusCond = status && status.trim() ? ' AND status = $3' : '';
+          const statusVal = status && status.trim() ? [clubId, searchParam, status.trim()] : [clubId, searchParam];
+          const limitIdx = statusVal.length + 1;
+          const offsetIdx = statusVal.length + 2;
+          const rows = await this.dataSource.query(
+            `SELECT id, name, email, phone_number, player_id, status, kyc_status, total_spent, total_commission,
+             created_at, updated_at, credit_enabled, credit_limit, notes
+             FROM players
+             WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)${statusCond}
+             ORDER BY created_at DESC
+             LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+            [...statusVal, limitNum, offsetNum]
           );
-
-          queryBuilder.orderBy('player.created_at', 'DESC');
-          queryBuilder.skip(offsetNum);
-          queryBuilder.take(limitNum);
-
-          [players, total] = await queryBuilder.getManyAndCount();
+          const countRows = await this.dataSource.query(
+            `SELECT COUNT(*)::int as count FROM players
+             WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)${statusCond}`,
+            statusVal
+          );
+          total = countRows[0]?.count ?? 0;
+          players = rows.map((r: any) => ({
+            id: r.id,
+            name: r.name,
+            email: r.email,
+            phoneNumber: r.phone_number,
+            playerId: r.player_id,
+            status: r.status,
+            kycStatus: r.kyc_status,
+            totalSpent: r.total_spent,
+            totalCommission: r.total_commission,
+            createdAt: r.created_at,
+            updatedAt: r.updated_at,
+            affiliate: null,
+            notes: r.notes,
+            creditEnabled: r.credit_enabled ?? false,
+            creditLimit: r.credit_limit ?? 0
+          })) as Player[];
         } else {
           // No search - regular query
           [players, total] = await this.playersRepo.findAndCount({

@@ -214,7 +214,126 @@ export class ClubsService {
   }
 
   /**
-   * Get club revenue, rake, and tips data from real transactions
+   * Revenue = (tournament spend + table spend + rake + tips collected + FNB)
+   *            - (tournament paybacks + table cashouts + dealer tips paid)
+   * Computes breakdown and net revenue for a date range or all time.
+   */
+  private async getRevenueBreakdown(
+    clubId: string,
+    fromDate?: Date,
+    toDate?: Date
+  ): Promise<{
+    tournamentSpend: number;
+    tableSpend: number;
+    rakeCollected: number;
+    tipsCollected: number;
+    fnbRevenue: number;
+    tournamentPaybacks: number;
+    tableCashouts: number;
+    dealerTipsPaid: number;
+    revenue: number;
+  }> {
+    const tableSpendTypes = [TransactionType.BUY_IN, TransactionType.TABLE_BUY_IN, TransactionType.CLUB_BUY_IN];
+    const tableCashoutTypes = [TransactionType.CASHOUT, TransactionType.TABLE_BUY_OUT, TransactionType.CLUB_BUY_OUT];
+
+    const txWhere: any = { club: { id: clubId }, status: TransactionStatus.COMPLETED };
+    if (fromDate && toDate) txWhere.createdAt = Between(fromDate, toDate);
+    else if (fromDate) txWhere.createdAt = MoreThanOrEqual(fromDate);
+    else if (toDate) txWhere.createdAt = LessThanOrEqual(toDate);
+
+    const transactions = await this.transactionsRepo.find({ where: txWhere });
+
+    const tableSpend = transactions
+      .filter(t => tableSpendTypes.includes(t.type))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const tableCashouts = transactions
+      .filter(t => tableCashoutTypes.includes(t.type))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    const dateFilter = fromDate && toDate
+      ? 'AND session_date >= $2 AND session_date <= $3'
+      : fromDate ? 'AND session_date >= $2' : toDate ? 'AND session_date <= $2' : '';
+    const rakeParams = fromDate && toDate ? [clubId, fromDate, toDate] : fromDate ? [clubId, fromDate] : toDate ? [clubId, toDate] : [clubId];
+    const rakeResult = await this.dataSource.query(
+      `SELECT COALESCE(SUM(total_rake_amount), 0) AS total FROM rake_collections WHERE club_id = $1 ${dateFilter}`,
+      rakeParams
+    );
+    const rakeCollected = Number(rakeResult[0]?.total ?? 0);
+
+    const tipDateFilter = fromDate && toDate
+      ? 'AND tip_date >= $2 AND tip_date <= $3'
+      : fromDate ? 'AND tip_date >= $2' : toDate ? 'AND tip_date <= $2' : '';
+    const tipParams = fromDate && toDate ? [clubId, fromDate, toDate] : fromDate ? [clubId, fromDate] : toDate ? [clubId, toDate] : [clubId];
+    const tipsResult = await this.dataSource.query(
+      `SELECT COALESCE(SUM(club_hold_amount), 0) AS club_hold,
+              COALESCE(SUM(dealer_share_amount + floor_manager_amount), 0) AS dealer_paid
+       FROM dealer_tips WHERE club_id = $1 ${tipDateFilter}`,
+      tipParams
+    );
+    const tipsCollected = Number(tipsResult[0]?.club_hold ?? 0);
+    const dealerTipsPaid = Number(tipsResult[0]?.dealer_paid ?? 0);
+
+    const tournDateFilter = fromDate && toDate
+      ? 'AND (t.start_time::date >= $2 AND t.start_time::date <= $3 OR tp.exited_at::date >= $2 AND tp.exited_at::date <= $3)'
+      : fromDate
+        ? 'AND (t.start_time::date >= $2 OR tp.exited_at::date >= $2)'
+        : toDate
+          ? 'AND (t.start_time::date <= $2 OR tp.exited_at::date <= $2)'
+          : '';
+    const tournParams = fromDate && toDate ? [clubId, fromDate, toDate] : fromDate ? [clubId, fromDate] : toDate ? [clubId, toDate] : [clubId];
+    const tournResult = await this.dataSource.query(
+      `SELECT COALESCE(SUM(tp.total_invested), 0) AS spend,
+              COALESCE(SUM(tp.prize_amount), 0) + COALESCE(SUM(tp.exit_balance), 0) AS paybacks
+       FROM tournament_players tp
+       JOIN tournaments t ON t.id = tp.tournament_id AND t.club_id = $1
+       WHERE 1=1 ${tournDateFilter}`,
+      tournParams
+    );
+    const tournamentSpend = Number(tournResult[0]?.spend ?? 0);
+    const tournamentPaybacks = Number(tournResult[0]?.paybacks ?? 0);
+
+    const fnbDateFilter = fromDate && toDate
+      ? 'AND created_at >= $2 AND created_at <= $3'
+      : fromDate ? 'AND created_at >= $2' : toDate ? 'AND created_at <= $2' : '';
+    const fnbParams = fromDate && toDate ? [clubId, fromDate, toDate] : fromDate ? [clubId, fromDate] : toDate ? [clubId, toDate] : [clubId];
+    const fnbResult = await this.dataSource.query(
+      `SELECT COALESCE(SUM(total_amount), 0) AS total FROM fnb_orders WHERE club_id = $1 AND status = 'delivered' ${fnbDateFilter}`,
+      fnbParams
+    );
+    const fnbRevenue = Number(fnbResult[0]?.total ?? 0);
+
+    const revenue =
+      tournamentSpend + tableSpend + rakeCollected + tipsCollected + fnbRevenue
+      - tournamentPaybacks - tableCashouts - dealerTipsPaid;
+
+    return {
+      tournamentSpend,
+      tableSpend,
+      rakeCollected,
+      tipsCollected,
+      fnbRevenue,
+      tournamentPaybacks,
+      tableCashouts,
+      dealerTipsPaid,
+      revenue
+    };
+  }
+
+  /**
+   * Get revenue breakdown for a date range (for analytics/reports).
+   * Same formula: (tournament + table spend + rake + tips + FNB) - (tournament paybacks + table cashouts + dealer tips paid).
+   */
+  async getRevenueForPeriod(clubId: string, startDate?: Date, endDate?: Date) {
+    const from = startDate ? new Date(startDate) : undefined;
+    const to = endDate ? new Date(endDate) : undefined;
+    if (to) to.setHours(23, 59, 59, 999);
+    return this.getRevenueBreakdown(clubId, from, to);
+  }
+
+  /**
+   * Get club revenue, rake, and tips data.
+   * Revenue = (tournament spend + table spend + rake + tips collected + FNB)
+   *           - (tournament paybacks + table cashouts + dealer tips paid).
    */
   async getClubRevenue(clubId: string) {
     const club = await this.findById(clubId);
@@ -233,79 +352,71 @@ export class ClubsService {
     const yesterdayEnd = new Date(yesterday);
     yesterdayEnd.setHours(23, 59, 59, 999);
 
-    // Format dates
     const formatDate = (date: Date) => date.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
     const formatTime = (date: Date) => date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const formatFull = (date: Date) => date.toLocaleString('en-IN', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-    // Query today's transactions
-    const todayTransactions = await this.transactionsRepo.find({
-      where: {
-        club: { id: clubId },
-        createdAt: Between(todayStart, todayEnd),
-        status: TransactionStatus.COMPLETED
-      }
-    });
+    const [todayBreakdown, yesterdayBreakdown, allTimeBreakdown] = await Promise.all([
+      this.getRevenueBreakdown(clubId, todayStart, todayEnd),
+      this.getRevenueBreakdown(clubId, yesterdayStart, yesterdayEnd),
+      this.getRevenueBreakdown(clubId)
+    ]);
 
-    // Query yesterday's transactions
-    const yesterdayTransactions = await this.transactionsRepo.find({
-      where: {
-        club: { id: clubId },
-        createdAt: Between(yesterdayStart, yesterdayEnd),
-        status: TransactionStatus.COMPLETED
-      }
-    });
+    const round = (n: number) => Number(n.toFixed(2));
 
-    // Calculate today's revenue (DEPOSIT and BUY_IN transactions)
-    const todayRevenue = todayTransactions
-      .filter(t => (t.type === TransactionType.DEPOSIT || t.type === TransactionType.BUY_IN))
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    // Calculate today's rake
-    const todayRake = todayTransactions
-      .filter(t => t.type === TransactionType.RAKE)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    // Calculate today's tips
-    const todayTips = todayTransactions
-      .filter(t => t.type === TransactionType.TIP)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    // Calculate yesterday's revenue
-    const yesterdayRevenue = yesterdayTransactions
-      .filter(t => (t.type === TransactionType.DEPOSIT || t.type === TransactionType.BUY_IN))
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    // Calculate yesterday's rake
-    const yesterdayRake = yesterdayTransactions
-      .filter(t => t.type === TransactionType.RAKE)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-    // Calculate yesterday's tips
-    const yesterdayTips = yesterdayTransactions
-      .filter(t => t.type === TransactionType.TIP)
-      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-    
     return {
       clubId: club.id,
       clubName: club.name,
       previousDay: {
-        revenue: Number(yesterdayRevenue.toFixed(2)),
-        rake: Number(yesterdayRake.toFixed(2)),
-        tips: Number(yesterdayTips.toFixed(2)),
+        revenue: round(yesterdayBreakdown.revenue),
+        rake: round(yesterdayBreakdown.rakeCollected),
+        tips: round(yesterdayBreakdown.tipsCollected),
         date: formatDate(yesterday),
         time: formatTime(yesterday),
-        lastUpdated: formatFull(yesterday)
+        lastUpdated: formatFull(yesterday),
+        breakdown: {
+          tournamentSpend: round(yesterdayBreakdown.tournamentSpend),
+          tableSpend: round(yesterdayBreakdown.tableSpend),
+          rakeCollected: round(yesterdayBreakdown.rakeCollected),
+          tipsCollected: round(yesterdayBreakdown.tipsCollected),
+          fnbRevenue: round(yesterdayBreakdown.fnbRevenue),
+          tournamentPaybacks: round(yesterdayBreakdown.tournamentPaybacks),
+          tableCashouts: round(yesterdayBreakdown.tableCashouts),
+          dealerTipsPaid: round(yesterdayBreakdown.dealerTipsPaid)
+        }
       },
       currentDay: {
-        revenue: Number(todayRevenue.toFixed(2)),
-        rake: Number(todayRake.toFixed(2)),
-        tips: Number(todayTips.toFixed(2)),
+        revenue: round(todayBreakdown.revenue),
+        rake: round(todayBreakdown.rakeCollected),
+        tips: round(todayBreakdown.tipsCollected),
         date: formatDate(now),
         time: formatTime(now),
-        lastUpdated: formatFull(now)
+        lastUpdated: formatFull(now),
+        breakdown: {
+          tournamentSpend: round(todayBreakdown.tournamentSpend),
+          tableSpend: round(todayBreakdown.tableSpend),
+          rakeCollected: round(todayBreakdown.rakeCollected),
+          tipsCollected: round(todayBreakdown.tipsCollected),
+          fnbRevenue: round(todayBreakdown.fnbRevenue),
+          tournamentPaybacks: round(todayBreakdown.tournamentPaybacks),
+          tableCashouts: round(todayBreakdown.tableCashouts),
+          dealerTipsPaid: round(todayBreakdown.dealerTipsPaid)
+        }
       },
-      tipHoldPercent: 0.15 // 15% of tips go to club
+      allTime: {
+        revenue: round(allTimeBreakdown.revenue),
+        breakdown: {
+          tournamentSpend: round(allTimeBreakdown.tournamentSpend),
+          tableSpend: round(allTimeBreakdown.tableSpend),
+          rakeCollected: round(allTimeBreakdown.rakeCollected),
+          tipsCollected: round(allTimeBreakdown.tipsCollected),
+          fnbRevenue: round(allTimeBreakdown.fnbRevenue),
+          tournamentPaybacks: round(allTimeBreakdown.tournamentPaybacks),
+          tableCashouts: round(allTimeBreakdown.tableCashouts),
+          dealerTipsPaid: round(allTimeBreakdown.dealerTipsPaid)
+        }
+      },
+      tipHoldPercent: 0.15
     };
   }
 
