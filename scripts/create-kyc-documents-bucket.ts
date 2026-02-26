@@ -7,7 +7,7 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const BUCKET_NAME = 'kyc-documents';
+const BUCKET_NAME = 'kyc-docs';
 
 async function createKycDocumentsBucket() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {

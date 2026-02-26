@@ -318,6 +318,8 @@ export class WaitlistSeatingService {
       const savedTable = await queryRunner.manager.save(table);
       const savedEntry = await queryRunner.manager.save(entry);
 
+      const gameType = (table as any).tableType === 'RUMMY' ? 'rummy' : 'poker';
+
       // Transfer cash from wallet to table (only if wallet > 0)
       const cashToTable = Math.max(0, availableBalance);
       if (cashToTable > 0) {
@@ -328,11 +330,12 @@ export class WaitlistSeatingService {
           amount: cashToTable,
           type: TransactionType.TABLE_BUY_IN,
           status: TransactionStatus.COMPLETED,
+          gameType,
           notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Cash: ₹${cashToTable.toFixed(2)})`
         });
 
         await queryRunner.manager.save(tableBuyIn);
-        console.log(`✅ [TABLE SEATING] Moved ₹${cashToTable} from wallet to table for player ${player.name}`);
+        console.log(`✅ [TABLE SEATING] Moved ₹${cashToTable} from wallet to table for player ${player.name} (${gameType})`);
       }
 
       // Auto-apply approved credit as table balance
@@ -344,6 +347,7 @@ export class WaitlistSeatingService {
           amount: availableCredit,
           type: TransactionType.CREDIT,
           status: TransactionStatus.COMPLETED,
+          gameType,
           notes: `Credit applied on table join - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
         });
 
@@ -638,26 +642,29 @@ export class WaitlistSeatingService {
         let buyInAmount = 0;
         
         if (entry.playerId) {
-          // Calculate NET table balance for current session only (since seated_at)
+          // Calculate NET table balance for current session (since seated_at), for this club only.
+          // Use a 30s buffer before seated_at so we include Table Buy In created in same moment as seat assignment.
           const seatedAt = entry.seatedAt || new Date(0);
+          const fromTime = new Date(seatedAt.getTime() - 30000);
           const result = await this.waitlistRepo.manager.query(
             `SELECT COALESCE(SUM(
                CASE
-                 WHEN UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
-                 WHEN UPPER(type) IN ('TABLE BUY OUT') THEN -amount
+                 WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
+                 WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
                  ELSE 0
                END
              ), 0) as table_balance
              FROM financial_transactions
-             WHERE player_id = $1 
+             WHERE club_id = $1
+             AND player_id = $2 
              AND UPPER(status) = 'COMPLETED'
-             AND created_at >= $2`,
-            [entry.playerId, seatedAt]
+             AND created_at >= $3`,
+            [clubId, entry.playerId, fromTime]
           );
           
           buyInAmount = result && result.length > 0 ? Math.max(0, parseFloat(result[0].table_balance)) : 0;
           
-          console.log(`[TABLE BALANCE] Player: ${entry.playerName}, ID: ${entry.playerId}, Balance: ${buyInAmount}, Seated: ${entry.seatedAt}`);
+          console.log(`[TABLE BALANCE] Player: ${entry.playerName}, ID: ${entry.playerId}, Seated: ${seatedAt}, Balance: ${buyInAmount}`);
         }
         
         // Wallet balance = real money not on table (can be negative)

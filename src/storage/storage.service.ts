@@ -2,6 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const BUCKET = process.env.SUPABASE_BRANDING_BUCKET || 'branding';
+const STORAGE_FETCH_TIMEOUT_MS = Number(process.env.SUPABASE_STORAGE_FETCH_TIMEOUT_MS) || 60_000;
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = STORAGE_FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
+}
 
 @Injectable()
 export class StorageService {
@@ -9,35 +16,36 @@ export class StorageService {
   private readonly client: SupabaseClient;
 
   constructor() {
+    const customFetch: typeof fetch = (input, init) => fetchWithTimeout(input, init, STORAGE_FETCH_TIMEOUT_MS);
     this.client = createClient(
       process.env.SUPABASE_URL as string,
-      process.env.SUPABASE_SERVICE_ROLE_KEY as string
+      process.env.SUPABASE_SERVICE_ROLE_KEY as string,
+      { global: { fetch: customFetch } },
     );
   }
 
   async ensureBucket(bucketName?: string): Promise<void> {
     const bucket = bucketName || BUCKET;
     try {
-      const { data: list, error: listError } = await this.client.storage.listBuckets();
-      if (listError) {
-        this.logger.error(`Failed to list buckets:`, listError);
-        throw listError;
-      }
-      const exists = (list || []).some((b) => b.name === bucket);
-      if (!exists) {
-        this.logger.log(`Creating bucket: ${bucket}`);
-        const { error } = await this.client.storage.createBucket(bucket, {
-          public: true,
-          fileSizeLimit: '5242880' // 5MB default
-        });
-        if (error) {
-          this.logger.error(`Failed to create bucket ${bucket}:`, error);
-          throw error;
+      this.logger.log(`Ensuring bucket exists: ${bucket}`);
+      const { error } = await this.client.storage.createBucket(bucket, {
+        public: true,
+        fileSizeLimit: '5242880', // 5MB default
+      });
+      if (error) {
+        const msg = (error as any)?.message ?? String(error);
+        const isAlreadyExists =
+          (error as any)?.name === 'BucketAlreadyExists' ||
+          (error as any)?.error === 'BucketAlreadyExists' ||
+          /already exists|409/i.test(msg);
+        if (isAlreadyExists) {
+          this.logger.log(`Bucket ${bucket} already exists`);
+          return;
         }
-        this.logger.log(`Bucket ${bucket} created successfully`);
-      } else {
-        this.logger.log(`Bucket ${bucket} already exists`);
+        this.logger.error(`Failed to create bucket ${bucket}:`, error);
+        throw error;
       }
+      this.logger.log(`Bucket ${bucket} created successfully`);
     } catch (error) {
       this.logger.error(`Error ensuring bucket ${bucket}:`, error);
       throw error;

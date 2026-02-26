@@ -1300,8 +1300,9 @@ export class AuthService {
           if (isNaN(amount)) continue;
           const upperType = (txn.type || '').toUpperCase();
           
-          // Table balance: only count transactions from current session (after seated_at)
-          const isCurrentSession = isSeated && seatedAt && new Date(txn.createdAt) >= new Date(seatedAt);
+          // Table balance: only count transactions from current session (since ~seated_at; 30s buffer to include same-moment Table Buy In)
+          const sessionStart = seatedAt ? new Date(seatedAt.getTime() - 30000) : null;
+          const isCurrentSession = isSeated && sessionStart && new Date(txn.createdAt) >= sessionStart;
           
           if (['DEPOSIT', 'CLUB BUY IN'].includes(upperType)) {
             cashBalance += amount;
@@ -2301,7 +2302,15 @@ export class AuthService {
             availableSeats,
             minBuyIn: Number(t.minBuyIn) || 0,
             maxBuyIn: Number(t.maxBuyIn) || 0,
-            status: t.status || 'Unknown'
+            status: t.status || 'Unknown',
+            // Rummy-specific fields
+            rummyVariant: t.rummyVariant || null,
+            pointsValue: t.pointsValue ? Number(t.pointsValue) : null,
+            numberOfDeals: t.numberOfDeals || null,
+            dropPoints: t.dropPoints || null,
+            maxPoints: t.maxPoints || null,
+            entryFee: t.entryFee ? Number(t.entryFee) : null,
+            minPlayers: t.minPlayers || null,
           };
         } catch (mapError) {
           console.error('Error mapping table:', t.id, mapError);
@@ -2449,6 +2458,23 @@ export class AuthService {
       const currentSeats = Number(table.currentSeats) || 0;
       const availableSeats = Math.max(0, maxSeats - currentSeats);
 
+      // Fetch seated players for this table (reuses the same logic as staff portal)
+      let seatedPlayers: any[] = [];
+      try {
+        const raw = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId.trim(), tableId.trim());
+        seatedPlayers = (raw || []).map((p: any) => ({
+          seatNumber: p.seatNumber,
+          buyInAmount: Number(p.buyInAmount) || 0,
+          walletBalance: Number(p.walletBalance) || 0,
+          playerName: p.playerName || 'Player',
+          initials: p.playerName
+            ? p.playerName.split(' ').map((n: string) => n[0] || '').join('').toUpperCase().substring(0, 2)
+            : '??',
+        }));
+      } catch {
+        // Non-fatal: fall back to empty array if query fails
+      }
+
       return {
         id: table.id,
         tableNumber: table.tableNumber || 0,
@@ -2459,7 +2485,12 @@ export class AuthService {
         minBuyIn: Number(table.minBuyIn) || 0,
         maxBuyIn: Number(table.maxBuyIn) || 0,
         status: table.status || 'Unknown',
-        notes: table.notes ? table.notes.trim() : null
+        notes: table.notes ? table.notes.trim() : null,
+        rummyVariant: table.rummyVariant || null,
+        pointsValue: table.pointsValue ? Number(table.pointsValue) : null,
+        numberOfDeals: table.numberOfDeals || null,
+        entryFee: table.entryFee ? Number(table.entryFee) : null,
+        seatedPlayers,
       };
     } catch (err) {
       console.error('Get table details error:', err);

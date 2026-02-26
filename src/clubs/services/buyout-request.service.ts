@@ -74,10 +74,13 @@ export class BuyOutRequestService {
       throw new BadRequestException('Buy-out request is missing player information');
     }
 
-    const amount = dto.amount || requestData.requested_amount || requestData.current_table_balance || 0;
+    const amount = dto.amount !== undefined && dto.amount !== null
+      ? Number(dto.amount)
+      : (requestData.requested_amount ?? requestData.current_table_balance ?? 0);
+    const finalAmount = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
 
-    if (amount <= 0) {
-      throw new BadRequestException('Invalid buy-out amount');
+    if (finalAmount < 0) {
+      throw new BadRequestException('Buy-out amount cannot be negative');
     }
 
     // Use transaction to ensure data consistency
@@ -118,17 +121,17 @@ export class BuyOutRequestService {
       const creditOwed = Math.max(0, creditResult[0]?.total ? Number(creditResult[0].total) : 0);
 
       console.log(`💰 [BUYOUT] Player ${playerName}:`);
-      console.log(`   Exit amount (chips left): ₹${amount}`);
+      console.log(`   Exit amount (chips left): ₹${finalAmount}`);
       console.log(`   Outstanding credit owed: ₹${creditOwed}`);
 
-      // Step 1: Table Buy Out - return ALL chips from table to wallet
+      // Step 1: Table Buy Out - return chips from table to wallet (can be 0 if player lost everything)
       await queryRunner.query(
         `INSERT INTO financial_transactions 
          (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
          VALUES ($1, $2, $3, $4, 'Table Buy Out', 'Completed', $5, $6, NOW(), NOW())`,
         [
-          clubId, playerId, playerName, amount, gameType,
-          `Table buy-out - Table ${requestData.table_number} - ₹${amount} returned from table to wallet`
+          clubId, playerId, playerName, finalAmount, gameType,
+          `Table buy-out - Table ${requestData.table_number} - ₹${finalAmount} returned from table to wallet`
         ]
       );
 
@@ -145,7 +148,7 @@ export class BuyOutRequestService {
           ]
         );
 
-        const netWalletChange = amount - creditOwed;
+        const netWalletChange = finalAmount - creditOwed;
         if (netWalletChange >= 0) {
           console.log(`   ✅ Credit fully settled. Net wallet change: +₹${netWalletChange}`);
         } else {
@@ -178,7 +181,7 @@ export class BuyOutRequestService {
         success: true,
         message: 'Buy-out approved and balance settled',
         requestId: requestId,
-        amount: amount,
+        amount: finalAmount,
         creditSettled: creditOwed,
       };
     } catch (error) {

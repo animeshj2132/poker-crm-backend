@@ -424,42 +424,11 @@ export class TournamentsService {
         [tournamentId]
       );
 
-      console.log(`🏆 [TOURNAMENT START] Taking balance from ${registeredPlayers.length} registered players`);
-
-      // Take ENTIRE balance from each registered player
-      for (const participant of registeredPlayers) {
-        const balanceResult = await queryRunner.query(
-          `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions 
-          WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
-          [clubId, participant.player_id]
-        );
-
-        const availableBalance = balanceResult[0]?.total ? Number(balanceResult[0].total) : 0;
-
-        if (availableBalance > 0) {
-          const gameType = this.getGameType(tournament);
-          await queryRunner.query(
-            `INSERT INTO financial_transactions (club_id, player_id, player_name, amount, type, status, game_type, notes)
-             VALUES ($1, $2, $3, $4, 'Buy In', 'Completed', $6, $5)`,
-            [
-              clubId,
-              participant.player_id,
-              participant.player_name,
-              availableBalance,
-              `${gameType.charAt(0).toUpperCase() + gameType.slice(1)} Tournament buy-in - ${tournament.name || 'Tournament'} (Full balance: ₹${availableBalance.toFixed(2)})`,
-              gameType
-            ]
-          );
-
-          console.log(`✅ [TOURNAMENT START] Took ₹${availableBalance} from player ${participant.player_name}`);
-        } else {
-          console.warn(`⚠️ [TOURNAMENT START] Player ${participant.player_name} has no balance, skipping`);
-        }
-      }
-
+      const buyInAmount = parseFloat(tournament.buy_in) || 0;
       const sessionStartedAt = new Date().toISOString();
+      console.log(`🏆 [TOURNAMENT START] Moving ${registeredPlayers.length} players to tournament_players (buy-in already deducted at registration)`);
 
-      // Update tournament status to active and set session start time
+      // Update tournament status to active and set session start time (no second deduction - registration already did buy-in)
       const result = await queryRunner.query(
         `UPDATE tournaments 
          SET status = 'active', session_started_at = $3, updated_at = NOW()
@@ -468,7 +437,7 @@ export class TournamentsService {
         [clubId, tournamentId, sessionStartedAt]
       );
 
-      // Set session_started_at on all tournament_players entries
+      // Set session_started_at on existing tournament_players
       await queryRunner.query(
         `UPDATE tournament_players 
          SET session_started_at = $2, is_exited = false
@@ -476,14 +445,16 @@ export class TournamentsService {
         [tournamentId, sessionStartedAt]
       );
 
-      // Also update tournament_registrations entries into tournament_players if not already there
+      // Copy tournament_registrations into tournament_players with total_invested = buy_in
       await queryRunner.query(
-        `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited)
-         SELECT tr.tournament_id, tr.player_id, true, $2, false
+        `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited, total_invested)
+         SELECT tr.tournament_id, tr.player_id, true, $2, false, $3
          FROM tournament_registrations tr
          WHERE tr.tournament_id = $1 AND tr.status = 'registered'
-         ON CONFLICT (tournament_id, player_id) DO UPDATE SET session_started_at = $2, is_active = true, is_exited = false`,
-        [tournamentId, sessionStartedAt]
+         ON CONFLICT (tournament_id, player_id) DO UPDATE SET 
+           session_started_at = $2, is_active = true, is_exited = false,
+           total_invested = COALESCE(tournament_players.total_invested, 0) + $3`,
+        [tournamentId, sessionStartedAt, buyInAmount]
       );
 
       await queryRunner.commitTransaction();
@@ -789,13 +760,30 @@ export class TournamentsService {
       throw new BadRequestException('Can only exit players from active tournaments');
     }
 
+    // Resolve playerId: accept either UUID (players.id) or display id (players.player_id)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let resolvedPlayerId = playerId?.trim();
+    if (!resolvedPlayerId) {
+      throw new BadRequestException('Player ID is required');
+    }
+    if (!uuidRegex.test(resolvedPlayerId)) {
+      const byDisplayId = await this.dataSource.query(
+        `SELECT id FROM players WHERE club_id = $1 AND (player_id = $2 OR name = $2) LIMIT 1`,
+        [clubId, resolvedPlayerId]
+      );
+      if (!byDisplayId?.length) {
+        throw new NotFoundException('Player not found in this tournament');
+      }
+      resolvedPlayerId = byDisplayId[0].id;
+    }
+
     // Check player is in the tournament and not already exited
     const playerCheck = await this.dataSource.query(
       `SELECT tp.*, p.name as player_name 
        FROM tournament_players tp
        INNER JOIN players p ON p.id = tp.player_id
        WHERE tp.tournament_id = $1 AND tp.player_id = $2`,
-      [tournamentId, playerId]
+      [tournamentId, resolvedPlayerId]
     );
 
     if (!playerCheck || playerCheck.length === 0) {
@@ -819,7 +807,7 @@ export class TournamentsService {
         `UPDATE tournament_players 
          SET is_exited = true, exited_at = $3, exit_balance = $4, is_active = false, session_started_at = NULL
          WHERE tournament_id = $1 AND player_id = $2`,
-        [tournamentId, playerId, exitedAt, exitBalance]
+        [tournamentId, resolvedPlayerId, exitedAt, exitBalance]
       );
 
       const gameType = this.getGameType(tournament);
@@ -829,7 +817,7 @@ export class TournamentsService {
         // Get outstanding credit for this player
         const creditResult = await queryRunner.query(
           `SELECT ${CREDIT_BALANCE_SQL} as credit_owed FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
-          [clubId, playerId]
+          [clubId, resolvedPlayerId]
         );
         const creditOwed = Math.max(0, Number(creditResult[0]?.credit_owed || 0));
 
@@ -838,7 +826,7 @@ export class TournamentsService {
           `INSERT INTO financial_transactions 
            (club_id, player_id, player_name, amount, type, status, game_type, notes)
            VALUES ($1, $2, $3, $4, 'Refund', 'Completed', $6, $5)`,
-          [clubId, playerId, playerEntry.player_name, exitBalance, notes || `${gameLabel} Tournament exit - ${tournament.name}`, gameType]
+          [clubId, resolvedPlayerId, playerEntry.player_name, exitBalance, notes || `${gameLabel} Tournament exit - ${tournament.name}`, gameType]
         );
 
         // Settle credit if any outstanding
@@ -848,7 +836,7 @@ export class TournamentsService {
             `INSERT INTO financial_transactions 
              (club_id, player_id, player_name, amount, type, status, game_type, notes)
              VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $6, $5)`,
-            [clubId, playerId, playerEntry.player_name, debitAmount, `Credit settlement from ${gameLabel} tournament - ${tournament.name}`, gameType]
+            [clubId, resolvedPlayerId, playerEntry.player_name, debitAmount, `Credit settlement from ${gameLabel} tournament - ${tournament.name}`, gameType]
           );
           console.log(`💰 [TOURNAMENT EXIT] Settled ₹${debitAmount} credit for ${playerEntry.player_name}`);
         }
@@ -858,7 +846,7 @@ export class TournamentsService {
         // Player went bust but still needs to settle credit
         const creditResult = await queryRunner.query(
           `SELECT ${CREDIT_BALANCE_SQL} as credit_owed FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
-          [clubId, playerId]
+          [clubId, resolvedPlayerId]
         );
         const creditOwed = Math.max(0, Number(creditResult[0]?.credit_owed || 0));
 
@@ -867,7 +855,7 @@ export class TournamentsService {
             `INSERT INTO financial_transactions 
              (club_id, player_id, player_name, amount, type, status, game_type, notes)
              VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $6, $5)`,
-            [clubId, playerId, playerEntry.player_name, creditOwed, `Credit settlement (bust) from ${gameLabel} tournament - ${tournament.name}`, gameType]
+            [clubId, resolvedPlayerId, playerEntry.player_name, creditOwed, `Credit settlement (bust) from ${gameLabel} tournament - ${tournament.name}`, gameType]
           );
           console.log(`💰 [TOURNAMENT EXIT] Settled ₹${creditOwed} credit for bust player ${playerEntry.player_name}`);
         }

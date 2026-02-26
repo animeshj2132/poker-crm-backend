@@ -91,6 +91,7 @@ export class PlayerTournamentsService {
           try { structure = JSON.parse(structure); } catch { structure = {}; }
         }
         const lateRegistrationMinutes = structure.late_registration || 0;
+        const entryFee = parseFloat(structure.entry_fee) || 0;
 
         return {
           id: t.id,
@@ -98,6 +99,7 @@ export class PlayerTournamentsService {
           description: t.description,
           startDate: t.startDate,
           buyIn: parseFloat(t.buy_in),
+          entryFee,
           prizePool: parseFloat(t.prize_pool),
           maxPlayers: t.max_players,
           registeredPlayers: t.registeredPlayers || 0,
@@ -283,27 +285,36 @@ export class PlayerTournamentsService {
         throw new BadRequestException('Tournament is full');
       }
 
-      // CRITICAL: Check player has minimum balance (but don't deduct yet - that happens when tournament starts)
+      // Registration fee (entry_fee) and buy-in are separate: both required to register
+      let tournStructure = tourn.structure || {};
+      if (typeof tournStructure === 'string') {
+        try { tournStructure = JSON.parse(tournStructure); } catch { tournStructure = {}; }
+      }
       const buyInRequired = parseFloat(tourn.buy_in) || 0;
-      
-      if (buyInRequired > 0) {
-        try {
-          const playerBalance = await this.authService.getPlayerBalance(playerId, clubId);
-          const availableBalance = playerBalance.availableBalance || 0;
+      const entryFee = parseFloat(tournStructure.entry_fee) || 0;
+      const totalRequired = buyInRequired + entryFee;
 
-          if (availableBalance < buyInRequired) {
+      let availableBalance = 0;
+      let availableCredit = 0;
+
+      if (totalRequired > 0) {
+        try {
+          const playerBalance = await this.authService.getPlayerBalance(playerId, clubId) as { availableBalance?: number; availableCredit?: number };
+          availableBalance = Number(playerBalance.availableBalance) || 0;
+          availableCredit = Number(playerBalance.availableCredit) || 0;
+          const totalAvailable = availableBalance + availableCredit;
+
+          if (totalAvailable < totalRequired) {
             throw new BadRequestException(
-              `Insufficient balance. Tournament minimum buy-in: ₹${buyInRequired.toLocaleString()}, ` +
-              `Your current balance: ₹${availableBalance.toLocaleString()}. ` +
+              `Insufficient balance. Registration fee: ₹${entryFee.toLocaleString()}, Buy-in: ₹${buyInRequired.toLocaleString()}, Total: ₹${totalRequired.toLocaleString()}. ` +
+              `Your balance: Wallet ₹${availableBalance.toLocaleString()} + Credit ₹${availableCredit.toLocaleString()} = ₹${totalAvailable.toLocaleString()}. ` +
               `Please add funds before registering.`
             );
           }
         } catch (balanceError) {
-          // If it's a BadRequestException from balance check, re-throw it
           if (balanceError instanceof BadRequestException) {
             throw balanceError;
           }
-          // If balance check fails for other reasons, log but don't block registration
           console.error('Error checking player balance for tournament registration:', balanceError);
         }
       }
@@ -357,46 +368,98 @@ export class PlayerTournamentsService {
           WHERE id = $1
         `, [tournamentId]);
 
-        // DEDUCT registration fee from player balance
-        if (buyInRequired > 0) {
-          console.log(`💰 [TOURNAMENT REG] Deducting ₹${buyInRequired} from player ${playerId}`);
-          
-          // Determine game type from tournament (poker or rummy)
+        // If tournament is already active (late registration), add player to tournament_players
+        // so they appear in admin and exit-player works (exit looks up tournament_players only)
+        if (tourn.status === 'active') {
+          const sessionStartedAt = tourn.session_started_at
+            ? new Date(tourn.session_started_at).toISOString()
+            : new Date().toISOString();
+          await queryRunner.query(
+            `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited, total_invested)
+             VALUES ($1, $2, true, $3, false, $4)
+             ON CONFLICT (tournament_id, player_id) DO UPDATE SET
+               is_active = true, is_exited = false,
+               session_started_at = COALESCE(tournament_players.session_started_at, $3),
+               total_invested = COALESCE(tournament_players.total_invested, 0) + $4`,
+            [tournamentId, playerId, sessionStartedAt, buyInRequired]
+          );
+        }
+
+        // DEDUCT registration fee + buy-in (separate): wallet first, then credit. Both show in transactions.
+        if (totalRequired > 0) {
           const gameType = tourn.rummy_variant ? 'rummy' : 'poker';
           const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
+          const notesBase = `${gameLabel} Tournament: ${tourn.name} (ID: ${tournamentId})`;
 
-          // Create financial transaction for tournament registration fee
-          const transactionResult = await queryRunner.query(`
-            INSERT INTO financial_transactions (
-              club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-            RETURNING id
-          `, [
-            clubId,
-            playerId,
-            player.name || 'Unknown Player',
-            'Buy In',
-            buyInRequired,
-            'Completed',
-            gameType,
-            `${gameLabel} Tournament Registration: ${tourn.name} (ID: ${tournamentId})`
-          ]);
+          // Use wallet first for registration fee, then buy-in, rest from credit
+          let walletUsed = 0;
+          const walletForEntryFee = Math.min(entryFee, availableBalance);
+          const walletForBuyIn = Math.min(buyInRequired, availableBalance - walletForEntryFee);
+          walletUsed = walletForEntryFee + walletForBuyIn;
+          const creditUsed = totalRequired - walletUsed;
 
-          console.log(`💰 [TOURNAMENT REG] Transaction created: ${transactionResult[0].id}`);
+          console.log(`💰 [TOURNAMENT REG] Deducting Registration ₹${entryFee} + Buy-in ₹${buyInRequired} = ₹${totalRequired} from player ${playerId} (wallet: ₹${walletUsed}, credit: ₹${creditUsed})`);
+
+          if (walletForEntryFee > 0) {
+            await queryRunner.query(`
+              INSERT INTO financial_transactions (
+                club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
+              )
+              VALUES ($1, $2, $3, 'Buy In', $4, 'Completed', $5, $6, NOW(), NOW())
+            `, [
+              clubId,
+              playerId,
+              player.name || 'Unknown Player',
+              walletForEntryFee,
+              gameType,
+              `${notesBase} - Registration fee`,
+            ]);
+          }
+          if (walletForBuyIn > 0) {
+            await queryRunner.query(`
+              INSERT INTO financial_transactions (
+                club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
+              )
+              VALUES ($1, $2, $3, 'Buy In', $4, 'Completed', $5, $6, NOW(), NOW())
+            `, [
+              clubId,
+              playerId,
+              player.name || 'Unknown Player',
+              walletForBuyIn,
+              gameType,
+              `${notesBase} - Buy-in`,
+            ]);
+          }
+          if (creditUsed > 0) {
+            await queryRunner.query(`
+              INSERT INTO financial_transactions (
+                club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
+              )
+              VALUES ($1, $2, $3, 'Credit', $4, 'Completed', $5, $6, NOW(), NOW())
+            `, [
+              clubId,
+              playerId,
+              player.name || 'Unknown Player',
+              creditUsed,
+              gameType,
+              `${notesBase} (credit)`,
+            ]);
+          }
         }
 
         await queryRunner.commitTransaction();
 
         return {
           success: true,
-          message: buyInRequired > 0 
-            ? `Registered successfully! ₹${buyInRequired.toLocaleString()} has been deducted from your balance.`
+          message: totalRequired > 0
+            ? (entryFee > 0 && buyInRequired > 0
+                ? `Registered successfully! Registration fee ₹${entryFee.toLocaleString()} + Buy-in ₹${buyInRequired.toLocaleString()} = ₹${totalRequired.toLocaleString()} deducted from your balance.`
+                : `Registered successfully! ₹${totalRequired.toLocaleString()} has been deducted from your balance.`)
             : 'Registered for tournament successfully',
           tournamentId,
           registrationId: registration[0].id,
           registeredAt: registration[0].registered_at,
-          amountDeducted: buyInRequired,
+          amountDeducted: totalRequired,
         };
       } catch (dbErr: any) {
         await queryRunner.rollbackTransaction();

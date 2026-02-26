@@ -11306,14 +11306,15 @@ export class ClubsController {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } }
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club'],
       });
 
       if (!player) {
         throw new NotFoundException('Player not found');
       }
 
-      // Edge case: Verify player belongs to club
+      // Edge case: Verify player belongs to club (relation loaded so player.club is set)
       if (!player.club || player.club.id !== clubId) {
         throw new ForbiddenException('Player does not belong to this club');
       }
