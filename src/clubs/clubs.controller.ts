@@ -13786,7 +13786,7 @@ export class ClubsController {
   async rebuyTournamentPlayer(
     @Param('clubId', new ParseUUIDPipe()) clubId: string,
     @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
-    @Body() body: { playerId: string; type?: 'rebuy' | 'reentry' | 'addon' },
+    @Body() body: { playerId: string; type?: 'rebuy' | 'reentry' | 'addon'; amount?: number },
     @Headers('x-user-id') userId?: string,
   ) {
     try {
@@ -13795,6 +13795,7 @@ export class ClubsController {
         tournamentId,
         body.playerId,
         body.type || 'rebuy',
+        body.amount,
       );
 
       try {

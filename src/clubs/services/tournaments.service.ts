@@ -778,7 +778,7 @@ export class TournamentsService {
     }
 
     // Check player is in the tournament and not already exited
-    const playerCheck = await this.dataSource.query(
+    let playerCheckResult = await this.dataSource.query(
       `SELECT tp.*, p.name as player_name 
        FROM tournament_players tp
        INNER JOIN players p ON p.id = tp.player_id
@@ -786,11 +786,41 @@ export class TournamentsService {
       [tournamentId, resolvedPlayerId]
     );
 
-    if (!playerCheck || playerCheck.length === 0) {
-      throw new NotFoundException('Player not found in this tournament');
+    if (!playerCheckResult || playerCheckResult.length === 0) {
+      // Fallback: check tournament_registrations (player registered but not yet in tournament_players)
+      const regCheck = await this.dataSource.query(
+        `SELECT tr.*, p.name as player_name
+         FROM tournament_registrations tr
+         INNER JOIN players p ON p.id = tr.player_id
+         WHERE tr.tournament_id = $1 AND tr.player_id = $2 AND tr.status = 'registered'`,
+        [tournamentId, resolvedPlayerId]
+      );
+      if (!regCheck || regCheck.length === 0) {
+        throw new NotFoundException('Player not found in this tournament');
+      }
+      // Auto-enroll into tournament_players so exit can proceed
+      const sessionStartedAt = tournament.session_started_at
+        ? new Date(tournament.session_started_at).toISOString()
+        : new Date().toISOString();
+      await this.dataSource.query(
+        `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited, total_invested)
+         VALUES ($1, $2, true, $3, false, $4)
+         ON CONFLICT (tournament_id, player_id) DO UPDATE SET
+           is_active = true, is_exited = false,
+           session_started_at = COALESCE(tournament_players.session_started_at, $3),
+           total_invested = COALESCE(tournament_players.total_invested, 0) + $4`,
+        [tournamentId, resolvedPlayerId, sessionStartedAt, parseFloat(tournament.buy_in) || 0]
+      );
+      playerCheckResult = await this.dataSource.query(
+        `SELECT tp.*, p.name as player_name 
+         FROM tournament_players tp
+         INNER JOIN players p ON p.id = tp.player_id
+         WHERE tp.tournament_id = $1 AND tp.player_id = $2`,
+        [tournamentId, resolvedPlayerId]
+      );
     }
 
-    const playerEntry = playerCheck[0];
+    const playerEntry = playerCheckResult[0];
     if (playerEntry.is_exited) {
       throw new BadRequestException('Player has already exited this tournament');
     }
@@ -886,6 +916,7 @@ export class TournamentsService {
     tournamentId: string,
     playerId: string,
     type: 'rebuy' | 'reentry' | 'addon' = 'rebuy',
+    customAmount?: number,
   ) {
     const tournament = await this.getTournamentById(clubId, tournamentId);
 
@@ -903,7 +934,9 @@ export class TournamentsService {
     const allowReentry = structure.allow_reentry || tournament.allow_reentry || false;
     const allowAddon = structure.allow_addon || tournament.allow_addon || false;
     const lateRegistrationMinutes = structure.late_registration || 0;
-    const buyInAmount = parseFloat(tournament.buy_in) || 0;
+    const buyInAmount = (type === 'addon' && customAmount != null && customAmount > 0)
+      ? customAmount
+      : (parseFloat(tournament.buy_in) || 0);
 
     // Validate permission
     if (type === 'rebuy' && !allowRebuys) {
@@ -927,7 +960,7 @@ export class TournamentsService {
     }
 
     // Check player exists
-    const playerCheck = await this.dataSource.query(
+    let playerCheckResult = await this.dataSource.query(
       `SELECT tp.*, p.name as player_name 
        FROM tournament_players tp
        INNER JOIN players p ON p.id = tp.player_id
@@ -935,11 +968,40 @@ export class TournamentsService {
       [tournamentId, playerId]
     );
 
-    if (!playerCheck || playerCheck.length === 0) {
-      throw new NotFoundException('Player not found in this tournament');
+    if (!playerCheckResult || playerCheckResult.length === 0) {
+      // Fallback: check tournament_registrations
+      const regCheck = await this.dataSource.query(
+        `SELECT tr.*, p.name as player_name
+         FROM tournament_registrations tr
+         INNER JOIN players p ON p.id = tr.player_id
+         WHERE tr.tournament_id = $1 AND tr.player_id = $2 AND tr.status = 'registered'`,
+        [tournamentId, playerId]
+      );
+      if (!regCheck || regCheck.length === 0) {
+        throw new NotFoundException('Player not found in this tournament');
+      }
+      const sessionStartedAt = tournament.session_started_at
+        ? new Date(tournament.session_started_at).toISOString()
+        : new Date().toISOString();
+      await this.dataSource.query(
+        `INSERT INTO tournament_players (tournament_id, player_id, is_active, session_started_at, is_exited, total_invested)
+         VALUES ($1, $2, true, $3, false, $4)
+         ON CONFLICT (tournament_id, player_id) DO UPDATE SET
+           is_active = true, is_exited = false,
+           session_started_at = COALESCE(tournament_players.session_started_at, $3),
+           total_invested = COALESCE(tournament_players.total_invested, 0) + $4`,
+        [tournamentId, playerId, sessionStartedAt, parseFloat(tournament.buy_in) || 0]
+      );
+      playerCheckResult = await this.dataSource.query(
+        `SELECT tp.*, p.name as player_name 
+         FROM tournament_players tp
+         INNER JOIN players p ON p.id = tp.player_id
+         WHERE tp.tournament_id = $1 AND tp.player_id = $2`,
+        [tournamentId, playerId]
+      );
     }
 
-    const playerEntry = playerCheck[0];
+    const playerEntry = playerCheckResult[0];
 
     // For rebuy/reentry, player must be exited
     if ((type === 'rebuy' || type === 'reentry') && !playerEntry.is_exited) {
