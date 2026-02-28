@@ -104,6 +104,8 @@ export class TournamentsService {
       entry_fee: dto.entry_fee || 0,
       starting_chips: dto.starting_chips,
       blind_structure: blindStructure,
+      starting_sb: dto.starting_sb,
+      starting_bb: dto.starting_bb,
       number_of_levels: dto.number_of_levels || 15,
       minutes_per_level: dto.minutes_per_level || 15,
       break_structure: breakStructure,
@@ -243,7 +245,8 @@ export class TournamentsService {
     }
     // Handle poker-specific fields in structure JSONB column
     const hasPokerFields = tournamentType || dto.entry_fee !== undefined || dto.starting_chips !== undefined || 
-                          blindStructure || dto.number_of_levels !== undefined || dto.minutes_per_level !== undefined ||
+                          blindStructure || dto.starting_sb !== undefined || dto.starting_bb !== undefined ||
+                          dto.number_of_levels !== undefined || dto.minutes_per_level !== undefined ||
                           breakStructure || dto.break_duration !== undefined || dto.late_registration !== undefined ||
                           payoutStructure || seatDrawMethod || clockPauseRules ||
                           dto.allow_rebuys !== undefined || dto.allow_addon !== undefined || 
@@ -260,6 +263,8 @@ export class TournamentsService {
         entry_fee: dto.entry_fee !== undefined ? dto.entry_fee : existingStructure.entry_fee,
         starting_chips: dto.starting_chips !== undefined ? dto.starting_chips : existingStructure.starting_chips,
         blind_structure: blindStructure || existingStructure.blind_structure,
+        starting_sb: dto.starting_sb !== undefined ? dto.starting_sb : existingStructure.starting_sb,
+        starting_bb: dto.starting_bb !== undefined ? dto.starting_bb : existingStructure.starting_bb,
         number_of_levels: dto.number_of_levels !== undefined ? dto.number_of_levels : existingStructure.number_of_levels,
         minutes_per_level: dto.minutes_per_level !== undefined ? dto.minutes_per_level : existingStructure.minutes_per_level,
         break_structure: breakStructure || existingStructure.break_structure,
@@ -428,13 +433,20 @@ export class TournamentsService {
       const sessionStartedAt = new Date().toISOString();
       console.log(`🏆 [TOURNAMENT START] Moving ${registeredPlayers.length} players to tournament_players (buy-in already deducted at registration)`);
 
-      // Update tournament status to active and set session start time (no second deduction - registration already did buy-in)
+      // Merge blind state into structure for active tournament (current_round, current_sb, current_bb)
+      let structure = tournament.structure;
+      if (typeof structure === 'string') {
+        try { structure = JSON.parse(structure); } catch { structure = {}; }
+      }
+      structure = { ...(structure || {}), current_round: 1, current_sb: structure?.starting_sb ?? 25, current_bb: structure?.starting_bb ?? 50 };
+
+      // Update tournament status to active, session start time, and blind state
       const result = await queryRunner.query(
         `UPDATE tournaments 
-         SET status = 'active', session_started_at = $3, updated_at = NOW()
+         SET status = 'active', session_started_at = $3, structure = $4::jsonb, updated_at = NOW()
          WHERE club_id = $1 AND id = $2
          RETURNING *`,
-        [clubId, tournamentId, sessionStartedAt]
+        [clubId, tournamentId, sessionStartedAt, JSON.stringify(structure)]
       );
 
       // Set session_started_at on existing tournament_players
@@ -606,7 +618,7 @@ export class TournamentsService {
           await queryRunner.query(
             `INSERT INTO financial_transactions 
              (club_id, player_id, player_name, amount, type, status, game_type, notes)
-             VALUES ($1, $2, $3, $4, 'Refund', 'Completed', $5, $6)`,
+             VALUES ($1, $2, $3, $4, 'Tournament Win', 'Completed', $5, $6)`,
             [
               clubId,
               winner.player_id,
@@ -1082,6 +1094,50 @@ export class TournamentsService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Increase blinds for an active tournament (advance round and set new SB/BB).
+   */
+  async increaseBlind(clubId: string, tournamentId: string, body: { smallBlind: number; bigBlind: number }) {
+    const tournament = await this.getTournamentById(clubId, tournamentId);
+
+    if (tournament.status !== 'active') {
+      throw new BadRequestException('Only active tournaments can have blinds increased');
+    }
+
+    const smallBlind = Number(body.smallBlind);
+    const bigBlind = Number(body.bigBlind);
+    if (!Number.isFinite(smallBlind) || !Number.isFinite(bigBlind) || smallBlind < 0 || bigBlind < 0) {
+      throw new BadRequestException('Small blind and big blind must be valid non-negative numbers');
+    }
+
+    let structure = tournament.structure;
+    if (typeof structure === 'string') {
+      try { structure = JSON.parse(structure); } catch { structure = {}; }
+    }
+    const currentRound = (structure?.current_round ?? 0) + 1;
+    const newStructure = {
+      ...(structure || {}),
+      current_round: currentRound,
+      current_sb: smallBlind,
+      current_bb: bigBlind,
+    };
+
+    await this.dataSource.query(
+      `UPDATE tournaments SET structure = $2::jsonb, updated_at = NOW() WHERE club_id = $1 AND id = $3`,
+      [clubId, JSON.stringify(newStructure), tournamentId]
+    );
+
+    console.log(`📈 [TOURNAMENT BLINDS] ${tournament.name} round ${currentRound}: ${smallBlind}/${bigBlind}`);
+
+    return {
+      success: true,
+      current_round: currentRound,
+      current_sb: smallBlind,
+      current_bb: bigBlind,
+      message: `Blinds set to ${smallBlind}/${bigBlind} (Round ${currentRound})`,
+    };
   }
 }
 

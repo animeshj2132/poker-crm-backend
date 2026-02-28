@@ -110,6 +110,9 @@ export class PlayerTournamentsService {
           totalPausedSeconds: parseInt(t.total_paused_seconds) || 0,
           lateRegistrationMinutes,
           gameType: t.rummy_variant ? 'rummy' : 'poker',
+          currentRound: structure.current_round ?? null,
+          currentSb: structure.current_sb ?? null,
+          currentBb: structure.current_bb ?? null,
         };
       });
 
@@ -405,7 +408,7 @@ export class PlayerTournamentsService {
               INSERT INTO financial_transactions (
                 club_id, player_id, player_name, type, amount, status, game_type, notes, created_at, updated_at
               )
-              VALUES ($1, $2, $3, 'Buy In', $4, 'Completed', $5, $6, NOW(), NOW())
+              VALUES ($1, $2, $3, 'Register', $4, 'Completed', $5, $6, NOW(), NOW())
             `, [
               clubId,
               playerId,

@@ -25,6 +25,14 @@ export class CreateTournamentDto {
 
   @IsOptional()
   @IsNumber()
+  starting_sb?: number;
+
+  @IsOptional()
+  @IsNumber()
+  starting_bb?: number;
+
+  @IsOptional()
+  @IsNumber()
   number_of_levels?: number;
 
   @IsOptional()

@@ -16,9 +16,11 @@ export enum TransactionType {
   BONUS = 'Bonus',
   CREDIT = 'Credit',
   REFUND = 'Refund',
+  TOURNAMENT_WIN = 'Tournament Win',
   RAKE = 'Rake',
   TIP = 'Tip',
   BUY_IN = 'Buy In',
+  REGISTER = 'Register',
   CLUB_BUY_IN = 'Club Buy In',
   CLUB_BUY_OUT = 'Club Buy Out',
   TABLE_BUY_IN = 'Table Buy In',
@@ -33,8 +35,8 @@ export enum TransactionType {
 export const WALLET_BALANCE_SQL = `
   COALESCE(SUM(
     CASE
-      WHEN UPPER(type) IN ('DEPOSIT', 'CLUB BUY IN', 'TABLE BUY OUT', 'BONUS', 'REFUND') THEN amount
-      WHEN UPPER(type) IN ('WITHDRAWAL', 'CLUB BUY OUT', 'TABLE BUY IN', 'CASHOUT', 'DEBIT', 'BUY IN') THEN -amount
+      WHEN UPPER(type) IN ('DEPOSIT', 'CLUB BUY IN', 'TABLE BUY OUT', 'BONUS', 'REFUND', 'TOURNAMENT WIN') THEN amount
+      WHEN UPPER(type) IN ('WITHDRAWAL', 'CLUB BUY OUT', 'TABLE BUY IN', 'CASHOUT', 'DEBIT', 'BUY IN', 'REGISTER') THEN -amount
       ELSE 0
     END
   ), 0)

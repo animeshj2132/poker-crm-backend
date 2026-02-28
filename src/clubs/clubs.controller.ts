@@ -13832,6 +13832,26 @@ export class ClubsController {
     }
   }
 
+  /**
+   * Increase blinds for an active tournament (advance round, set new SB/BB).
+   * POST /api/clubs/:clubId/tournaments/:tournamentId/increase-blind
+   */
+  @Post(':clubId/tournaments/:tournamentId/increase-blind')
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @UseGuards(RolesGuard)
+  async increaseTournamentBlind(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Param('tournamentId', new ParseUUIDPipe()) tournamentId: string,
+    @Body() body: { smallBlind: number; bigBlind: number },
+  ) {
+    try {
+      return await this.tournamentsService.increaseBlind(clubId, tournamentId, body);
+    } catch (error) {
+      console.error('Error in increaseTournamentBlind:', error);
+      throw error;
+    }
+  }
+
   // =====================================================
   // SHIFT MANAGEMENT
   // =====================================================

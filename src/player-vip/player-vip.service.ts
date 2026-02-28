@@ -43,10 +43,12 @@ export class PlayerVipService {
   }
 
   /**
-   * Calculate real playtime hours from table sessions + tournament sessions
+   * Calculate real playtime hours from table sessions + tournament sessions.
+   * Table time: waitlist_entries (seated_at → updated_at or NOW() when status=SEATED).
+   * Tournament time: tournament_players (session_started_at → exited_at/busted_at or NOW() when active).
    */
   private async calculateTotalHours(playerId: string, clubId: string): Promise<{ tableHours: number; tournamentHours: number; totalHours: number }> {
-    // Table session hours from waitlist_entries
+    // Table session hours from waitlist_entries (player must be seated via waitlist for this to count)
     const tableResult = await this.dataSource.query(`
       SELECT COALESCE(SUM(
         CASE 
@@ -85,6 +87,7 @@ export class PlayerVipService {
 
     const tournamentHours = Math.max(0, parseFloat(tournamentResult[0]?.total_hours) || 0);
 
+    // Tournament time only counts after session_started_at is set (when tournament starts or player late-registers)
     return {
       tableHours: Math.round(tableHours * 100) / 100,
       tournamentHours: Math.round(tournamentHours * 100) / 100,
@@ -93,7 +96,8 @@ export class PlayerVipService {
   }
 
   /**
-   * Calculate total money spent (buy-ins) from financial_transactions
+   * Calculate total money spent (buy-ins + tournament registration) from financial_transactions.
+   * Counts: Buy In, Table Buy In, Club Buy In, Register (tournament registration fee).
    */
   private async calculateTotalMoneySpent(playerId: string, clubId: string): Promise<number> {
     const result = await this.dataSource.query(`
@@ -101,7 +105,7 @@ export class PlayerVipService {
       FROM financial_transactions
       WHERE player_id = $1 AND club_id = $2
         AND UPPER(status) = 'COMPLETED'
-        AND UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CLUB BUY IN')
+        AND UPPER(type) IN ('BUY IN', 'TABLE BUY IN', 'CLUB BUY IN', 'REGISTER')
     `, [playerId, clubId]);
 
     return Math.max(0, parseFloat(result[0]?.total_spent) || 0);
