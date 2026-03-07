@@ -369,7 +369,7 @@ export class AuthController {
   async joinWaitlist(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
-    @Body() body?: { tableType?: string; partySize?: number; requestedSeat?: number }
+    @Body() body?: { tableType?: string; gameType?: string; partySize?: number; requestedSeat?: number }
   ) {
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
@@ -382,7 +382,8 @@ export class AuthController {
       clubId.trim(),
       body?.tableType,
       body?.partySize || 1,
-      body?.requestedSeat
+      body?.requestedSeat,
+      body?.gameType
     );
     try {
       const pName = await this.getPlayerName(playerId.trim(), clubId.trim());

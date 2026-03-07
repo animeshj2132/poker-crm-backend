@@ -31,6 +31,7 @@ export class WaitlistSeatingService {
     priority?: number;
     notes?: string;
     tableType?: string;
+    requestedGameType?: 'POKER' | 'RUMMY';
     requestedSeat?: number;
   }) {
     if (!data.playerName || !data.playerName.trim()) {
@@ -74,6 +75,7 @@ export class WaitlistSeatingService {
       priority: data.priority || 0,
       notes: data.notes || null,
       tableType: data.tableType || null,
+      requestedGameType: data.requestedGameType || null,
       requestedSeat: data.requestedSeat || null,
       status: WaitlistStatus.PENDING
     });
@@ -141,7 +143,7 @@ export class WaitlistSeatingService {
           tableNumber: entry.tableNumber,
           tableName: table ? `Table ${table.tableNumber}` : `Table ${entry.tableNumber}`,
           tableId: table?.id,
-          seatNumber: entry.requestedSeat,  // Fixed: Only use requestedSeat, not tableNumber as fallback
+          seatNumber: entry.assignedSeat ?? entry.requestedSeat,
           seatedAt: entry.seatedAt,
           entryId: entry.id,
         };
@@ -212,7 +214,7 @@ export class WaitlistSeatingService {
 
   // ========== Seating Operations ==========
 
-  async assignSeat(clubId: string, entryId: string, tableId: string, seatedBy: string) {
+  async assignSeat(clubId: string, entryId: string, tableId: string, seatedBy: string, assignedSeat?: number) {
     const entry = await this.getWaitlistEntry(clubId, entryId);
     const table = await this.getTable(clubId, tableId);
 
@@ -227,6 +229,17 @@ export class WaitlistSeatingService {
     }
     if (table.currentSeats + entry.partySize > table.maxSeats) {
       throw new BadRequestException(`Table only has ${table.maxSeats - table.currentSeats} available seats. Party size is ${entry.partySize}.`);
+    }
+
+    // CRITICAL: Poker and Rummy are separate — only allow assigning to a table that matches the request
+    const requestedGame = (entry as any).requestedGameType?.toUpperCase?.() || 'POKER';
+    const isRummyTable = String(table.tableType || '').toUpperCase() === 'RUMMY';
+    console.log(`🎯 [ASSIGN SEAT] Entry ${entry.id} requestedGame=${requestedGame}, table ${table.tableNumber} tableType=${table.tableType} isRummyTable=${isRummyTable}`);
+    if (requestedGame === 'RUMMY' && !isRummyTable) {
+      throw new BadRequestException('This waitlist request is for a Rummy table. Please assign to a Rummy table only.');
+    }
+    if (requestedGame === 'POKER' && isRummyTable) {
+      throw new BadRequestException('This waitlist request is for a Poker table. Please assign to a Poker table only. You selected a Rummy table.');
     }
 
     // CRITICAL: Get player and take ALL their money for table
@@ -309,9 +322,10 @@ export class WaitlistSeatingService {
         table.status = TableStatus.AVAILABLE; // Still has available seats
     }
 
-    // Update entry
+    // Update entry: store actual assigned seat (for hologram); if not provided, keep requestedSeat as effective seat
     entry.status = WaitlistStatus.SEATED;
     entry.tableNumber = table.tableNumber;
+    entry.assignedSeat = assignedSeat != null ? assignedSeat : entry.requestedSeat;
     entry.seatedAt = new Date();
     entry.seatedBy = seatedBy;
 
@@ -692,7 +706,7 @@ export class WaitlistSeatingService {
         return {
           playerId: entry.playerId,
           playerName: entry.playerName || 'Unknown',
-          seatNumber: entry.requestedSeat || null,
+          seatNumber: entry.assignedSeat ?? entry.requestedSeat ?? null,
           seatedAt: entry.seatedAt,
           tableNumber: entry.tableNumber,
           buyInAmount: buyInAmount,

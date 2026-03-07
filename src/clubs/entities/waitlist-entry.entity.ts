@@ -49,8 +49,16 @@ export class WaitlistEntry {
   @Column({ type: 'varchar', nullable: true, name: 'table_type' })
   tableType!: string | null; // e.g., 'cash', 'tournament', 'high-stakes'
 
+  /** Game the player requested: POKER (cash/tournament tables) or RUMMY. Used to prevent assigning poker request to rummy table and vice versa. */
+  @Column({ type: 'varchar', length: 20, nullable: true, name: 'requested_game_type' })
+  requestedGameType!: string | null;
+
   @Column({ type: 'int', nullable: true, name: 'requested_seat' })
   requestedSeat!: number | null; // Seat number player requested (1-8)
+
+  /** Actual seat assigned by staff (may differ from requestedSeat). Used for hologram/live view. */
+  @Column({ type: 'int', nullable: true, name: 'assigned_seat' })
+  assignedSeat!: number | null;
 
   @Column({ type: 'int', default: 0 })
   priority!: number; // Higher number = higher priority

@@ -42,6 +42,12 @@ export class CreateWaitlistEntryDto {
   @MaxLength(50)
   tableType?: string;
 
+  /** Game type for this request: POKER or RUMMY. Ensures staff can only assign to matching table. */
+  @IsString()
+  @IsOptional()
+  @MaxLength(20)
+  requestedGameType?: 'POKER' | 'RUMMY';
+
   @IsInt()
   @Min(1)
   @Max(10)

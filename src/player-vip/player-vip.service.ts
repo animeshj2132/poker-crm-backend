@@ -48,7 +48,7 @@ export class PlayerVipService {
    * Tournament time: tournament_players (session_started_at → exited_at/busted_at or NOW() when active).
    */
   private async calculateTotalHours(playerId: string, clubId: string): Promise<{ tableHours: number; tournamentHours: number; totalHours: number }> {
-    // Table session hours from waitlist_entries (player must be seated via waitlist for this to count)
+    // Primary: Table session hours from waitlist_entries
     const tableResult = await this.dataSource.query(`
       SELECT COALESCE(SUM(
         CASE 
@@ -142,21 +142,33 @@ export class PlayerVipService {
         relations: ['club'],
       });
 
+      // Graceful zero-points response when player is not found (rather than 404)
       if (!player) {
-        throw new NotFoundException('Player not found');
+        return {
+          earnedPoints: 0,
+          availablePoints: 0,
+          pointsSpent: 0,
+          tier: VIP_TIERS[0].name,
+          tierColor: VIP_TIERS[0].color,
+          multiplier: VIP_TIERS[0].multiplier,
+          nextTier: { name: VIP_TIERS[1].name, pointsRequired: VIP_TIERS[1].minPoints, pointsToNext: VIP_TIERS[1].minPoints },
+          breakdown: { tableHours: 0, tournamentHours: 0, totalHours: 0, hoursScore: 0, totalMoneySpent: 0, moneyScore: 0, weightHours: WEIGHT_HOURS, weightMoney: WEIGHT_MONEY, hoursContribution: 0, moneyContribution: 0 },
+          allTiers: VIP_TIERS,
+        };
       }
 
       const hours = await this.calculateTotalHours(playerId, clubId);
       const totalMoneySpent = await this.calculateTotalMoneySpent(playerId, clubId);
       const pointsSpent = await this.getPointsSpent(playerId, clubId);
 
-      // Hscore = total hours played (1 hour = 1 score point)
+      // Hscore = total hours played including fractional (30 min = 0.5, etc.)
       const hoursScore = hours.totalHours;
-      // Mscore = money spent in hundreds (₹100 = 1 score point)
+      // Mscore = money spent divided by 100 (₹100 = 1 score point, ₹50 = 0.5)
       const moneyScore = totalMoneySpent / 100;
 
-      const earnedPoints = Math.floor((WEIGHT_HOURS * hoursScore) + (WEIGHT_MONEY * moneyScore));
-      const availablePoints = Math.max(0, earnedPoints - pointsSpent);
+      // Keep 2 decimal places — no floor, so 30 min + ₹100 spend correctly earns 0.8 pts
+      const earnedPoints = Math.round(((WEIGHT_HOURS * hoursScore) + (WEIGHT_MONEY * moneyScore)) * 100) / 100;
+      const availablePoints = Math.max(0, Math.round((earnedPoints - pointsSpent) * 100) / 100);
 
       const tier = this.getVipTier(earnedPoints);
       const nextTier = this.getNextTier(earnedPoints);
@@ -182,8 +194,8 @@ export class PlayerVipService {
           moneyScore: Math.round(moneyScore * 100) / 100,
           weightHours: WEIGHT_HOURS,
           weightMoney: WEIGHT_MONEY,
-          hoursContribution: Math.floor(WEIGHT_HOURS * hoursScore),
-          moneyContribution: Math.floor(WEIGHT_MONEY * moneyScore),
+          hoursContribution: Math.round(WEIGHT_HOURS * hoursScore * 100) / 100,
+          moneyContribution: Math.round(WEIGHT_MONEY * moneyScore * 100) / 100,
         },
         allTiers: VIP_TIERS,
       };

@@ -1668,7 +1668,7 @@ export class AuthService {
   /**
    * Join waitlist
    */
-  async joinWaitlist(playerId: string, clubId: string, tableType?: string, partySize: number = 1, requestedSeat?: number) {
+  async joinWaitlist(playerId: string, clubId: string, tableType?: string, partySize: number = 1, requestedSeat?: number, gameType?: string) {
     try {
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
@@ -1854,6 +1854,13 @@ export class AuthService {
         }
       }
 
+      // Poker vs Rummy: normalize requested game so assign-seat only allows matching table type
+      const requestedGameType = ((): 'POKER' | 'RUMMY' => {
+        const g = (gameType ?? tableType ?? '').toString().trim().toUpperCase();
+        if (g === 'RUMMY') return 'RUMMY';
+        return 'POKER'; // default and any other value (Cash Game, CASH, etc.)
+      })();
+
       // Edge case: Create waitlist entry with error handling
       let entry;
       try {
@@ -1864,6 +1871,7 @@ export class AuthService {
           email: player.email.trim().toLowerCase(),
           partySize,
           tableType: tableType && tableType.trim() ? tableType.trim() : undefined,
+          requestedGameType,
           requestedSeat: requestedSeat || undefined
         });
       } catch (createError) {
@@ -2426,14 +2434,15 @@ export class AuthService {
         throw new NotFoundException('Club not found');
       }
 
-      // Edge case: Get table with error handling
+      // Edge case: Get table with error handling (load club relation so belong-to-club check works)
       let table = null;
       try {
         table = await this.tablesRepo.findOne({
           where: {
             id: tableId.trim(),
             club: { id: clubId.trim() }
-          }
+          },
+          relations: ['club']
         });
       } catch (dbError) {
         console.error('Database error fetching table:', dbError);
@@ -2444,8 +2453,9 @@ export class AuthService {
         throw new NotFoundException('Table not found');
       }
 
-      // Edge case: Verify table belongs to club
-      if (!table.club || (table.club as any).id !== clubId.trim()) {
+      // Edge case: Verify table belongs to club (table.club is loaded via relations)
+      const tableClubId = table.club?.id ?? (table as any).club_id;
+      if (tableClubId !== clubId.trim()) {
         throw new ForbiddenException('Table does not belong to this club');
       }
 

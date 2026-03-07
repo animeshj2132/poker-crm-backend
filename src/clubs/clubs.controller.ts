@@ -4381,6 +4381,7 @@ export class ClubsController {
         throw new ForbiddenException('You can only create waitlist entries for your assigned club');
       }
 
+      const requestedGameType = dto.requestedGameType ?? (dto.tableType?.toUpperCase() === 'RUMMY' ? 'RUMMY' : 'POKER');
       const waitlistEntry = await this.waitlistSeatingService.createWaitlistEntry(clubId, {
         playerName: dto.playerName.trim(),
         playerId: dto.playerId?.trim(),
@@ -4389,7 +4390,8 @@ export class ClubsController {
         partySize: dto.partySize,
         priority: dto.priority,
         notes: dto.notes?.trim(),
-        tableType: dto.tableType?.trim()
+        tableType: dto.tableType?.trim(),
+        requestedGameType
       });
 
       // Audit log: Create waitlist entry
@@ -5276,7 +5278,7 @@ export class ClubsController {
       // Edge case: Error handling for assign seat operation
       let assignedEntry;
       try {
-        assignedEntry = await this.waitlistSeatingService.assignSeat(clubId, entryId, dto.tableId, seatedBy.trim());
+        assignedEntry = await this.waitlistSeatingService.assignSeat(clubId, entryId, dto.tableId, seatedBy.trim(), dto.seatNumber);
       } catch (dbError) {
         console.error('Database error assigning seat:', dbError);
         if (dbError instanceof NotFoundException || dbError instanceof BadRequestException || dbError instanceof ConflictException) {
