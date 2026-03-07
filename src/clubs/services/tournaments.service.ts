@@ -1,17 +1,212 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { CreateTournamentDto } from '../dto/create-tournament.dto';
 import { UpdateTournamentDto } from '../dto/update-tournament.dto';
 import { EndTournamentDto } from '../dto/end-tournament.dto';
 import { WALLET_BALANCE_SQL, CREDIT_BALANCE_SQL } from '../entities/financial-transaction.entity';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
-export class TournamentsService {
+export class TournamentsService implements OnModuleInit {
   constructor(
     @InjectDataSource()
     private dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
+
+  /** Per-tournament setTimeout handles. Keyed by tournament UUID (kept for pause/resume cancellation). */
+  private blindTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+  onModuleInit() {
+    // Primary mechanism: poll every 10 seconds, advance any tournament whose blind is overdue.
+    // This is self-healing — works across restarts, pauses, manual advances, and timezone edge cases.
+    setTimeout(() => this.tickBlindPoller(), 3000);
+    setInterval(() => this.tickBlindPoller(), 10 * 1000);
+  }
+
+  /**
+   * Runs every 10 seconds. Queries all active non-paused tournaments, calculates the
+   * expected round based on elapsed wall-clock time, and advances blinds if the DB is behind.
+   */
+  private async tickBlindPoller(): Promise<void> {
+    try {
+      const rows = await this.dataSource.query(
+        `SELECT id, club_id, name, status, session_started_at, paused_at, total_paused_seconds, structure
+         FROM tournaments WHERE status = 'active' AND session_started_at IS NOT NULL AND paused_at IS NULL`
+      );
+      for (const t of rows) {
+        try {
+          await this.checkAndAdvanceTournamentBlind(t);
+        } catch (err) {
+          console.error(`[BLIND POLLER] Error checking tournament ${t.id}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error('[BLIND POLLER] Query error:', err);
+    }
+  }
+
+  /** Parse structure safely from either string or object. */
+  private parseStructure(raw: any): any {
+    if (!raw) return {};
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw); } catch { return {}; }
+    }
+    return raw;
+  }
+
+  /**
+   * Calculate what round a tournament SHOULD be at given its elapsed (non-paused) time.
+   * Accounts for breaks. During a break the round stays at the level just completed;
+   * it advances only when the break ends.
+   */
+  private calcExpectedRound(t: any, structure: any): number {
+    const minutesPerLevel = Number(structure?.minutes_per_level) || 15;
+    const numberOfLevels = Number(structure?.number_of_levels) || 15;
+    const breakDuration = Number(structure?.break_duration) || 10;
+    const breakStructureStr = String(structure?.break_structure || '');
+    let breakEveryNLevels = 0;
+    const bm = breakStructureStr.match(/(\d+)/);
+    if (bm) breakEveryNLevels = parseInt(bm[1], 10);
+
+    // session_started_at may come back as a JS Date or as a string — handle both
+    const rawStart = t.session_started_at;
+    const startMs = rawStart instanceof Date ? rawStart.getTime() : new Date(rawStart).getTime();
+    const totalPausedMs = (Number(t.total_paused_seconds) || 0) * 1000;
+    const effectiveElapsedMs = Date.now() - startMs - totalPausedMs;
+    const effectiveElapsedMinutes = effectiveElapsedMs / 60000;
+
+    if (effectiveElapsedMinutes <= 0) return 1;
+
+    let accumulated = 0; // minutes accounted for so far
+    for (let level = 1; level <= numberOfLevels; level++) {
+      const levelEnd = accumulated + minutesPerLevel;
+      if (effectiveElapsedMinutes < levelEnd) {
+        return level; // still inside this level
+      }
+      accumulated = levelEnd;
+
+      // Check if there is a break after this level
+      if (breakEveryNLevels > 0 && level % breakEveryNLevels === 0 && level < numberOfLevels) {
+        const breakEnd = accumulated + breakDuration;
+        if (effectiveElapsedMinutes < breakEnd) {
+          // Still inside the break — round stays at 'level', next round starts when break ends
+          return level;
+        }
+        accumulated = breakEnd;
+      }
+    }
+
+    return numberOfLevels; // past the last level
+  }
+
+  /** Check one tournament and advance blinds if the DB round is behind the expected round. */
+  private async checkAndAdvanceTournamentBlind(t: any): Promise<void> {
+    const structure = this.parseStructure(t.structure);
+    const currentRound = Number(structure?.current_round) || 1;
+    const numberOfLevels = Number(structure?.number_of_levels) || 15;
+
+    if (currentRound >= numberOfLevels) return; // already at last level
+
+    const expectedRound = this.calcExpectedRound(t, structure);
+    if (expectedRound <= currentRound) return; // on time, nothing to do
+
+    // Advance blinds by doubling for each skipped level (catches up if server was down/paused)
+    let newRound = currentRound;
+    let newSb = Number(structure.current_sb ?? structure.starting_sb) || 10;
+    let newBb = Number(structure.current_bb ?? structure.starting_bb) || 20;
+
+    while (newRound < expectedRound && newRound < numberOfLevels) {
+      newSb = Math.round(newSb * 2);
+      newBb = Math.round(newBb * 2);
+      newRound++;
+    }
+
+    const newStructure = { ...structure, current_round: newRound, current_sb: newSb, current_bb: newBb };
+
+    // Conditional UPDATE: only applies if another process hasn't already advanced the round
+    const updateResult = await this.dataSource.query(
+      `UPDATE tournaments
+       SET structure = $2::jsonb, updated_at = NOW()
+       WHERE id = $1
+         AND (structure->>'current_round')::int = $3
+       RETURNING id`,
+      [t.id, JSON.stringify(newStructure), currentRound]
+    );
+
+    if (!updateResult?.length) return; // Already advanced by another process or concurrent tick
+
+    console.log(`📈 [BLIND POLLER] "${t.name}" → Level ${newRound}: SB=${newSb} BB=${newBb}`);
+
+    if (this.eventsService) {
+      this.eventsService.emitTournamentBlindsUpdated(t.club_id, {
+        id: t.id,
+        name: t.name,
+        currentRound: newRound,
+        currentSb: newSb,
+        currentBb: newBb,
+        structure: newStructure,
+      });
+    }
+  }
+
+  /**
+   * Called from startTournament / resumeTournament to schedule a precise setTimeout
+   * for the next level boundary (provides sub-10s precision on top of the 10s poller).
+   */
+  scheduleNextBlindIncrease(tournament: any): void {
+    const id: string = tournament.id;
+
+    // Cancel any existing timer
+    const existing = this.blindTimers.get(id);
+    if (existing) { clearTimeout(existing); this.blindTimers.delete(id); }
+
+    if (tournament.status !== 'active' || !tournament.session_started_at || tournament.paused_at) return;
+
+    const structure = this.parseStructure(tournament.structure);
+    const minutesPerLevel = Number(structure?.minutes_per_level) || 15;
+    const numberOfLevels = Number(structure?.number_of_levels) || 15;
+    const breakDuration = Number(structure?.break_duration) || 10;
+    const breakStructureStr = String(structure?.break_structure || '');
+    let breakEveryNLevels = 0;
+    const m = breakStructureStr.match(/(\d+)/);
+    if (m) breakEveryNLevels = parseInt(m[1], 10);
+
+    const currentRound = Number(structure?.current_round) || 1;
+    if (currentRound >= numberOfLevels) return;
+
+    const rawStart = tournament.session_started_at;
+    const startMs = rawStart instanceof Date ? rawStart.getTime() : new Date(rawStart).getTime();
+    const totalPausedMs = (Number(tournament.total_paused_seconds) || 0) * 1000;
+
+    let effectiveMinutesAtNextLevel = 0;
+    for (let l = 1; l <= currentRound; l++) {
+      effectiveMinutesAtNextLevel += minutesPerLevel;
+      if (breakEveryNLevels > 0 && l % breakEveryNLevels === 0 && l < numberOfLevels) {
+        effectiveMinutesAtNextLevel += breakDuration;
+      }
+    }
+
+    const nextLevelAbsoluteMs = startMs + (effectiveMinutesAtNextLevel * 60 * 1000) + totalPausedMs;
+    const msUntilNextLevel = nextLevelAbsoluteMs - Date.now();
+
+    if (msUntilNextLevel <= 0) {
+      // Already overdue — the 10s poller will pick this up within 10 seconds; nothing to schedule.
+      console.log(`⚡ [BLIND TIMER] "${tournament.name}" level ${currentRound + 1} is overdue by ${Math.abs(Math.round(msUntilNextLevel / 1000))}s — poller will advance within 10s`);
+      return;
+    }
+
+    console.log(`⏱️ [BLIND TIMER] "${tournament.name}" → Level ${currentRound + 1} in ${Math.round(msUntilNextLevel / 1000)}s`);
+
+    const timer = setTimeout(() => {
+      this.blindTimers.delete(id);
+      // Let the poller pick it up; no async DB call needed here
+      console.log(`🔔 [BLIND TIMER] "${tournament.name}" level boundary reached — poller will advance on next tick`);
+    }, msUntilNextLevel);
+
+    this.blindTimers.set(id, timer);
+  }
 
   /**
    * Determine game type from tournament data (poker vs rummy)
@@ -472,7 +667,10 @@ export class TournamentsService {
       await queryRunner.commitTransaction();
 
       console.log(`✅ [TOURNAMENT START] Tournament ${tournament.name} started successfully`);
-      return result[0];
+      const started = result[0];
+      // Schedule precise blind increases from the first level boundary
+      this.scheduleNextBlindIncrease({ ...started, structure: JSON.parse(JSON.stringify(structure)) });
+      return started;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       console.error('❌ [TOURNAMENT START] Error:', error);
@@ -504,7 +702,11 @@ export class TournamentsService {
       [clubId, tournamentId, pausedAt]
     );
 
-    console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused`);
+    // Cancel the scheduled blind timer — time is frozen while paused
+    const existing = this.blindTimers.get(tournamentId);
+    if (existing) { clearTimeout(existing); this.blindTimers.delete(tournamentId); }
+
+    console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused (blind timer cancelled)`);
     return result[0];
   }
 
@@ -535,8 +737,12 @@ export class TournamentsService {
       [clubId, tournamentId, newTotalPaused]
     );
 
-    console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s)`);
-    return result[0];
+    const resumed = result[0];
+    // Reschedule blind timer now that the clock is running again (with updated total_paused_seconds)
+    this.scheduleNextBlindIncrease(resumed);
+
+    console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s) — blind timer rescheduled`);
+    return resumed;
   }
 
   // Stop/End a tournament without winners (forced stop)
@@ -563,6 +769,9 @@ export class TournamentsService {
        WHERE tournament_id = $1 AND is_active = true`,
       [tournamentId]
     );
+
+    const stopped = this.blindTimers.get(tournamentId);
+    if (stopped) { clearTimeout(stopped); this.blindTimers.delete(tournamentId); }
 
     console.log(`🛑 [TOURNAMENT STOP] Tournament ${tournament.name} stopped (forced end without winners)`);
     return result[0];

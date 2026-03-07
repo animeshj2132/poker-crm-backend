@@ -206,6 +206,38 @@ export class PlayerTournamentsService {
   }
 
   /**
+   * Check if player is actively participating in a currently-running tournament.
+   * Used by player app to block table joins during active tournament play.
+   */
+  async getActiveTournamentSession(playerId: string, clubId: string): Promise<{ inActiveTournament: boolean; tournamentName: string | null; tournamentId: string | null }> {
+    try {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(playerId) || !uuidRegex.test(clubId)) {
+        return { inActiveTournament: false, tournamentName: null, tournamentId: null };
+      }
+
+      const rows = await this.playersRepo.query(`
+        SELECT tp.tournament_id AS "tournamentId", t.name AS "tournamentName"
+        FROM tournament_players tp
+        INNER JOIN tournaments t ON t.id = tp.tournament_id
+        WHERE tp.player_id = $1
+          AND t.club_id = $2
+          AND tp.is_active = true
+          AND t.status = 'active'
+        LIMIT 1
+      `, [playerId, clubId]);
+
+      if (rows?.length) {
+        return { inActiveTournament: true, tournamentName: rows[0].tournamentName, tournamentId: rows[0].tournamentId };
+      }
+      return { inActiveTournament: false, tournamentName: null, tournamentId: null };
+    } catch (err) {
+      console.error('getActiveTournamentSession error:', err);
+      return { inActiveTournament: false, tournamentName: null, tournamentId: null };
+    }
+  }
+
+  /**
    * Register for tournament
    */
   async registerForTournament(

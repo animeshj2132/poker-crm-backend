@@ -527,6 +527,12 @@ export class EventsService {
     });
   }
 
+  emitTournamentBlindsUpdated(clubId: string, payload: { id: string; name: string; currentRound: number; currentSb: number; currentBb: number; structure: any }) {
+    // Broadcast to all subscribers of this club (both admin and player clients)
+    this.server.emit('tournament:blinds-updated', { clubId, tournament: payload });
+    this.logger.log(`Emitted tournament:blinds-updated for club ${clubId}, tournament ${payload.id} (Level ${payload.currentRound}: ${payload.currentSb}/${payload.currentBb})`);
+  }
+
   emitNewChatMessageDirect(clubId: string, sessionId: string, message: any, recipientStaffUserId: string) {
     this.emitToRecipientWithGuarantee('staff', recipientStaffUserId, 'chat:new-message-direct', {
       clubId,

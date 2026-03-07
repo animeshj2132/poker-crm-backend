@@ -54,6 +54,20 @@ export class PlayerTournamentsController {
   }
 
   /**
+   * Check if player is actively in a running tournament
+   * GET /api/player-tournaments/active-session
+   */
+  @Get('active-session')
+  async getActiveTournamentSession(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) return { inActiveTournament: false, tournamentName: null, tournamentId: null };
+    if (!clubId || !clubId.trim()) return { inActiveTournament: false, tournamentName: null, tournamentId: null };
+    return this.tournamentsService.getActiveTournamentSession(playerId.trim(), clubId.trim());
+  }
+
+  /**
    * Get my registrations
    * GET /api/player-tournaments/my-registrations
    */
