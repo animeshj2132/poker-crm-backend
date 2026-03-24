@@ -69,7 +69,11 @@ export class CreditRequestsService {
       club
     });
 
-    return this.creditRequestsRepo.save(request);
+    const saved = await this.creditRequestsRepo.save(request);
+    if (this.eventsService) {
+      this.eventsService.emitCreditRequestCreated(clubId, data.playerId.trim());
+    }
+    return saved;
   }
 
   async findAll(clubId: string, status?: CreditRequestStatus) {

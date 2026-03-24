@@ -6,9 +6,10 @@ import { Player } from '../clubs/entities/player.entity';
 import { FinancialTransaction } from '../clubs/entities/financial-transaction.entity';
 import { ClubsModule } from '../clubs/clubs.module';
 import { AuthModule } from '../auth/auth.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Player, FinancialTransaction]), ClubsModule, AuthModule],
+  imports: [TypeOrmModule.forFeature([Player, FinancialTransaction]), ClubsModule, AuthModule, EventsModule],
   controllers: [PlayerTournamentsController],
   providers: [PlayerTournamentsService],
   exports: [PlayerTournamentsService],

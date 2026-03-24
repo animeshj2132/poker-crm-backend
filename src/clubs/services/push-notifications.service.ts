@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Inject, Optional, NotFoundException, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { PushNotification, NotificationTargetType, NotificationType } from '../entities/push-notification.entity';
@@ -7,6 +7,7 @@ import { NotificationReadStatus } from '../entities/notification-read-status.ent
 import { Staff, StaffRole } from '../entities/staff.entity';
 import { Player } from '../entities/player.entity';
 import { User } from '../../users/user.entity';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class PushNotificationsService {
@@ -16,7 +17,8 @@ export class PushNotificationsService {
     @InjectRepository(NotificationReadStatus) private readonly readStatusRepo: Repository<NotificationReadStatus>,
     @InjectRepository(Staff) private readonly staffRepo: Repository<Staff>,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
-    @InjectRepository(User) private readonly usersRepo: Repository<User>
+    @InjectRepository(User) private readonly usersRepo: Repository<User>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async create(clubId: string, data: {
@@ -313,6 +315,17 @@ export class PushNotificationsService {
     notification.sentAt = new Date();
     await this.notificationsRepo.save(notification);
 
+    // Emit Socket.IO event to notify recipients in real-time
+    if (this.eventsService) {
+      if (recipientType === 'player') {
+        for (const pid of recipientIds) {
+          this.eventsService.emitNotificationCreated(clubId, pid);
+        }
+      } else {
+        this.eventsService.emitNotificationCreated(clubId);
+      }
+    }
+
     return {
       success: true,
       recipientCount: recipientIds.length,
@@ -387,6 +400,9 @@ export class PushNotificationsService {
       readStatus.isRead = true;
       readStatus.readAt = new Date();
       await this.readStatusRepo.save(readStatus);
+      if (this.eventsService) {
+        this.eventsService.emitNotificationReadStatusChanged(clubId);
+      }
     }
 
     return { success: true };
@@ -408,6 +424,10 @@ export class PushNotificationsService {
         readAt: new Date()
       }
     );
+
+    if (this.eventsService) {
+      this.eventsService.emitNotificationReadStatusChanged(clubId);
+    }
 
     return { success: true };
   }

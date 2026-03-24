@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Query, UnauthorizedException, UseGuards, UsePipes, ValidationPipe, BadRequestException, ParseIntPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Query, Req, UnauthorizedException, UsePipes, ValidationPipe, BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { UsersService } from '../users/users.service';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -12,6 +12,7 @@ import { PlayerResetPasswordDto } from './dto/player-reset-password.dto';
 import { AuditLogsService } from '../clubs/services/audit-logs.service';
 import { ActionCategory } from '../clubs/dto/create-audit-log.dto';
 import { DataSource } from 'typeorm';
+import { signAppJwt } from '../common/security/jwt';
 
 @Controller('auth')
 export class AuthController {
@@ -32,15 +33,11 @@ export class AuthController {
   }
 
   @Get('me')
-  async me(@Headers('x-api-key') apiKey?: string) {
-    if (!apiKey) {
-      throw new UnauthorizedException('API key is required');
+  async me(@Req() req: any) {
+    if (!req.user) {
+      throw new UnauthorizedException('Bearer token is required');
     }
-    const user = await this.authService.validateApiKey(apiKey);
-    if (!user) {
-      throw new UnauthorizedException('Invalid API key');
-    }
-    return user;
+    return req.user;
   }
 
   @Post('login')
@@ -52,7 +49,16 @@ export class AuthController {
     if (!dto.password || !dto.password.trim()) {
       throw new UnauthorizedException('Password is required');
     }
-    return this.authService.login(dto.email.trim(), dto.password);
+    const result = await this.authService.login(dto.email.trim(), dto.password);
+    const primaryClubId = result.clubRoles?.[0]?.club?.id;
+    const token = signAppJwt({
+      sub: result.user.id,
+      type: 'staff',
+      clubId: primaryClubId,
+      tenantId: result.clubRoles?.[0]?.club?.tenantId || result.tenantRoles?.[0]?.tenant?.id,
+      email: result.user.email,
+    });
+    return { ...result, token };
   }
 
   @Post('reset-password')
@@ -99,7 +105,14 @@ export class AuthController {
   @Post('player/login')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async playerLogin(@Body() dto: PlayerLoginDto) {
-    return this.authService.playerLogin(dto.clubCode, dto.email, dto.password);
+    const result = await this.authService.playerLogin(dto.clubCode, dto.email, dto.password);
+    const token = signAppJwt({
+      sub: result.player.id,
+      type: 'player',
+      clubId: result.club.id,
+      email: result.player.email,
+    });
+    return { ...result, token };
   }
 
   /**
@@ -130,7 +143,13 @@ export class AuthController {
         });
       }
     } catch (e) { console.error('Audit log error:', e); }
-    return result;
+    const token = signAppJwt({
+      sub: result.player.id,
+      type: 'player',
+      clubId: result.club.id,
+      email: result.player.email,
+    });
+    return { ...result, token };
   }
 
   /**

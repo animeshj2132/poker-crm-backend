@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { PlayerFieldUpdateRequest, UpdateRequestStatus } from '../entities/player-field-update-request.entity';
 import { Player } from '../entities/player.entity';
 import { Club } from '../club.entity';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class PlayerFieldUpdateService {
@@ -14,7 +15,8 @@ export class PlayerFieldUpdateService {
     private readonly playersRepo: Repository<Player>,
     @InjectRepository(Club)
     private readonly clubsRepo: Repository<Club>,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   /**
@@ -88,7 +90,11 @@ export class PlayerFieldUpdateService {
       status: 'pending'
     });
 
-    return await this.updateRequestsRepo.save(request);
+    const saved = await this.updateRequestsRepo.save(request);
+    if (this.eventsService) {
+      this.eventsService.emitProfileChangeRequestUpdated(clubId, playerId, { status: 'pending' });
+    }
+    return saved;
   }
 
   /**
@@ -167,6 +173,14 @@ export class PlayerFieldUpdateService {
 
       await queryRunner.commitTransaction();
 
+      if (this.eventsService) {
+        this.eventsService.emitProfileChangeRequestUpdated(
+          request.clubId,
+          request.playerId,
+          { status: 'approved', fieldName: request.fieldName, newValue: request.requestedValue }
+        );
+      }
+
       return {
         success: true,
         message: `Player ${request.fieldName} updated successfully`
@@ -205,6 +219,10 @@ export class PlayerFieldUpdateService {
     request.reviewNotes = rejectionReason;
 
     await this.updateRequestsRepo.save(request);
+
+    if (this.eventsService) {
+      this.eventsService.emitProfileChangeRequestUpdated(request.clubId, request.playerId, { status: 'rejected' });
+    }
 
     return {
       success: true,

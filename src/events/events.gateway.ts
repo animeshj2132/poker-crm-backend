@@ -11,11 +11,13 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { EventsService } from './events.service';
+import { isOriginAllowed } from '../common/security/cors-origins';
+import { verifyAppJwt } from '../common/security/jwt';
 
 @WebSocketGateway({
   cors: {
     origin: (origin: string, callback: (err: Error | null, allow?: boolean) => void) => {
-      callback(null, true);
+      callback(null, isOriginAllowed(origin));
     },
     credentials: true
   },
@@ -33,7 +35,35 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   constructor(private readonly eventsService: EventsService) {}
 
+  private getSocketJwt(client: Socket): { sub: string; type: 'staff' | 'player'; clubId?: string } | null {
+    return ((client.data as any)?.jwt as { sub: string; type: 'staff' | 'player'; clubId?: string }) || null;
+  }
+
   afterInit(server: Server) {
+    server.use((socket, next) => {
+      try {
+        const authHeader = socket.handshake.headers?.authorization;
+        const bearerToken =
+          typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+            ? authHeader.slice(7)
+            : undefined;
+        const authToken = typeof socket.handshake.auth?.token === 'string'
+          ? socket.handshake.auth.token
+          : undefined;
+        const token = authToken || bearerToken;
+
+        if (!token) {
+          return next(new Error('Unauthorized: missing websocket token'));
+        }
+
+        const payload = verifyAppJwt(token);
+        (socket.data as any).jwt = payload;
+        return next();
+      } catch (error) {
+        return next(new Error('Unauthorized: invalid websocket token'));
+      }
+    });
+
     this.eventsService.setServer(server);
     this.logger.log('WebSocket Gateway initialized with connection state recovery (Redis adapter set via main.ts)');
   }
@@ -62,6 +92,16 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       return;
     }
 
+    const socketJwt = this.getSocketJwt(client);
+    if (!socketJwt) {
+      client.emit('error', { message: 'Unauthorized' });
+      return;
+    }
+    if (socketJwt.clubId && socketJwt.clubId !== data.clubId) {
+      client.emit('error', { message: 'Forbidden: invalid club scope' });
+      return;
+    }
+
     this.logger.log(`Client ${client.id} subscribing to club ${data.clubId}`);
     this.eventsService.subscribeToClub(client.id, data.clubId, data.playerId);
     client.emit('subscribed', { clubId: data.clubId });
@@ -74,6 +114,16 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   ) {
     if (!data || !data.playerId || !data.clubId) {
       client.emit('error', { message: 'Player ID and Club ID are required' });
+      return;
+    }
+
+    const socketJwt = this.getSocketJwt(client);
+    if (!socketJwt || socketJwt.type !== 'player' || socketJwt.sub !== data.playerId) {
+      client.emit('error', { message: 'Forbidden: invalid player scope' });
+      return;
+    }
+    if (socketJwt.clubId && socketJwt.clubId !== data.clubId) {
+      client.emit('error', { message: 'Forbidden: invalid club scope' });
       return;
     }
 
@@ -92,6 +142,16 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   ) {
     if (!data || !data.staffId || !data.clubId) {
       client.emit('error', { message: 'Staff ID and Club ID are required' });
+      return;
+    }
+
+    const socketJwt = this.getSocketJwt(client);
+    if (!socketJwt || socketJwt.type !== 'staff' || socketJwt.sub !== data.staffId) {
+      client.emit('error', { message: 'Forbidden: invalid staff scope' });
+      return;
+    }
+    if (socketJwt.clubId && socketJwt.clubId !== data.clubId) {
+      client.emit('error', { message: 'Forbidden: invalid club scope' });
       return;
     }
 

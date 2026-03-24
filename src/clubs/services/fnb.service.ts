@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { FnbOrder, OrderStatus, StatusHistoryEntry } from '../entities/fnb-order.entity';
@@ -14,6 +14,7 @@ import { CreateInventoryItemDto } from '../dto/create-inventory-item.dto';
 import { UpdateInventoryItemDto } from '../dto/update-inventory-item.dto';
 import { CreateSupplierDto } from '../dto/create-supplier.dto';
 import { UpdateSupplierDto } from '../dto/update-supplier.dto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class FnbService {
@@ -28,6 +29,7 @@ export class FnbService {
     private readonly supplierRepo: Repository<Supplier>,
     @InjectRepository(Club)
     private readonly clubRepo: Repository<Club>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   // ==================== ORDERS ====================
@@ -65,7 +67,9 @@ export class FnbService {
       sentToChef: false,
     });
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async getOrders(clubId: string, filters?: {

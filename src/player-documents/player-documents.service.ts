@@ -12,6 +12,17 @@ import { StorageService } from '../storage/storage.service';
 
 /** All player KYC/approval docs use this bucket. Override with env KYC_DOCUMENTS_BUCKET. Create in Supabase Storage if missing. */
 const KYC_DOCUMENTS_BUCKET = process.env.KYC_DOCUMENTS_BUCKET || 'kyc-docs';
+const ALLOWED_DOCUMENT_TYPES = [
+  'government_id', // legacy single Aadhaar doc
+  'aadhaar_front',
+  'aadhaar_back',
+  'address_proof',
+  'pan_card',
+  'id_proof',
+  'utility_bill',
+  'profile_photo',
+  'other',
+] as const;
 
 @Injectable()
 export class PlayerDocumentsService {
@@ -96,10 +107,9 @@ export class PlayerDocumentsService {
       }
 
       // Validate document type
-      const allowedTypes = ['government_id', 'address_proof', 'pan_card', 'id_proof', 'utility_bill', 'profile_photo', 'other'];
       const documentType = data?.type || data?.documentType || 'other';
-      if (!allowedTypes.includes(documentType)) {
-        throw new BadRequestException(`Document type must be one of: ${allowedTypes.join(', ')}`);
+      if (!ALLOWED_DOCUMENT_TYPES.includes(documentType)) {
+        throw new BadRequestException(`Document type must be one of: ${ALLOWED_DOCUMENT_TYPES.join(', ')}`);
       }
 
       let fileUrl = data?.url;
@@ -210,9 +220,8 @@ export class PlayerDocumentsService {
     if (!uuidRegex.test(playerId) || !uuidRegex.test(clubId)) {
       throw new BadRequestException('Invalid player ID or club ID format');
     }
-    const allowedTypes = ['government_id', 'address_proof', 'pan_card', 'id_proof', 'utility_bill', 'profile_photo', 'other'];
-    if (!allowedTypes.includes(documentType)) {
-      throw new BadRequestException(`Document type must be one of: ${allowedTypes.join(', ')}`);
+    if (!ALLOWED_DOCUMENT_TYPES.includes(documentType as any)) {
+      throw new BadRequestException(`Document type must be one of: ${ALLOWED_DOCUMENT_TYPES.join(', ')}`);
     }
     if (!filePath?.trim() || !fileName?.trim()) {
       throw new BadRequestException('filePath and fileName are required');

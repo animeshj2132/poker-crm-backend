@@ -955,6 +955,31 @@ export class AuthService {
         throw new NotFoundException('Player not found');
       }
 
+      // Require Aadhaar front + back (or legacy single government_id) and PAN document before PAN submission.
+      const kycDocs = Array.isArray((player as any).kycDocuments) ? (player as any).kycDocuments : [];
+      const hasPanCardDoc = kycDocs.some((d: any) => {
+        const t = String(d?.documentType || d?.type || '').toLowerCase();
+        return t === 'pan_card' && !!(d?.fileUrl || d?.url);
+      });
+      const hasAadhaarFront = kycDocs.some((d: any) => {
+        const t = String(d?.documentType || d?.type || '').toLowerCase();
+        return t === 'aadhaar_front' && !!(d?.fileUrl || d?.url);
+      });
+      const hasAadhaarBack = kycDocs.some((d: any) => {
+        const t = String(d?.documentType || d?.type || '').toLowerCase();
+        return t === 'aadhaar_back' && !!(d?.fileUrl || d?.url);
+      });
+      const hasLegacyGovId = kycDocs.some((d: any) => {
+        const t = String(d?.documentType || d?.type || '').toLowerCase();
+        return t === 'government_id' && !!(d?.fileUrl || d?.url);
+      });
+      const hasAadhaarRequirement = (hasAadhaarFront && hasAadhaarBack) || hasLegacyGovId;
+      if (!hasAadhaarRequirement || !hasPanCardDoc) {
+        throw new BadRequestException(
+          'Please upload Aadhaar Front, Aadhaar Back, and PAN Card documents before submitting PAN number.'
+        );
+      }
+
       // Check if PAN card is already used by another player in the same club
       const existingPlayer = await this.playersRepo.findOne({
         where: {

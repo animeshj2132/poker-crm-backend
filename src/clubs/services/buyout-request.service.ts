@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { BuyOutRequest, BuyOutRequestStatus } from '../entities/buyout-request.entity';
@@ -8,6 +8,7 @@ import { RakeCollection } from '../entities/rake-collection.entity';
 import { Table } from '../entities/table.entity';
 import { ApproveBuyOutDto } from '../dto/approve-buyout.dto';
 import { RejectBuyOutDto } from '../dto/reject-buyout.dto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class BuyOutRequestService {
@@ -19,6 +20,7 @@ export class BuyOutRequestService {
     @InjectRepository(FinancialTransaction)
     private transactionRepo: Repository<FinancialTransaction>,
     private dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async getPendingBuyOutRequests(clubId: string) {
@@ -177,6 +179,18 @@ export class BuyOutRequestService {
 
       await queryRunner.commitTransaction();
 
+      if (this.eventsService) {
+        this.eventsService.emitBuyRequestStatusChange(playerId, clubId, 'buyout', {
+          id: requestId,
+          status: 'approved',
+          processedAt: new Date(),
+          approvedAmount: finalAmount,
+        });
+        this.eventsService.emitBuyOutRequestChanged(clubId);
+        this.eventsService.emitTransactionCreated(clubId, playerId);
+        this.eventsService.emitBalanceUpdated(clubId, playerId);
+      }
+
       return {
         success: true,
         message: 'Buy-out approved and balance settled',
@@ -218,6 +232,16 @@ export class BuyOutRequestService {
     request.rejectionReason = dto.reason;
 
     await this.buyOutRequestRepo.save(request);
+
+    if (this.eventsService) {
+      this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyout', {
+        id: request.id,
+        status: request.status,
+        processedAt: request.processedAt,
+        rejectionReason: request.rejectionReason,
+      });
+      this.eventsService.emitBuyOutRequestChanged(clubId);
+    }
 
     return {
       success: true,

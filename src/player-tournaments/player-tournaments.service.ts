@@ -3,6 +3,9 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Inject,
+  Optional,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual, DataSource } from 'typeorm';
@@ -10,6 +13,7 @@ import { Player } from '../clubs/entities/player.entity';
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../clubs/entities/financial-transaction.entity';
 import { ClubsService } from '../clubs/clubs.service';
 import { AuthService } from '../auth/auth.service';
+import { EventsService } from '../events/events.service';
 
 // Define Tournament interface
 interface Tournament {
@@ -41,6 +45,7 @@ export class PlayerTournamentsService {
     private readonly dataSource: DataSource,
     private readonly clubsService: ClubsService,
     private readonly authService: AuthService,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   /**
@@ -484,6 +489,15 @@ export class PlayerTournamentsService {
 
         await queryRunner.commitTransaction();
 
+        if (this.eventsService) {
+          this.eventsService.emitTournamentUpdated(clubId);
+          this.eventsService.emitTournamentPlayerUpdated(clubId, playerId);
+          if (totalRequired > 0) {
+            this.eventsService.emitTransactionCreated(clubId, playerId);
+            this.eventsService.emitBalanceUpdated(clubId, playerId);
+          }
+        }
+
         return {
           success: true,
           message: totalRequired > 0
@@ -636,6 +650,15 @@ export class PlayerTournamentsService {
         }
 
         await queryRunner.commitTransaction();
+
+        if (this.eventsService) {
+          this.eventsService.emitTournamentUpdated(clubId);
+          this.eventsService.emitTournamentPlayerUpdated(clubId, playerId);
+          if (buyInAmount > 0) {
+            this.eventsService.emitTransactionCreated(clubId, playerId);
+            this.eventsService.emitBalanceUpdated(clubId, playerId);
+          }
+        }
 
         return {
           success: true,

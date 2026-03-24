@@ -5,6 +5,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './events/redis-io.adapter';
 import * as http from 'http';
 import * as https from 'https';
+import { getAllowedOrigins } from './common/security/cors-origins';
+import { jwtContextMiddleware } from './common/security/jwt-context.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -15,28 +17,7 @@ async function bootstrap() {
   await redisIoAdapter.connectToRedis();
   app.useWebSocketAdapter(redisIoAdapter);
   
-  // Build allowed origins from environment variables
-  const allowedOrigins = [
-    // Player App (Mobile/PWA)
-    process.env.PLAYER_APP_URL || 'http://localhost:5173',
-    
-    // Website (Main site)
-    process.env.WEBSITE_URL || 'http://localhost:3000',
-    'http://localhost:3000',
-    'http://localhost:3001',
-    
-    // Development ports (for local testing)
-    'https://localhost',
-    'capacitor://localhost',
-    'http://localhost',
-    'https://localhost:3000'
-  ];
-
-  // Add custom origins from environment (comma-separated)
-  if (process.env.ALLOWED_ORIGINS) {
-    const customOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
-    allowedOrigins.push(...customOrigins);
-  }
+  const allowedOrigins = getAllowedOrigins();
 
   console.log('🔐 CORS enabled for origins:', allowedOrigins.slice(0, 2)); // Log first 2 (app + website)
   
@@ -45,8 +26,11 @@ async function bootstrap() {
     origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-user-id', 'x-tenant-id', 'x-club-id', 'x-player-id']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-tenant-id', 'x-club-id', 'x-player-id']
   });
+
+  // Hydrate legacy request headers from JWT claims for end-to-end compatibility.
+  app.use(jwtContextMiddleware);
   
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })

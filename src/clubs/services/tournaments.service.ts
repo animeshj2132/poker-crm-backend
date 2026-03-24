@@ -670,6 +670,7 @@ export class TournamentsService implements OnModuleInit {
       const started = result[0];
       // Schedule precise blind increases from the first level boundary
       this.scheduleNextBlindIncrease({ ...started, structure: JSON.parse(JSON.stringify(structure)) });
+      if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
       return started;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -707,6 +708,7 @@ export class TournamentsService implements OnModuleInit {
     if (existing) { clearTimeout(existing); this.blindTimers.delete(tournamentId); }
 
     console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused (blind timer cancelled)`);
+    if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
     return result[0];
   }
 
@@ -742,6 +744,7 @@ export class TournamentsService implements OnModuleInit {
     this.scheduleNextBlindIncrease(resumed);
 
     console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s) — blind timer rescheduled`);
+    if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
     return resumed;
   }
 
@@ -774,6 +777,7 @@ export class TournamentsService implements OnModuleInit {
     if (stopped) { clearTimeout(stopped); this.blindTimers.delete(tournamentId); }
 
     console.log(`🛑 [TOURNAMENT STOP] Tournament ${tournament.name} stopped (forced end without winners)`);
+    if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
     return result[0];
   }
 

@@ -549,6 +549,116 @@ export class EventsService {
       }
     });
   }
+
+  // ==================== CLUB-WIDE BROADCAST HELPER ====================
+
+  private emitToClub(clubId: string, event: string, payload: any) {
+    const clients = this.clubSubscriptions.get(clubId);
+    if (clients && clients.size > 0) {
+      clients.forEach(clientId => this.server.to(clientId).emit(event, payload));
+      this.logger.log(`Emitted ${event} to club ${clubId} (${clients.size} clients)`);
+    }
+  }
+
+  // ==================== FINANCIAL TRANSACTION EVENTS ====================
+
+  emitTransactionCreated(clubId: string, playerId: string) {
+    this.emitToRecipientWithGuarantee('player', playerId, 'transaction:new', { clubId, playerId });
+    this.emitToClub(clubId, 'transaction:new', { clubId, playerId });
+  }
+
+  emitBalanceUpdated(clubId: string, playerId: string) {
+    this.emitToRecipientWithGuarantee('player', playerId, 'balance:updated', { clubId, playerId });
+    this.emitToClub(clubId, 'player:updated', { clubId, playerId });
+  }
+
+  // ==================== KYC / PLAYER EVENTS ====================
+
+  emitKycStatusChanged(clubId: string, playerId: string, kycStatus: string) {
+    this.emitToRecipientWithGuarantee('player', playerId, 'kyc:status-changed', { clubId, playerId, kycStatus });
+    this.emitToClub(clubId, 'player:updated', { clubId, playerId });
+  }
+
+  emitPlayerUpdated(clubId: string, playerId?: string) {
+    this.emitToClub(clubId, 'player:updated', { clubId, playerId });
+  }
+
+  // ==================== OFFERS EVENTS ====================
+
+  emitOfferUpdated(clubId: string) {
+    this.emitToClub(clubId, 'offers:updated', { clubId });
+  }
+
+  // ==================== NOTIFICATION EVENTS ====================
+
+  emitNotificationCreated(clubId: string, playerId?: string) {
+    if (playerId) {
+      this.emitToRecipientWithGuarantee('player', playerId, 'notification:new', { clubId, playerId });
+    }
+    this.emitToClub(clubId, 'notification:new', { clubId, playerId });
+  }
+
+  emitNotificationReadStatusChanged(clubId: string) {
+    this.emitToClub(clubId, 'notification:read-status-changed', { clubId });
+  }
+
+  // ==================== PROFILE CHANGE REQUEST EVENTS ====================
+
+  emitProfileChangeRequestUpdated(
+    clubId: string,
+    playerId: string,
+    data?: { status?: string; fieldName?: string; newValue?: string }
+  ) {
+    this.emitToRecipientWithGuarantee('player', playerId, 'profile-request:updated', { clubId, playerId, ...data });
+    this.emitToClub(clubId, 'profile-request:updated', { clubId, playerId, ...data });
+  }
+
+  // ==================== LEAVE APPLICATION EVENTS ====================
+
+  emitLeaveApplicationChanged(clubId: string) {
+    this.emitToClub(clubId, 'leave:updated', { clubId });
+  }
+
+  // ==================== TOURNAMENT EVENTS ====================
+
+  emitTournamentUpdated(clubId: string) {
+    this.emitToClub(clubId, 'tournament:updated', { clubId });
+  }
+
+  emitTournamentPlayerUpdated(clubId: string, playerId?: string) {
+    if (playerId) {
+      this.emitToRecipientWithGuarantee('player', playerId, 'tournament:player-updated', { clubId, playerId });
+    }
+    this.emitToClub(clubId, 'tournament:player-updated', { clubId, playerId });
+  }
+
+  // ==================== FNB EVENTS ====================
+
+  emitFnbOrderUpdated(clubId: string) {
+    this.emitToClub(clubId, 'fnb:order-updated', { clubId });
+  }
+
+  // ==================== STAFF EVENTS ====================
+
+  emitStaffUpdated(clubId: string) {
+    this.emitToClub(clubId, 'staff:updated', { clubId });
+  }
+
+  // ==================== BUY-IN / BUY-OUT STATUS CHANGE EVENTS (club-wide) ====================
+
+  emitBuyInRequestChanged(clubId: string) {
+    this.emitToClub(clubId, 'buyin:updated', { clubId });
+  }
+
+  emitBuyOutRequestChanged(clubId: string) {
+    this.emitToClub(clubId, 'buyout:updated', { clubId });
+  }
+
+  // ==================== CREDIT REQUEST EVENTS (club-wide new request signal) ====================
+
+  emitCreditRequestCreated(clubId: string, playerId: string) {
+    this.emitToClub(clubId, 'credit:new-request', { clubId, playerId });
+  }
 }
 
 

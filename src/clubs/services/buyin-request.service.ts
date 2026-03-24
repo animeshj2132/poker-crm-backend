@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { BuyInRequest, BuyInRequestStatus } from '../entities/buyin-request.entity';
@@ -6,6 +6,7 @@ import { Player } from '../entities/player.entity';
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
 import { ApproveBuyInDto } from '../dto/approve-buyin.dto';
 import { RejectBuyInDto } from '../dto/reject-buyin.dto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class BuyInRequestService {
@@ -17,6 +18,7 @@ export class BuyInRequestService {
     @InjectRepository(FinancialTransaction)
     private transactionRepo: Repository<FinancialTransaction>,
     private dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async getPendingBuyInRequests(clubId: string) {
@@ -121,6 +123,18 @@ export class BuyInRequestService {
 
       await queryRunner.commitTransaction();
 
+      if (this.eventsService) {
+        this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyin', {
+          id: request.id,
+          status: request.status,
+          processedAt: request.processedAt,
+          approvedAmount: amount,
+        });
+        this.eventsService.emitBuyInRequestChanged(clubId);
+        this.eventsService.emitTransactionCreated(clubId, request.player.id);
+        this.eventsService.emitBalanceUpdated(clubId, request.player.id);
+      }
+
       return {
         success: true,
         message: 'Buy-in approved - table balance updated',
@@ -160,6 +174,16 @@ export class BuyInRequestService {
     request.rejectionReason = dto.reason;
 
     await this.buyInRequestRepo.save(request);
+
+    if (this.eventsService) {
+      this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyin', {
+        id: request.id,
+        status: request.status,
+        processedAt: request.processedAt,
+        rejectionReason: request.rejectionReason,
+      });
+      this.eventsService.emitBuyInRequestChanged(clubId);
+    }
 
     return {
       success: true,

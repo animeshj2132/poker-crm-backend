@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Inject, Optional, NotFoundException, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
@@ -6,6 +6,7 @@ import { Club } from '../club.entity';
 import { Player } from '../entities/player.entity';
 import { EditTransactionDto } from '../dto/edit-transaction.dto';
 import { CancelTransactionDto } from '../dto/cancel-transaction.dto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class FinancialTransactionsService {
@@ -13,6 +14,7 @@ export class FinancialTransactionsService {
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
     @InjectRepository(Player) private readonly playerRepo: Repository<Player>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async create(clubId: string, data: {
@@ -86,7 +88,12 @@ export class FinancialTransactionsService {
 
     console.log(`💰 [TRANSACTION] Creating ${data.type} transaction with status: ${shouldAutoComplete ? 'COMPLETED' : 'PENDING'}`);
 
-    return this.transactionsRepo.save(transaction);
+    const saved = await this.transactionsRepo.save(transaction);
+    if (this.eventsService) {
+      this.eventsService.emitTransactionCreated(clubId, data.playerId.trim());
+      this.eventsService.emitBalanceUpdated(clubId, data.playerId.trim());
+    }
+    return saved;
   }
 
   async findAll(clubId: string, status?: TransactionStatus) {

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Staff, StaffRole, StaffStatus } from '../entities/staff.entity';
@@ -8,6 +8,7 @@ import { UserClubRole } from '../../users/user-club-role.entity';
 import { ClubRole } from '../../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class StaffManagementService {
@@ -22,6 +23,7 @@ export class StaffManagementService {
     private userClubRoleRepo: Repository<UserClubRole>,
     @InjectDataSource()
     private dataSource: DataSource,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   // Map StaffRole to ClubRole
@@ -262,6 +264,9 @@ export class StaffManagementService {
     }
 
     // Return staff data with temporary password (only returned once)
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
     return {
       ...savedStaff,
       tempPasswordPlainText: tempPassword, // Only included in creation response
@@ -388,6 +393,9 @@ export class StaffManagementService {
     // Update staff
     Object.assign(staff, data);
     const updated = await this.staffRepo.save(staff);
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
 
     // Remove sensitive data using destructuring
     const { passwordHash, ...staffWithoutPassword } = updated;
@@ -408,6 +416,9 @@ export class StaffManagementService {
     staff.suspendedBy = suspendedBy;
 
     const updated = await this.staffRepo.save(staff);
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
 
     // Remove sensitive data using destructuring
     const { passwordHash, ...staffWithoutPassword } = updated;
@@ -428,6 +439,9 @@ export class StaffManagementService {
     staff.suspendedBy = null;
 
     const updated = await this.staffRepo.save(staff);
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
 
     // Remove sensitive data using destructuring
     const { passwordHash, ...staffWithoutPassword } = updated;
@@ -438,6 +452,9 @@ export class StaffManagementService {
   async deleteStaff(clubId: string, staffId: string) {
     const staff = await this.getStaffEntity(clubId, staffId);
     await this.staffRepo.remove(staff);
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
     return { message: 'Staff member deleted successfully' };
   }
 
@@ -489,7 +506,11 @@ export class StaffManagementService {
 
     staff.baseSalary = baseSalary;
     staff.salaryType = salaryType || staff.salaryType;
-    return await this.staffRepo.save(staff);
+    const updated = await this.staffRepo.save(staff);
+    if (this.eventsService) {
+      this.eventsService.emitStaffUpdated(clubId);
+    }
+    return updated;
   }
 }
 

@@ -124,6 +124,7 @@ import { CreateLeavePolicyDto } from './dto/create-leave-policy.dto';
 import { UpdateLeavePolicyDto } from './dto/update-leave-policy.dto';
 import { CreateLeaveApplicationDto } from './dto/create-leave-application.dto';
 import { ApproveRejectLeaveDto } from './dto/approve-reject-leave.dto';
+import { EventsService } from '../events/events.service';
 
 @Controller('clubs')
 export class ClubsController {
@@ -158,6 +159,7 @@ export class ClubsController {
     private readonly leaveManagementService: LeaveManagementService,
     private readonly rosterManagementService: RosterManagementService,
     private readonly playerFieldUpdateService: PlayerFieldUpdateService,
+    private readonly eventsService: EventsService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>,
@@ -4343,7 +4345,7 @@ export class ClubsController {
   // ========== Waitlist & Seating APIs ==========
 
   @Post(':id/waitlist')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createWaitlistEntry(
@@ -4533,7 +4535,7 @@ export class ClubsController {
   }
 
   @Get(':id/waitlist/:entryId')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   async getWaitlistEntry(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -5917,7 +5919,7 @@ export class ClubsController {
   }
 
   @Put(':id/tables/:tableId')
-  @Roles(TenantRole.SUPER_ADMIN)
+  @Roles(GlobalRole.MASTER_ADMIN, TenantRole.SUPER_ADMIN, ClubRole.SUPER_ADMIN)
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async updateTable(
     @Headers('x-tenant-id') tenantId: string,
@@ -9610,6 +9612,7 @@ export class ClubsController {
           kycApprovedAt: new Date()
         }
       );
+      this.eventsService.emitKycStatusChanged(clubId, playerId, 'approved');
 
       // Audit log: Approve player
       try {
@@ -9736,6 +9739,7 @@ export class ClubsController {
           notes: dto.reason
         }
       );
+      this.eventsService.emitKycStatusChanged(clubId, playerId, 'rejected');
 
       // Audit log: Reject player
       try {

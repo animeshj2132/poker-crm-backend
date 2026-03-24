@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
 import { LeavePolicy } from '../entities/leave-policy.entity';
@@ -8,6 +8,7 @@ import { CreateLeavePolicyDto } from '../dto/create-leave-policy.dto';
 import { UpdateLeavePolicyDto } from '../dto/update-leave-policy.dto';
 import { CreateLeaveApplicationDto } from '../dto/create-leave-application.dto';
 import { ApproveRejectLeaveDto } from '../dto/approve-reject-leave.dto';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class LeaveManagementService {
@@ -17,7 +18,8 @@ export class LeaveManagementService {
     @InjectRepository(LeaveApplication)
     private readonly leaveApplicationRepo: Repository<LeaveApplication>,
     @InjectRepository(Staff)
-    private readonly staffRepo: Repository<Staff>
+    private readonly staffRepo: Repository<Staff>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   // ========== Leave Policy Management ==========
@@ -177,7 +179,11 @@ export class LeaveManagementService {
       status: LeaveStatus.PENDING
     });
 
-    return this.leaveApplicationRepo.save(application);
+    const saved = await this.leaveApplicationRepo.save(application);
+    if (this.eventsService) {
+      this.eventsService.emitLeaveApplicationChanged(clubId);
+    }
+    return saved;
   }
 
   async getStaffLeaveApplications(
@@ -442,7 +448,11 @@ export class LeaveManagementService {
     application.approvedBy = approverId;
     application.approvedAt = new Date();
 
-    return this.leaveApplicationRepo.save(application);
+    const approvedApp = await this.leaveApplicationRepo.save(application);
+    if (this.eventsService) {
+      this.eventsService.emitLeaveApplicationChanged(clubId);
+    }
+    return approvedApp;
   }
 
   async rejectLeaveApplication(
@@ -484,7 +494,11 @@ export class LeaveManagementService {
     application.rejectionReason = dto.rejectionReason || 'No reason provided';
     application.rejectedAt = new Date();
 
-    return this.leaveApplicationRepo.save(application);
+    const rejectedApp = await this.leaveApplicationRepo.save(application);
+    if (this.eventsService) {
+      this.eventsService.emitLeaveApplicationChanged(clubId);
+    }
+    return rejectedApp;
   }
 
   async getLeaveBalance(clubId: string, staffId: string) {
