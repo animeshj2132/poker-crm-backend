@@ -12,6 +12,27 @@ import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class BuyOutRequestService {
+  /**
+   * buyout_requests timestamps are stored as timestamp-without-timezone in DB.
+   * Treat them as UTC to avoid IST/UI drift.
+   */
+  private toUtcIso(value: Date | string | null | undefined): string | null {
+    if (!value) return null;
+    const src = value instanceof Date ? value : new Date(value);
+    if (!(src instanceof Date) || Number.isNaN(src.getTime())) return null;
+
+    const utcDate = new Date(Date.UTC(
+      src.getFullYear(),
+      src.getMonth(),
+      src.getDate(),
+      src.getHours(),
+      src.getMinutes(),
+      src.getSeconds(),
+      src.getMilliseconds(),
+    ));
+    return utcDate.toISOString();
+  }
+
   constructor(
     @InjectRepository(BuyOutRequest)
     private buyOutRequestRepo: Repository<BuyOutRequest>,
@@ -43,9 +64,9 @@ export class BuyOutRequestService {
       seatNumber: req.seatNumber,
       requestedAmount: req.requestedAmount ? Number(req.requestedAmount) : 0,
       currentTableBalance: req.currentTableBalance ? Number(req.currentTableBalance) : null,
-      requestedAt: req.requestedAt,
+      requestedAt: this.toUtcIso(req.requestedAt),
       status: req.status,
-      callTimeStartedAt: req.callTimeStartedAt,
+      callTimeStartedAt: this.toUtcIso(req.callTimeStartedAt),
     }));
   }
 

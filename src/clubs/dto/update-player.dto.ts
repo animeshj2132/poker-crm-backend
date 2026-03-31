@@ -18,8 +18,13 @@ export class UpdatePlayerDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(6)
   playerId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(6)
+  tiltId?: string;
 
   @IsOptional()
   @IsString()

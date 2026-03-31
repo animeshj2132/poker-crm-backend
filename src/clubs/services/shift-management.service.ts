@@ -47,6 +47,25 @@ export class ShiftManagementService {
       );
     }
 
+    const incomingDay = new Date(createShiftDto.shiftDate);
+    const y = incomingDay.getFullYear();
+    const mo = incomingDay.getMonth();
+    const day = incomingDay.getDate();
+    const dayStart = new Date(y, mo, day, 0, 0, 0, 0);
+    const dayEnd = new Date(y, mo, day, 23, 59, 59, 999);
+    const sameDayShift = await this.shiftRepo.findOne({
+      where: {
+        staffId: createShiftDto.staffId,
+        clubId,
+        shiftDate: Between(dayStart, dayEnd),
+      },
+    });
+    if (sameDayShift) {
+      throw new BadRequestException(
+        'This staff member already has a shift on that date. Edit or delete the existing shift first.',
+      );
+    }
+
     // Validate that shift end time is after start time
     const startTime = new Date(createShiftDto.shiftStartTime);
     const endTime = new Date(createShiftDto.shiftEndTime);

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual, Not, IsNull, LessThan } from 'typeorm';
 import { FnbOrder, OrderStatus } from '../entities/fnb-order.entity';
@@ -19,6 +19,7 @@ import { CreateSupplierDto } from '../dto/create-supplier.dto';
 import { UpdateSupplierDto } from '../dto/update-supplier.dto';
 import { CreateFnbOrderDto } from '../dto/create-fnb-order.dto';
 import { UpdateFnbOrderDto } from '../dto/update-fnb-order.dto';
+import { EventsService } from '../../events/events.service';
 
 /**
  * Enhanced FNB Service with Kitchen Station and Advanced Order Management
@@ -41,7 +42,12 @@ export class FnbEnhancedService {
     private readonly supplierRepo: Repository<Supplier>,
     @InjectRepository(Club)
     private readonly clubRepo: Repository<Club>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
+
+  private notifyFnbOrderUpdated(clubId: string) {
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
+  }
 
   // ==================== MENU ITEMS ====================
 
@@ -212,7 +218,9 @@ export class FnbEnhancedService {
       club
     });
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async getOrders(
@@ -294,7 +302,9 @@ export class FnbEnhancedService {
       }
     }
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async cancelOrder(clubId: string, orderId: string, reason: string, cancelledBy: string): Promise<FnbOrder> {
@@ -331,7 +341,9 @@ export class FnbEnhancedService {
       }
     }
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async generateInvoice(clubId: string, orderId: string): Promise<{ invoiceNumber: string, order: FnbOrder }> {
@@ -345,6 +357,7 @@ export class FnbEnhancedService {
       order.invoiceNumber = await this.generateInvoiceNumber(clubId);
       order.invoiceGeneratedAt = new Date();
       await this.orderRepo.save(order);
+      this.notifyFnbOrderUpdated(clubId);
     }
 
     return {
@@ -628,7 +641,9 @@ export class FnbEnhancedService {
     station.ordersPending += 1;
     await this.stationRepo.save(station);
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async rejectOrder(
@@ -679,7 +694,9 @@ export class FnbEnhancedService {
     ];
 
     // No order number for rejected orders
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   // ==================== ORDER STATUS UPDATES WITH STATION TRACKING ====================
@@ -708,7 +725,9 @@ export class FnbEnhancedService {
       }
     ];
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async markOrderDelivered(clubId: string, orderId: string, updatedBy: string): Promise<FnbOrder> {
@@ -750,7 +769,9 @@ export class FnbEnhancedService {
       }
     }
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    this.notifyFnbOrderUpdated(clubId);
+    return saved;
   }
 
   // ==================== STATION STATISTICS ====================

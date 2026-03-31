@@ -23,6 +23,13 @@ const ALLOWED_DOCUMENT_TYPES = [
   'profile_photo',
   'other',
 ] as const;
+const ALLOWED_DOCUMENT_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'] as const;
+const ALLOWED_DOCUMENT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'pdf'] as const;
+
+function hasAllowedDocumentExtension(fileName: string): boolean {
+  const ext = (fileName.split('.').pop() || '').toLowerCase();
+  return (ALLOWED_DOCUMENT_EXTENSIONS as readonly string[]).includes(ext);
+}
 
 @Injectable()
 export class PlayerDocumentsService {
@@ -116,6 +123,12 @@ export class PlayerDocumentsService {
 
       // Upload file to Supabase (bucket "kyc-docs" must exist in Supabase Storage)
       if (file && file.buffer) {
+        if (!(ALLOWED_DOCUMENT_MIME_TYPES as readonly string[]).includes((file.mimetype || '').toLowerCase())) {
+          throw new BadRequestException('Only JPG, PNG, WEBP, and PDF documents are allowed');
+        }
+        if (file.originalname && !hasAllowedDocumentExtension(file.originalname)) {
+          throw new BadRequestException('Unsupported document extension. Use JPG, PNG, WEBP, or PDF');
+        }
         const timestamp = Date.now();
         const fileExtension = file.originalname ? file.originalname.split('.').pop() : 'pdf';
         const fileName = `${timestamp}-${Math.random().toString(36).substr(2, 9)}.${fileExtension}`;
@@ -225,6 +238,15 @@ export class PlayerDocumentsService {
     }
     if (!filePath?.trim() || !fileName?.trim()) {
       throw new BadRequestException('filePath and fileName are required');
+    }
+    if (!hasAllowedDocumentExtension(fileName.trim())) {
+      throw new BadRequestException('Unsupported document extension. Use JPG, PNG, WEBP, or PDF');
+    }
+    if (
+      mimeType &&
+      !(ALLOWED_DOCUMENT_MIME_TYPES as readonly string[]).includes(mimeType.toLowerCase())
+    ) {
+      throw new BadRequestException('Only JPG, PNG, WEBP, and PDF documents are allowed');
     }
     const player = await this.playersRepo.findOne({
       where: { id: playerId, club: { id: clubId } },

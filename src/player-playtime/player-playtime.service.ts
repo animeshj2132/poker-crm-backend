@@ -18,6 +18,24 @@ import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class PlayerPlaytimeService {
+  /**
+   * Parse DB timestamp-without-timezone as UTC instant.
+   */
+  private parseNaiveUtcDate(value: Date | string | null | undefined): Date | null {
+    if (!value) return null;
+    const src = value instanceof Date ? value : new Date(value);
+    if (!(src instanceof Date) || Number.isNaN(src.getTime())) return null;
+    return new Date(Date.UTC(
+      src.getFullYear(),
+      src.getMonth(),
+      src.getDate(),
+      src.getHours(),
+      src.getMinutes(),
+      src.getSeconds(),
+      src.getMilliseconds(),
+    ));
+  }
+
   constructor(
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
@@ -138,6 +156,23 @@ export class PlayerPlaytimeService {
       
       const activeBuyOutRequest = buyOutRequest && buyOutRequest.length > 0 ? buyOutRequest[0] : null;
 
+      // Also fetch latest processed/request status so player can see rejected updates in-session.
+      const seatedAtForSession = seatedEntry.seatedAt || seatedEntry.createdAt || new Date(0);
+      const fromTimeForSession = new Date(new Date(seatedAtForSession).getTime() - 30000);
+      const latestBuyOutRequestRows = await this.dataSource.query(
+        `SELECT id, status, rejection_reason, processed_at, updated_at, created_at
+         FROM buyout_requests
+         WHERE player_id = $1 AND club_id = $2
+           AND table_number = $3
+           AND created_at >= $4
+         ORDER BY COALESCE(processed_at, updated_at, created_at) DESC
+         LIMIT 1`,
+        [player.id, clubId, seatedEntry.tableNumber, fromTimeForSession]
+      );
+      const latestBuyOutRequest = latestBuyOutRequestRows?.[0] || null;
+      const latestBuyOutStatus = String(latestBuyOutRequest?.status || '').toLowerCase();
+      const buyOutRejected = latestBuyOutStatus === 'rejected';
+
       // Calculate session state
       const minutesPlayed = Math.floor(sessionDuration / 60);
       
@@ -154,7 +189,8 @@ export class PlayerPlaytimeService {
       
       // Calculate call time remaining if active
       if (callTimeActive && activeBuyOutRequest.call_time_started_at) {
-        const callTimeStartedAt = new Date(activeBuyOutRequest.call_time_started_at).getTime();
+        const parsedCallTime = this.parseNaiveUtcDate(activeBuyOutRequest.call_time_started_at);
+        const callTimeStartedAt = parsedCallTime ? parsedCallTime.getTime() : new Date(activeBuyOutRequest.call_time_started_at).getTime();
         const now = Date.now();
         const elapsedMinutes = (now - callTimeStartedAt) / (1000 * 60);
         callTimeRemaining = Math.max(0, callTimeDuration - elapsedMinutes);
@@ -172,6 +208,9 @@ export class PlayerPlaytimeService {
       const canCashOut = false; // TODO: Implement cashout logic
 
       // Build session object
+      const callTimeStartedUtc = this.parseNaiveUtcDate(activeBuyOutRequest?.call_time_started_at);
+      const buyOutProcessedUtc = this.parseNaiveUtcDate(latestBuyOutRequest?.processed_at || latestBuyOutRequest?.updated_at || null);
+
       const session = {
         id: seatedEntry.id,
         playerId: player.id,
@@ -207,12 +246,19 @@ export class PlayerPlaytimeService {
         call_time_window_minutes: callTimeDuration,
         call_time_play_period_minutes: callTimeDuration,
         cashout_window_minutes: cashOutWindow,
-        call_time_started: activeBuyOutRequest?.call_time_started_at || null,
-        call_time_ends: activeBuyOutRequest?.call_time_started_at 
-          ? new Date(new Date(activeBuyOutRequest.call_time_started_at).getTime() + callTimeDuration * 60 * 1000).toISOString()
+        call_time_started: callTimeStartedUtc ? callTimeStartedUtc.toISOString() : null,
+        call_time_ends: callTimeStartedUtc
+          ? new Date(callTimeStartedUtc.getTime() + callTimeDuration * 60 * 1000).toISOString()
           : null,
         cashout_window_active: false,
         cashout_window_ends: null,
+
+        // Buy-out request latest status (for real-time player messaging)
+        buyOutRequestId: latestBuyOutRequest?.id || null,
+        buyOutStatus: latestBuyOutRequest?.status || null,
+        buyOutRejected,
+        buyOutRejectionReason: buyOutRejected ? (latestBuyOutRequest?.rejection_reason || null) : null,
+        buyOutProcessedAt: buyOutProcessedUtc ? buyOutProcessedUtc.toISOString() : null,
       };
 
       console.log('✅ [LIVE SESSION] Returning active session for player:', {
@@ -370,11 +416,33 @@ export class PlayerPlaytimeService {
         throw new ConflictException('Call time already requested. Please wait for admin approval.');
       }
 
+      // Snapshot current session table balance so buy-out review modal has accurate value.
+      const seatedAt = seatedEntry.seatedAt || seatedEntry.createdAt || new Date(0);
+      const fromTime = new Date(new Date(seatedAt).getTime() - 30000);
+      const tableBalanceResult = await this.dataSource.query(
+        `SELECT COALESCE(SUM(
+          CASE
+            WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
+            WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
+            ELSE 0
+          END
+        ), 0) as table_balance
+        FROM financial_transactions
+        WHERE club_id = $1
+          AND player_id = $2
+          AND UPPER(status) = 'COMPLETED'
+          AND created_at >= $3`,
+        [clubId, playerId, fromTime]
+      );
+      const currentTableBalance = tableBalanceResult?.length > 0
+        ? Math.max(0, Number(tableBalanceResult[0].table_balance || 0))
+        : 0;
+
       await this.dataSource.query(
         `INSERT INTO buyout_requests 
-        (club_id, player_id, table_id, table_number, seat_number, status, call_time_started_at, requested_at, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), NOW(), NOW(), NOW())`,
-        [clubId, playerId, actualTableId, seatedEntry.tableNumber, seatedEntry.requestedSeat || seatedEntry.tableNumber]
+        (club_id, player_id, table_id, table_number, seat_number, current_table_balance, status, call_time_started_at, requested_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW(), NOW(), NOW(), NOW())`,
+        [clubId, playerId, actualTableId, seatedEntry.tableNumber, seatedEntry.requestedSeat || seatedEntry.tableNumber, currentTableBalance]
       );
 
       // Emit WebSocket event to ALL staff subscribed to this club
@@ -384,6 +452,7 @@ export class PlayerPlaytimeService {
           player_name: player.name,
           table_number: seatedEntry.tableNumber,
           seat_number: seatedEntry.requestedSeat,
+          current_table_balance: currentTableBalance,
           call_time_started_at: new Date().toISOString(),
           requested_at: new Date().toISOString(),
           status: 'pending',

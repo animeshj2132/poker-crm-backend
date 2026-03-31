@@ -14,14 +14,21 @@ export function jwtContextMiddleware(req: MutableRequest, _res: Response, next: 
     const payload = verifyAppJwt(token);
     req.auth = payload;
 
-    // Hydrate legacy headers from JWT so existing controllers keep working.
+    // Enforce JWT claims as source of truth for legacy identity headers.
+    // Never trust client-supplied x-*-id headers when a bearer token is present.
     if (payload.type === 'staff') {
-      req.headers['x-user-id'] = req.headers['x-user-id'] || payload.sub;
-      if (payload.clubId) req.headers['x-club-id'] = req.headers['x-club-id'] || payload.clubId;
-      if (payload.tenantId) req.headers['x-tenant-id'] = req.headers['x-tenant-id'] || payload.tenantId;
+      req.headers['x-user-id'] = payload.sub;
+      if (payload.clubId) req.headers['x-club-id'] = payload.clubId;
+      else delete req.headers['x-club-id'];
+      if (payload.tenantId) req.headers['x-tenant-id'] = payload.tenantId;
+      else delete req.headers['x-tenant-id'];
+      delete req.headers['x-player-id'];
     } else {
-      req.headers['x-player-id'] = req.headers['x-player-id'] || payload.sub;
-      if (payload.clubId) req.headers['x-club-id'] = req.headers['x-club-id'] || payload.clubId;
+      req.headers['x-player-id'] = payload.sub;
+      if (payload.clubId) req.headers['x-club-id'] = payload.clubId;
+      else delete req.headers['x-club-id'];
+      delete req.headers['x-user-id'];
+      delete req.headers['x-tenant-id'];
     }
   } catch {
     // Guard is responsible for rejecting invalid JWTs on protected routes.

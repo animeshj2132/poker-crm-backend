@@ -7,6 +7,20 @@ import * as http from 'http';
 import * as https from 'https';
 import { getAllowedOrigins } from './common/security/cors-origins';
 import { jwtContextMiddleware } from './common/security/jwt-context.middleware';
+// Supabase stores all timestamps in UTC as TIMESTAMP WITHOUT TIME ZONE.
+// The pg driver parses these as local time (Node process timezone) which causes
+// incorrect timestamps when the server runs in a non-UTC timezone (e.g. IST).
+// Force UTC interpretation by treating naive timestamp strings as UTC.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pgTypes = require('pg').types;
+pgTypes.setTypeParser(1114 /* TIMESTAMP WITHOUT TIME ZONE */, (str: string) => {
+  if (!str) return null;
+  return new Date(`${str.replace(' ', 'T')}Z`);
+});
+pgTypes.setTypeParser(1184 /* TIMESTAMPTZ */, (str: string) => {
+  if (!str) return null;
+  return new Date(str);
+});
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

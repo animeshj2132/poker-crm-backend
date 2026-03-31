@@ -14,6 +14,7 @@ import { ChatSession, ChatSessionType, ChatSessionStatus } from '../clubs/entiti
 import { ChatMessage, MessageSenderType } from '../clubs/entities/chat-message.entity';
 import { Club } from '../clubs/club.entity';
 import { EventsService } from '../events/events.service';
+import { playerFacingStaffSenderLabel } from './player-chat-display.util';
 
 @Injectable()
 export class PlayerChatService {
@@ -73,7 +74,8 @@ export class PlayerChatService {
           messages: [],
           total: 0,
           limit,
-          offset
+          offset,
+          session: null,
         };
       }
 
@@ -95,13 +97,21 @@ export class PlayerChatService {
           id: msg.id,
           message: msg.message,
           sender: msg.senderType === MessageSenderType.PLAYER ? 'player' : 'staff',
-          sender_name: msg.senderName,
+          sender_name:
+            msg.senderType === MessageSenderType.STAFF
+              ? playerFacingStaffSenderLabel(msg.senderStaff?.id)
+              : msg.senderName,
           timestamp: msg.createdAt.toISOString(),
+          createdAtUtcMs: msg.createdAt.getTime(),
           isFromStaff: msg.senderType === MessageSenderType.STAFF
         })),
         total,
         limit,
-        offset
+        offset,
+        session: {
+          id: session.id,
+          status: session.status,
+        },
       };
     } catch (err) {
       console.error('Get chat history error:', err);
@@ -201,6 +211,15 @@ export class PlayerChatService {
         messageId: savedMessage.id,
         sessionId: session.id,
         timestamp: savedMessage.createdAt.toISOString(),
+        sessionStatus: session.status,
+        message: {
+          id: savedMessage.id,
+          message: savedMessage.message,
+          sender: 'player' as const,
+          sender_name: savedMessage.senderName,
+          timestamp: savedMessage.createdAt.toISOString(),
+          isFromStaff: false,
+        },
       };
     } catch (err) {
       console.error('Send message error:', err);
@@ -275,7 +294,7 @@ export class PlayerChatService {
             messageCount,
             lastMessage: lastMessage?.message || null,
             lastMessageSender: lastMessage?.senderType === MessageSenderType.STAFF ? 'staff' : 'player',
-            assignedStaffName: session.assignedStaff?.name || null,
+            assignedStaffName: null,
             createdAt: session.createdAt.toISOString(),
             lastMessageAt: session.lastMessageAt.toISOString(),
             closedAt: session.closedAt?.toISOString() || null,
@@ -368,8 +387,12 @@ export class PlayerChatService {
           id: msg.id,
           message: msg.message,
           sender: msg.senderType === MessageSenderType.PLAYER ? 'player' : 'staff',
-          sender_name: msg.senderName,
+          sender_name:
+            msg.senderType === MessageSenderType.STAFF
+              ? playerFacingStaffSenderLabel(msg.senderStaff?.id)
+              : msg.senderName,
           timestamp: msg.createdAt.toISOString(),
+          createdAtUtcMs: msg.createdAt.getTime(),
           isFromStaff: msg.senderType === MessageSenderType.STAFF
         })),
         total,
@@ -443,7 +466,7 @@ export class PlayerChatService {
           subject: session.subject,
           status: session.status,
           assignedStaffId: session.assignedStaff?.id,
-          assignedStaffName: session.assignedStaff?.name,
+          assignedStaffName: null,
           createdAt: session.createdAt.toISOString(),
           lastMessageAt: session.lastMessageAt.toISOString()
         },

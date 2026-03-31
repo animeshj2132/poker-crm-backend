@@ -22,6 +22,40 @@ export class RosterManagementService {
     private leaveApplicationRepo: Repository<LeaveApplication>,
   ) {}
 
+  /** YYYY-MM-DD in the server local calendar (matches how JS Date builds shift days). */
+  private ymdFromLocalDate(d: Date): string {
+    const x = d instanceof Date ? d : new Date(d);
+    const y = x.getFullYear();
+    const m = String(x.getMonth() + 1).padStart(2, '0');
+    const day = String(x.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  private localMidnight(ymd: string): Date {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0);
+  }
+
+  private localEndOfDay(ymd: string): Date {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999);
+  }
+
+  private addDaysToYmd(ymd: string, delta: number): string {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const n = new Date(y, m - 1, d + delta);
+    return this.ymdFromLocalDate(n);
+  }
+
+  private endYmdForPeriod(startYmd: string, periodType: RosterPeriodType): string {
+    if (periodType === RosterPeriodType.WEEKLY) {
+      return this.addDaysToYmd(startYmd, 6);
+    }
+    const [y, m] = startYmd.split('-').map(Number);
+    const last = new Date(y, m, 0);
+    return this.ymdFromLocalDate(last);
+  }
+
   // ==================== ROSTER TEMPLATE MANAGEMENT ====================
 
   /**
@@ -194,30 +228,16 @@ export class RosterManagementService {
       throw new BadRequestException('No roster templates found. Please create templates first.');
     }
 
-    // Calculate end date based on period type
-    // Normalize start date to remove time component
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    
-    let end = new Date(start);
-
-    if (periodType === RosterPeriodType.WEEKLY) {
-      // 7 days from start date
-      end.setDate(start.getDate() + 6);
-    } else if (periodType === RosterPeriodType.MONTHLY) {
-      // End of the month - get the last day of the current month
-      end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
-      end.setHours(0, 0, 0, 0);
-    }
-    
-    // Ensure end date has no time component for proper comparison
-    end.setHours(23, 59, 59, 999);
+    const startYmd = String(startDate).split('T')[0];
+    const endYmd = this.endYmdForPeriod(startYmd, periodType);
+    const rangeStart = this.localMidnight(startYmd);
+    const rangeEnd = this.localEndOfDay(endYmd);
 
     // If overwrite is enabled, delete existing shifts in the period
     if (overwriteExisting) {
       await this.shiftRepo.delete({
         clubId,
-        shiftDate: Between(start, end),
+        shiftDate: Between(rangeStart, rangeEnd),
       });
     }
 
@@ -230,8 +250,8 @@ export class RosterManagementService {
         const shiftsForStaff = await this.generateShiftsForStaff(
           clubId,
           template,
-          start,
-          end,
+          startYmd,
+          endYmd,
           userId,
         );
         createdShifts.push(...shiftsForStaff);
@@ -247,8 +267,8 @@ export class RosterManagementService {
     return {
       success: true,
       message: `Roster generated successfully for ${periodType} period`,
-      startDate: start.toISOString().split('T')[0],
-      endDate: end.toISOString().split('T')[0],
+      startDate: startYmd,
+      endDate: endYmd,
       totalShiftsCreated: createdShifts.length,
       staffProcessed: templates.length,
       errors: errors.length > 0 ? errors : undefined,
@@ -261,75 +281,69 @@ export class RosterManagementService {
   private async generateShiftsForStaff(
     clubId: string,
     template: RosterTemplate,
-    startDate: Date,
-    endDate: Date,
+    startYmd: string,
+    endYmd: string,
     userId?: string,
   ): Promise<Shift[]> {
     const shifts: Shift[] = [];
-    const currentDate = new Date(startDate);
+    const rangeStart = this.localMidnight(startYmd);
+    const rangeEnd = this.localEndOfDay(endYmd);
 
     // First, check for existing shifts in this period for this staff member
     const existingShifts = await this.shiftRepo.find({
       where: {
         clubId,
         staffId: template.staffId,
-        shiftDate: Between(startDate, endDate),
+        shiftDate: Between(rangeStart, rangeEnd),
       },
     });
 
+    // Use local calendar YYYY-MM-DD so this matches the loop (avoids duplicate rows from UTC vs local ISO mismatch).
     const existingDates = new Set(
-      existingShifts.map(shift => shift.shiftDate.toISOString().split('T')[0])
+      existingShifts.map((shift) => this.ymdFromLocalDate(new Date(shift.shiftDate))),
     );
 
-    while (currentDate <= endDate) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      
-      // Skip if shift already exists for this date
-      if (existingDates.has(dateStr)) {
-        currentDate.setDate(currentDate.getDate() + 1);
+    for (let ymd = startYmd; ymd <= endYmd; ymd = this.addDaysToYmd(ymd, 1)) {
+      if (existingDates.has(ymd)) {
         continue;
       }
 
-      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+      const currentDate = this.localMidnight(ymd);
+      const dayOfWeek = currentDate.getDay();
 
-      // Check if this day is a scheduled off day for this staff member
       const isOffDay = template.offDays.includes(dayOfWeek);
 
       if (isOffDay) {
-        // Create off day record
         const shift = this.shiftRepo.create({
           clubId,
           staffId: template.staffId,
-          shiftDate: new Date(currentDate),
-          shiftStartTime: new Date(currentDate), // Dummy time
-          shiftEndTime: new Date(currentDate), // Dummy time
+          shiftDate: currentDate,
+          shiftStartTime: new Date(currentDate),
+          shiftEndTime: new Date(currentDate),
           isOffDay: true,
           notes: 'Scheduled day off',
           createdBy: userId,
         });
         shifts.push(shift);
       } else {
-        // Create working shift
         const shiftStartTime = this.combineDateAndTime(
           currentDate,
           template.defaultShiftStartTime,
         );
-        
+
         let shiftEndTime: Date;
         if (template.shiftCrossesMidnight) {
-          // Shift ends next day
-          const nextDay = new Date(currentDate);
-          nextDay.setDate(nextDay.getDate() + 1);
-          shiftEndTime = this.combineDateAndTime(nextDay, template.defaultShiftEndTime);
+          const nextDay = this.addDaysToYmd(ymd, 1);
+          const nextDate = this.localMidnight(nextDay);
+          shiftEndTime = this.combineDateAndTime(nextDate, template.defaultShiftEndTime);
         } else {
-          // Shift ends same day
           shiftEndTime = this.combineDateAndTime(currentDate, template.defaultShiftEndTime);
         }
 
         const shift = this.shiftRepo.create({
           clubId,
           staffId: template.staffId,
-          shiftDate: new Date(currentDate),
+          shiftDate: currentDate,
           shiftStartTime,
           shiftEndTime,
           isOffDay: false,
@@ -338,12 +352,8 @@ export class RosterManagementService {
         });
         shifts.push(shift);
       }
-
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    // Save all shifts for this staff member (only new ones)
     if (shifts.length > 0) {
       return await this.shiftRepo.save(shifts);
     }

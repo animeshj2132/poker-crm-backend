@@ -6,6 +6,7 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn
 } from 'typeorm';
+import { utcNaiveTimestampTransformer } from '../../common/utils/chat-created-at.util';
 import { ChatSession } from './chat-session.entity';
 import { Staff } from './staff.entity';
 import { Player } from './player.entity';
@@ -47,7 +48,10 @@ export class ChatMessage {
   @Column({ type: 'timestamp', nullable: true, name: 'read_at' })
   readAt!: Date | null;
 
-  @CreateDateColumn({ name: 'created_at' })
+  @CreateDateColumn({
+    name: 'created_at',
+    transformer: utcNaiveTimestampTransformer,
+  })
   createdAt!: Date;
 }
 

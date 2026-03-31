@@ -215,6 +215,16 @@ export class TournamentsService implements OnModuleInit {
     return tournament.rummy_variant ? 'rummy' : 'poker';
   }
 
+  /** Raw UPDATE … RETURNING * rows may omit display fields; merge identity from the row we already loaded. */
+  private mergeTournamentRow(row: any, fetched: any) {
+    if (!row) return row;
+    return {
+      ...row,
+      name: row?.name ?? fetched?.name,
+      rummy_variant: row?.rummy_variant ?? fetched?.rummy_variant ?? null,
+    };
+  }
+
   // Get all tournaments for a club
   async getTournaments(clubId: string) {
     const query = `
@@ -667,7 +677,7 @@ export class TournamentsService implements OnModuleInit {
       await queryRunner.commitTransaction();
 
       console.log(`✅ [TOURNAMENT START] Tournament ${tournament.name} started successfully`);
-      const started = result[0];
+      const started = this.mergeTournamentRow(result[0], tournament);
       // Schedule precise blind increases from the first level boundary
       this.scheduleNextBlindIncrease({ ...started, structure: JSON.parse(JSON.stringify(structure)) });
       if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
@@ -709,7 +719,7 @@ export class TournamentsService implements OnModuleInit {
 
     console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused (blind timer cancelled)`);
     if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
-    return result[0];
+    return this.mergeTournamentRow(result[0], tournament);
   }
 
   // Resume a paused tournament
@@ -745,7 +755,7 @@ export class TournamentsService implements OnModuleInit {
 
     console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s) — blind timer rescheduled`);
     if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
-    return resumed;
+    return this.mergeTournamentRow(resumed, tournament);
   }
 
   // Stop/End a tournament without winners (forced stop)
@@ -778,7 +788,7 @@ export class TournamentsService implements OnModuleInit {
 
     console.log(`🛑 [TOURNAMENT STOP] Tournament ${tournament.name} stopped (forced end without winners)`);
     if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
-    return result[0];
+    return this.mergeTournamentRow(result[0], tournament);
   }
 
   // End tournament with winners
@@ -1343,6 +1353,18 @@ export class TournamentsService implements OnModuleInit {
     );
 
     console.log(`📈 [TOURNAMENT BLINDS] ${tournament.name} round ${currentRound}: ${smallBlind}/${bigBlind}`);
+
+    if (this.eventsService) {
+      this.eventsService.emitTournamentBlindsUpdated(clubId, {
+        id: tournamentId,
+        name: tournament.name,
+        currentRound,
+        currentSb: smallBlind,
+        currentBb: bigBlind,
+        structure: newStructure,
+      });
+      this.eventsService.emitTournamentUpdated(clubId);
+    }
 
     return {
       success: true,

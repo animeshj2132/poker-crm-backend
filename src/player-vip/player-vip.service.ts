@@ -3,6 +3,9 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Inject,
+  Optional,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -10,6 +13,7 @@ import { Player } from '../clubs/entities/player.entity';
 import { VipProduct } from '../clubs/entities/vip-product.entity';
 import { VipPurchase } from '../clubs/entities/vip-purchase.entity';
 import { ClubsService } from '../clubs/clubs.service';
+import { EventsService } from '../events/events.service';
 
 export const VIP_TIERS = [
   { name: 'Bronze', minPoints: 0, multiplier: 1.0, color: '#CD7F32' },
@@ -33,6 +37,7 @@ export class PlayerVipService {
     private readonly vipPurchasesRepo: Repository<VipPurchase>,
     private readonly dataSource: DataSource,
     private readonly clubsService: ClubsService,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   private validateUuid(id: string, label: string) {
@@ -300,6 +305,12 @@ export class PlayerVipService {
       }
 
       await queryRunner.commitTransaction();
+
+      try {
+        this.eventsService?.emitVipStoreUpdated(clubId, playerId);
+      } catch (e) {
+        console.error('VIP store socket emit failed (non-fatal):', e);
+      }
 
       return {
         success: true,

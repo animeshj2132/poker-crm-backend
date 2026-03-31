@@ -80,7 +80,14 @@ export class WaitlistSeatingService {
       status: WaitlistStatus.PENDING
     });
 
-    return this.waitlistRepo.save(entry);
+    const savedEntry = await this.waitlistRepo.save(entry);
+
+    // Emit real-time event so staff and player apps update instantly on new waitlist entry.
+    if (this.eventsService) {
+      this.eventsService.emitWaitlistStatusChange(savedEntry.playerId || null, clubId, savedEntry);
+    }
+
+    return savedEntry;
   }
 
   async getWaitlist(clubId: string, status?: WaitlistStatus) {
@@ -314,25 +321,77 @@ export class WaitlistSeatingService {
     await queryRunner.startTransaction();
 
     try {
-    // Update table
-    table.currentSeats += entry.partySize;
-    if (table.currentSeats >= table.maxSeats) {
-        table.status = TableStatus.OCCUPIED; // All seats filled
-    } else {
-        table.status = TableStatus.AVAILABLE; // Still has available seats
-    }
+      // Re-read and lock both records inside the transaction to prevent race conditions.
+      const lockedEntry = await queryRunner.manager.findOne(WaitlistEntry, {
+        where: { id: entryId, club: { id: clubId } },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const lockedTable = await queryRunner.manager.findOne(Table, {
+        where: { id: tableId, club: { id: clubId } },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-    // Update entry: store actual assigned seat (for hologram); if not provided, keep requestedSeat as effective seat
-    entry.status = WaitlistStatus.SEATED;
-    entry.tableNumber = table.tableNumber;
-    entry.assignedSeat = assignedSeat != null ? assignedSeat : entry.requestedSeat;
-    entry.seatedAt = new Date();
-    entry.seatedBy = seatedBy;
+      if (!lockedEntry) {
+        throw new NotFoundException('Waitlist entry not found');
+      }
+      if (!lockedTable) {
+        throw new NotFoundException('Table not found');
+      }
 
-      const savedTable = await queryRunner.manager.save(table);
-      const savedEntry = await queryRunner.manager.save(entry);
+      if (lockedEntry.status === WaitlistStatus.SEATED) {
+        throw new BadRequestException('Entry is already seated');
+      }
+      if (lockedEntry.status === WaitlistStatus.CANCELLED) {
+        throw new BadRequestException('Cannot seat a cancelled entry');
+      }
+      if (lockedTable.status !== TableStatus.AVAILABLE && lockedTable.status !== TableStatus.RESERVED) {
+        throw new BadRequestException(`Table is ${lockedTable.status.toLowerCase()}. Cannot assign seat.`);
+      }
+      if (lockedTable.currentSeats + lockedEntry.partySize > lockedTable.maxSeats) {
+        throw new BadRequestException(`Table only has ${lockedTable.maxSeats - lockedTable.currentSeats} available seats. Party size is ${lockedEntry.partySize}.`);
+      }
 
-      const gameType = (table as any).tableType === 'RUMMY' ? 'rummy' : 'poker';
+      const effectiveSeat =
+        assignedSeat != null && Number.isFinite(Number(assignedSeat))
+          ? Number(assignedSeat)
+          : lockedEntry.requestedSeat;
+
+      // Prevent two players getting assigned to the same seat on the same table.
+      if (effectiveSeat != null) {
+        const occupiedSeat = await queryRunner.manager.findOne(WaitlistEntry, {
+          where: {
+            club: { id: clubId },
+            tableNumber: lockedTable.tableNumber,
+            status: WaitlistStatus.SEATED,
+            assignedSeat: effectiveSeat,
+          },
+          lock: { mode: 'pessimistic_read' },
+        });
+
+        if (occupiedSeat && occupiedSeat.id !== lockedEntry.id) {
+          throw new BadRequestException(`Seat ${effectiveSeat} is already assigned on Table ${lockedTable.tableNumber}`);
+        }
+      }
+
+      // Update table
+      lockedTable.currentSeats += lockedEntry.partySize;
+      if (lockedTable.currentSeats >= lockedTable.maxSeats) {
+        lockedTable.status = TableStatus.OCCUPIED; // All seats filled
+      } else {
+        lockedTable.status = TableStatus.AVAILABLE; // Still has available seats
+      }
+
+      // Update entry
+      lockedEntry.status = WaitlistStatus.SEATED;
+      lockedEntry.tableNumber = lockedTable.tableNumber;
+      lockedEntry.assignedSeat = effectiveSeat;
+      lockedEntry.seatedAt = new Date();
+      lockedEntry.seatedBy = seatedBy;
+
+      const savedTable = await queryRunner.manager.save(lockedTable);
+      const savedEntry = await queryRunner.manager.save(lockedEntry);
+
+      const gameType = (lockedTable as any).tableType === 'RUMMY' ? 'rummy' : 'poker';
 
       // Transfer cash from wallet to table (only if wallet > 0)
       const cashToTable = Math.max(0, availableBalance);
@@ -345,7 +404,7 @@ export class WaitlistSeatingService {
           type: TransactionType.TABLE_BUY_IN,
           status: TransactionStatus.COMPLETED,
           gameType,
-          notes: `Table buy-in - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Cash: ₹${cashToTable.toFixed(2)})`
+          notes: `Table buy-in - Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (Cash: ₹${cashToTable.toFixed(2)})`
         });
 
         await queryRunner.manager.save(tableBuyIn);
@@ -362,7 +421,7 @@ export class WaitlistSeatingService {
           type: TransactionType.CREDIT,
           status: TransactionStatus.COMPLETED,
           gameType,
-          notes: `Credit applied on table join - Table ${table.tableNumber}${entry.requestedSeat ? `, Seat ${entry.requestedSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
+          notes: `Credit applied on table join - Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
         });
 
         await queryRunner.manager.save(creditTransaction);
@@ -379,8 +438,8 @@ export class WaitlistSeatingService {
       this.eventsService.emitTableStatusChange(clubId, savedTable);
       
       // Emit waitlist status change for the player
-      if (entry.playerId) {
-        this.eventsService.emitWaitlistStatusChange(entry.playerId, clubId, savedEntry);
+      if (savedEntry.playerId) {
+        this.eventsService.emitWaitlistStatusChange(savedEntry.playerId, clubId, savedEntry);
       }
     }
     
@@ -626,6 +685,15 @@ export class WaitlistSeatingService {
     }
 
     await this.waitlistRepo.remove(entry);
+
+    // Notify player app immediately so waitlist UI clears without refresh.
+    if (this.eventsService && entry.playerId) {
+      this.eventsService.emitWaitlistStatusChange(entry.playerId, clubId, {
+        ...entry,
+        status: WaitlistStatus.CANCELLED,
+        cancelledAt: new Date(),
+      });
+    }
   }
 
   async getSeatedPlayersForTable(clubId: string, tableId: string) {

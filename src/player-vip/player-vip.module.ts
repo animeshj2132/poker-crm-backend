@@ -6,11 +6,13 @@ import { Player } from '../clubs/entities/player.entity';
 import { VipProduct } from '../clubs/entities/vip-product.entity';
 import { VipPurchase } from '../clubs/entities/vip-purchase.entity';
 import { ClubsModule } from '../clubs/clubs.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Player, VipProduct, VipPurchase]),
     ClubsModule,
+    EventsModule,
   ],
   controllers: [PlayerVipController],
   providers: [PlayerVipService],

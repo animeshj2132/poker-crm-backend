@@ -38,6 +38,7 @@ import { CreateTableDto } from './dto/create-table.dto';
 import { UpdateTableDto } from './dto/update-table.dto';
 import { AssignSeatDto } from './dto/assign-seat.dto';
 import { UpdateSessionParamsDto } from './dto/update-session-params.dto';
+import { getClubTiltPrefix, isValidTiltIdFormat, normalizeTiltId } from '../common/utils/tilt-id';
 import { WaitlistSeatingService } from './services/waitlist-seating.service';
 import { AnalyticsService } from './services/analytics.service';
 import { WaitlistStatus } from './entities/waitlist-entry.entity';
@@ -104,7 +105,7 @@ import { CreatePlayerChatSessionDto } from './dto/create-player-chat-session.dto
 import { SendMessageDto } from './dto/send-message.dto';
 import { UpdateChatSessionDto } from './dto/update-chat-session.dto';
 import { ReportsService } from './services/reports.service';
-import { GenerateReportDto } from './dto/generate-report.dto';
+import { GenerateReportDto, ReportType } from './dto/generate-report.dto';
 import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
 import { FactoryResetDto } from './dto/factory-reset.dto';
 import { ActionCategory } from './dto/create-audit-log.dto';
@@ -125,6 +126,23 @@ import { UpdateLeavePolicyDto } from './dto/update-leave-policy.dto';
 import { CreateLeaveApplicationDto } from './dto/create-leave-application.dto';
 import { ApproveRejectLeaveDto } from './dto/approve-reject-leave.dto';
 import { EventsService } from '../events/events.service';
+
+function auditTableGameLabel(tableType: TableType | string | null | undefined): 'Poker' | 'Rummy' {
+  return tableType === TableType.RUMMY ? 'Rummy' : 'Poker';
+}
+
+function auditTournamentGameLabel(row: { rummy_variant?: string | null } | null | undefined): 'Poker' | 'Rummy' {
+  return row?.rummy_variant ? 'Rummy' : 'Poker';
+}
+
+function auditWaitlistGameLabel(entry: { requestedGameType?: string | null; tableType?: string | null }): 'Poker' | 'Rummy' {
+  const g = (entry.requestedGameType || '').toUpperCase();
+  if (g === 'RUMMY') return 'Rummy';
+  if (g === 'POKER') return 'Poker';
+  const tt = (entry.tableType || '').toUpperCase();
+  if (tt.includes('RUMMY')) return 'Rummy';
+  return 'Poker';
+}
 
 @Controller('clubs')
 export class ClubsController {
@@ -3711,7 +3729,7 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'push_notification_created',
             actionCategory: ActionCategory.SYSTEM,
-            description: `Created push notification: ${dto.title || 'Untitled'}${dto.scheduledAt ? ` (Scheduled: ${new Date(dto.scheduledAt).toLocaleString()})` : ''}`,
+            description: `Created push notification: ${dto.title || 'Untitled'}${dto.scheduledAt ? ` (Scheduled: ${new Date(dto.scheduledAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })})` : ''}`,
             targetType: 'push_notification',
             targetId: notification.id,
             targetName: dto.title || 'Untitled',
@@ -5312,11 +5330,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'seat_assigned',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Assigned seat for ${entry.playerName} to Table ${table.tableNumber}${entry.partySize ? ` (Party: ${entry.partySize})` : ''}`,
+            description: `Assigned seat for ${entry.playerName} to ${auditTableGameLabel(table.tableType)} Table ${table.tableNumber}${entry.partySize ? ` (Party: ${entry.partySize})` : ''}`,
             targetType: 'waitlist',
             targetId: entry.id,
             targetName: entry.playerName,
             metadata: { 
+              game: auditTableGameLabel(table.tableType),
               playerName: entry.playerName,
               tableId: dto.tableId,
               tableNumber: table.tableNumber,
@@ -5507,11 +5526,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'player_unseated',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Unseated player ${entry.playerName} from Table ${entry.tableNumber || 'Unknown'}`,
+            description: `Unseated player ${entry.playerName} from ${auditWaitlistGameLabel(entry)} Table ${entry.tableNumber || 'Unknown'}`,
             targetType: 'waitlist',
             targetId: entry.id,
             targetName: entry.playerName,
             metadata: { 
+              game: auditWaitlistGameLabel(entry),
               playerName: entry.playerName,
               tableNumber: entry.tableNumber
             },
@@ -5639,11 +5659,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'table_created',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Created table ${dto.tableNumber} (Type: ${dto.tableType}, Max Seats: ${dto.maxSeats}${dto.minBuyIn ? `, Min Buy-in: ₹${dto.minBuyIn}` : ''}${dto.maxBuyIn ? `, Max Buy-in: ₹${dto.maxBuyIn}` : ''})`,
+            description: `Created ${auditTableGameLabel(dto.tableType)} table ${dto.tableNumber} (Type: ${dto.tableType}, Max Seats: ${dto.maxSeats}${dto.minBuyIn ? `, Min Buy-in: ₹${dto.minBuyIn}` : ''}${dto.maxBuyIn ? `, Max Buy-in: ₹${dto.maxBuyIn}` : ''})`,
             targetType: 'table',
             targetId: table.id,
             targetName: `Table ${dto.tableNumber}`,
             metadata: { 
+              game: auditTableGameLabel(dto.tableType),
               tableNumber: dto.tableNumber,
               tableType: dto.tableType,
               maxSeats: dto.maxSeats,
@@ -5950,6 +5971,9 @@ export class ClubsController {
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
           
           const changes: string[] = [];
+          if (dto.tableType !== undefined && dto.tableType !== existingTable.tableType) {
+            changes.push(`tableType: ${existingTable.tableType} → ${dto.tableType}`);
+          }
           if (dto.status !== undefined && dto.status !== existingTable.status) {
             changes.push(`status: ${existingTable.status} → ${dto.status}`);
           }
@@ -5962,6 +5986,38 @@ export class ClubsController {
           if (dto.maxBuyIn !== undefined && dto.maxBuyIn !== existingTable.maxBuyIn) {
             changes.push(`maxBuyIn: ₹${existingTable.maxBuyIn || 0} → ₹${dto.maxBuyIn || 0}`);
           }
+          if (dto.notes !== undefined && (existingTable.notes ?? null) !== (dto.notes ?? null)) {
+            changes.push('notes updated');
+          }
+          if (dto.reservedFor !== undefined && (existingTable.reservedFor ?? null) !== (dto.reservedFor ?? null)) {
+            changes.push(`reservedFor: ${existingTable.reservedFor ?? 'null'} → ${dto.reservedFor ?? 'null'}`);
+          }
+          if (dto.rummyVariant !== undefined && (existingTable.rummyVariant ?? null) !== (dto.rummyVariant ?? null)) {
+            changes.push(`rummyVariant: ${existingTable.rummyVariant ?? 'null'} → ${dto.rummyVariant ?? 'null'}`);
+          }
+          if (dto.pointsValue !== undefined && Number(dto.pointsValue) !== Number(existingTable.pointsValue)) {
+            changes.push(`pointsValue: ${existingTable.pointsValue ?? 'null'} → ${dto.pointsValue}`);
+          }
+          if (dto.numberOfDeals !== undefined && Number(dto.numberOfDeals) !== Number(existingTable.numberOfDeals)) {
+            changes.push(`numberOfDeals: ${existingTable.numberOfDeals ?? 'null'} → ${dto.numberOfDeals}`);
+          }
+          if (dto.dropPoints !== undefined && Number(dto.dropPoints) !== Number(existingTable.dropPoints)) {
+            changes.push(`dropPoints: ${existingTable.dropPoints ?? 'null'} → ${dto.dropPoints}`);
+          }
+          if (dto.maxPoints !== undefined && Number(dto.maxPoints) !== Number(existingTable.maxPoints)) {
+            changes.push(`maxPoints: ${existingTable.maxPoints ?? 'null'} → ${dto.maxPoints}`);
+          }
+          if (dto.dealDuration !== undefined && Number(dto.dealDuration) !== Number(existingTable.dealDuration)) {
+            changes.push(`dealDuration: ${existingTable.dealDuration ?? 'null'} → ${dto.dealDuration}`);
+          }
+          if (dto.entryFee !== undefined && Number(dto.entryFee) !== Number(existingTable.entryFee)) {
+            changes.push(`entryFee: ₹${existingTable.entryFee ?? 0} → ₹${dto.entryFee}`);
+          }
+          if (dto.minPlayers !== undefined && Number(dto.minPlayers) !== Number(existingTable.minPlayers)) {
+            changes.push(`minPlayers: ${existingTable.minPlayers ?? 'null'} → ${dto.minPlayers}`);
+          }
+
+          const tblGame = auditTableGameLabel(dto.tableType ?? existingTable.tableType);
           
           await this.auditLogsService.logAction({
             clubId,
@@ -5970,11 +6026,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Super Admin',
             actionType: 'table_updated',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Updated table ${existingTable.tableNumber}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            description: `Updated ${tblGame} table ${existingTable.tableNumber}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
             targetType: 'table',
             targetId: existingTable.id,
             targetName: `Table ${existingTable.tableNumber}`,
             metadata: { 
+              game: tblGame,
               changes: changes,
               tableNumber: existingTable.tableNumber
             },
@@ -6098,11 +6155,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'table_deleted',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Deleted table ${table.tableNumber} (Type: ${table.tableType}, Max Seats: ${table.maxSeats})`,
+            description: `Deleted ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} (Type: ${table.tableType}, Max Seats: ${table.maxSeats})`,
             targetType: 'table',
             targetId: table.id,
             targetName: `Table ${table.tableNumber}`,
             metadata: { 
+              game: auditTableGameLabel(table.tableType),
               tableNumber: table.tableNumber,
               tableType: table.tableType,
               maxSeats: table.maxSeats
@@ -6237,11 +6295,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'session_paused',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Paused session for table ${table.tableNumber}`,
+            description: `Paused ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} session`,
             targetType: 'table',
             targetId: table.id,
             targetName: `Table ${table.tableNumber}`,
             metadata: { 
+              game: auditTableGameLabel(table.tableType),
               tableNumber: table.tableNumber,
               previousStatus: table.status,
               newStatus: TableStatus.AVAILABLE
@@ -6378,11 +6437,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'session_resumed',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Resumed session for table ${table.tableNumber}${pausedElapsedSeconds > 0 ? ` (${pausedElapsedSeconds}s paused)` : ''}`,
+            description: `Resumed ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} session${pausedElapsedSeconds > 0 ? ` (${pausedElapsedSeconds}s paused)` : ''}`,
             targetType: 'table',
             targetId: table.id,
             targetName: `Table ${table.tableNumber}`,
             metadata: { 
+              game: auditTableGameLabel(table.tableType),
               tableNumber: table.tableNumber,
               previousStatus: table.status,
               newStatus: TableStatus.AVAILABLE,
@@ -6510,11 +6570,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'session_ended',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Ended session for table ${table.tableNumber} (Reset seats: ${table.currentSeats || 0} → 0)`,
+            description: `Ended ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} session (Reset seats: ${table.currentSeats || 0} → 0)`,
             targetType: 'table',
             targetId: table.id,
             targetName: `Table ${table.tableNumber}`,
             metadata: { 
+              game: auditTableGameLabel(table.tableType),
               tableNumber: table.tableNumber,
               previousStatus: table.status,
               newStatus: TableStatus.CLOSED,
@@ -6670,11 +6731,11 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'session_settled_and_ended',
             actionCategory: ActionCategory.TABLE_MANAGEMENT,
-            description: `Settled all players and ended session on table ${table.tableNumber}`,
+            description: `Settled all players and ended ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} session`,
             targetType: 'table',
             targetId: tableId,
             targetName: `Table ${table.tableNumber}`,
-            metadata: { settlements: body.settlements?.length, rakeAmount: body.rakeAmount },
+            metadata: { game: auditTableGameLabel(table.tableType), settlements: body.settlements?.length, rakeAmount: body.rakeAmount },
           });
         }
       } catch (auditError) {
@@ -6790,11 +6851,11 @@ export class ClubsController {
           staffRole: 'Admin',
           actionType: 'session_params_updated',
           actionCategory: ActionCategory.TABLE_MANAGEMENT,
-          description: `Updated session parameters for table ${table.tableNumber}`,
+          description: `Updated ${auditTableGameLabel(table.tableType)} table ${table.tableNumber} session parameters (min play ${minPlayTime}m, call ${callTime}m, cash-out ${cashOutWindow}m, timeout ${sessionTimeout}m)`,
           targetType: 'table',
           targetId: tableId,
           targetName: `Table ${table.tableNumber}`,
-          metadata: { minPlayTime, callTime, cashOutWindow, sessionTimeout },
+          metadata: { game: auditTableGameLabel(table.tableType), minPlayTime, callTime, cashOutWindow, sessionTimeout },
         });
       } catch (auditError) {
         console.error('Failed to create audit log for session params update:', auditError);
@@ -8765,17 +8826,24 @@ export class ClubsController {
         }
       }
 
-      // Edge case: Validate player ID if provided
-      if (dto.playerId !== undefined && dto.playerId !== null) {
-        if (typeof dto.playerId !== 'string') {
-          throw new BadRequestException('Player ID must be a string');
+      // Edge case: Validate manual Tilt ID (backward-compatible alias: playerId)
+      const rawManualTiltId = (dto.tiltId ?? dto.playerId);
+      if (dto.tiltId && dto.playerId && dto.tiltId.trim() !== dto.playerId.trim()) {
+        throw new BadRequestException('tiltId and playerId must match when both are provided');
+      }
+      if (rawManualTiltId !== undefined && rawManualTiltId !== null) {
+        if (typeof rawManualTiltId !== 'string') {
+          throw new BadRequestException('Tilt ID must be a string');
         }
-        const trimmedPlayerId = dto.playerId.trim();
-        if (trimmedPlayerId.length > 100) {
-          throw new BadRequestException('Player ID cannot exceed 100 characters');
+        const normalizedTiltId = normalizeTiltId(rawManualTiltId);
+        if (!normalizedTiltId) {
+          throw new BadRequestException('Tilt ID cannot be empty if provided');
         }
-        if (trimmedPlayerId.length < 1) {
-          throw new BadRequestException('Player ID cannot be empty if provided');
+        if (!isValidTiltIdFormat(normalizedTiltId)) {
+          throw new BadRequestException('Tilt ID must be exactly 6 alphanumeric characters');
+        }
+        if (!tenantId) {
+          throw new ForbiddenException('Only Super Admin can set Tilt ID manually');
         }
       }
 
@@ -8834,6 +8902,13 @@ export class ClubsController {
       if (!club) {
         throw new NotFoundException('Club not found');
       }
+      if (rawManualTiltId !== undefined && rawManualTiltId !== null) {
+        const normalizedManualTiltId = normalizeTiltId(rawManualTiltId);
+        const clubTiltPrefix = getClubTiltPrefix(club.name);
+        if (normalizedManualTiltId && !normalizedManualTiltId.startsWith(clubTiltPrefix)) {
+          throw new BadRequestException(`Tilt ID must start with club prefix "${clubTiltPrefix}"`);
+        }
+      }
 
       // For Super Admin, validate tenant
       if (tenantId) {
@@ -8845,13 +8920,14 @@ export class ClubsController {
         trimmedName,
         trimmedEmail,
         dto.phoneNumber?.trim(),
-        dto.playerId?.trim(),
+        undefined,
         dto.affiliateCode?.trim().toUpperCase(),
         dto.notes?.trim(),
         dto.panCard?.trim().toUpperCase(),
         dto.documentType?.trim(),
         dto.documentUrl?.trim(),
-        dto.initialBalance
+        dto.initialBalance,
+        rawManualTiltId ? rawManualTiltId.trim().toUpperCase() : undefined
       );
 
       // Audit log: Create player
@@ -8893,6 +8969,7 @@ export class ClubsController {
         phoneNumber: player.phoneNumber,
         panCard: (player as any).panCard || player.panCard || null,
         playerId: player.playerId,
+        tiltId: player.playerId,
         affiliateCode: player.affiliate?.code || null,
         status: player.status,
         kycStatus: player.kycStatus || 'approved', // ✅ Include KYC status
@@ -9026,8 +9103,8 @@ export class ClubsController {
     }
     const searchParam = `%${term}%`;
     const rows = await this.dataSource.query(
-      `SELECT id, name, email FROM players
-       WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)
+            `SELECT id, name, email, player_id as "tiltId" FROM players
+             WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)
        ORDER BY name ASC LIMIT 50`,
       [clubId, searchParam],
     );
@@ -9188,6 +9265,7 @@ export class ClubsController {
             email: r.email,
             phoneNumber: r.phone_number,
             playerId: r.player_id,
+            tiltId: r.player_id,
             status: r.status,
             kycStatus: r.kyc_status,
             totalSpent: r.total_spent,
@@ -9263,6 +9341,7 @@ export class ClubsController {
               email: p.email || '',
               phoneNumber: p.phoneNumber || null,
               playerId: p.playerId || null,
+              tiltId: (p as any).tiltId || p.playerId || null,
               status: p.status || 'Active',
               kycStatus: p.kycStatus || 'pending',
               balance: walletBalance,
@@ -9419,6 +9498,7 @@ export class ClubsController {
         phoneNumber: player.phoneNumber,
         panCard: (player as any).panCard || (player as any).pan_card || null,
         playerId: player.playerId,
+        tiltId: player.playerId,
         status: player.status,
         kycStatus: (player as any).kycStatus || 'pending',
         kycDocuments: (player as any).kycDocuments || [],
@@ -10379,9 +10459,14 @@ export class ClubsController {
       }
 
       // Edge case: Check if at least one field is being updated
-      const hasUpdateFields = dto.name !== undefined || dto.email !== undefined || 
-                              dto.phoneNumber !== undefined || dto.playerId !== undefined || 
-                              dto.notes !== undefined || dto.status !== undefined;
+      const hasUpdateFields =
+        dto.name !== undefined ||
+        dto.email !== undefined ||
+        dto.phoneNumber !== undefined ||
+        dto.playerId !== undefined ||
+        dto.tiltId !== undefined ||
+        dto.notes !== undefined ||
+        dto.status !== undefined;
       if (!hasUpdateFields) {
         throw new BadRequestException('At least one field must be provided for update');
       }
@@ -10417,6 +10502,15 @@ export class ClubsController {
       if (!player.club || player.club.id !== clubId) {
         throw new ForbiddenException('Player does not belong to this club');
       }
+
+      const beforeUpdate = {
+        name: player.name,
+        email: player.email,
+        phoneNumber: player.phoneNumber,
+        status: player.status,
+        notes: player.notes,
+        playerId: player.playerId,
+      };
 
       // Edge case: Check player status before allowing updates
       if (player.status && player.status.toLowerCase() === 'suspended' && dto.status !== 'Active' && dto.status !== 'Inactive') {
@@ -10500,19 +10594,36 @@ export class ClubsController {
         }
       }
 
-      // Edge case: Validate and update player ID
-      if (dto.playerId !== undefined) {
-        if (dto.playerId === null || dto.playerId === '') {
+      // Edge case: Validate and update Tilt ID (backward-compatible alias: playerId)
+      const incomingTiltId = dto.tiltId ?? dto.playerId;
+      if (dto.tiltId !== undefined || dto.playerId !== undefined) {
+        if (dto.tiltId && dto.playerId && dto.tiltId.trim() !== dto.playerId.trim()) {
+          throw new BadRequestException('tiltId and playerId must match when both are provided');
+        }
+        if (incomingTiltId === null || incomingTiltId === '') {
           player.playerId = null;
         } else {
-          if (typeof dto.playerId !== 'string') {
-            throw new BadRequestException('Player ID must be a string');
+          if (typeof incomingTiltId !== 'string') {
+            throw new BadRequestException('Tilt ID must be a string');
           }
-          const trimmedPlayerId = dto.playerId.trim();
-          if (trimmedPlayerId.length > 100) {
-            throw new BadRequestException('Player ID cannot exceed 100 characters');
+          const trimmedTiltId = normalizeTiltId(incomingTiltId);
+          if (!trimmedTiltId) {
+            throw new BadRequestException('Tilt ID cannot be empty');
           }
-          player.playerId = trimmedPlayerId;
+          if (!isValidTiltIdFormat(trimmedTiltId)) {
+            throw new BadRequestException('Tilt ID must be exactly 6 alphanumeric characters');
+          }
+          const clubTiltPrefix = getClubTiltPrefix(club.name);
+          if (!trimmedTiltId.startsWith(clubTiltPrefix)) {
+            throw new BadRequestException(`Tilt ID must start with club prefix "${clubTiltPrefix}"`);
+          }
+          const existingTilt = await this.playersRepo.findOne({
+            where: { club: { id: clubId }, playerId: trimmedTiltId },
+          });
+          if (existingTilt && existingTilt.id !== player.id) {
+            throw new ConflictException('Tilt ID already exists for this club');
+          }
+          player.playerId = trimmedTiltId;
         }
       }
 
@@ -10559,7 +10670,7 @@ export class ClubsController {
         throw new BadRequestException('Player update failed. Please try again.');
       }
 
-      // Audit log: Update player
+      // Audit log: Update player (compare against snapshot — player entity is mutated above)
       try {
         if (userId) {
           const user = await this.usersService.findById(userId);
@@ -10567,21 +10678,28 @@ export class ClubsController {
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
           
           const changes: string[] = [];
-          if (dto.name !== undefined && dto.name !== player.name) {
-            changes.push(`name: ${player.name} → ${dto.name}`);
+          if (dto.name !== undefined && beforeUpdate.name !== savedPlayer.name) {
+            changes.push(`name: ${beforeUpdate.name} → ${savedPlayer.name}`);
           }
-          if (dto.email !== undefined && dto.email !== player.email) {
-            changes.push(`email: ${player.email} → ${dto.email}`);
+          if (dto.email !== undefined && beforeUpdate.email !== savedPlayer.email) {
+            changes.push(`email: ${beforeUpdate.email} → ${savedPlayer.email}`);
           }
-          if (dto.phoneNumber !== undefined && dto.phoneNumber !== player.phoneNumber) {
-            changes.push(`phone: ${player.phoneNumber || 'null'} → ${dto.phoneNumber || 'null'}`);
+          if (dto.phoneNumber !== undefined && (beforeUpdate.phoneNumber ?? null) !== (savedPlayer.phoneNumber ?? null)) {
+            changes.push(`phone: ${beforeUpdate.phoneNumber ?? 'null'} → ${savedPlayer.phoneNumber ?? 'null'}`);
           }
-          if (dto.status !== undefined && dto.status !== player.status) {
-            changes.push(`status: ${player.status} → ${dto.status}`);
+          if (dto.status !== undefined && beforeUpdate.status !== savedPlayer.status) {
+            changes.push(`status: ${beforeUpdate.status} → ${savedPlayer.status}`);
           }
-          if (dto.notes !== undefined) {
-            changes.push('notes updated');
+          if (dto.notes !== undefined && (beforeUpdate.notes ?? null) !== (savedPlayer.notes ?? null)) {
+            const prevN = (beforeUpdate.notes ?? 'null').toString();
+            const nextN = (savedPlayer.notes ?? 'null').toString();
+            changes.push(`notes: ${prevN.slice(0, 120)}${prevN.length > 120 ? '…' : ''} → ${nextN.slice(0, 120)}${nextN.length > 120 ? '…' : ''}`);
           }
+          if ((dto.tiltId !== undefined || dto.playerId !== undefined) && (beforeUpdate.playerId ?? null) !== (savedPlayer.playerId ?? null)) {
+            changes.push(`tiltId: ${beforeUpdate.playerId ?? 'null'} → ${savedPlayer.playerId ?? 'null'}`);
+          }
+
+          const detail = changes.length > 0 ? `: ${changes.join(', ')}` : ' (no effective field changes)';
           
           await this.auditLogsService.logAction({
             clubId,
@@ -10590,15 +10708,16 @@ export class ClubsController {
             staffRole: staff?.role || 'Super Admin',
             actionType: 'player_updated',
             actionCategory: ActionCategory.PLAYER_MANAGEMENT,
-            description: `Updated player ${player.name} (${player.email}): ${changes.join(', ')}`,
+            description: `Updated player ${savedPlayer.name} (${savedPlayer.email})${detail}`,
             targetType: 'player',
             targetId: player.id,
-            targetName: player.name,
+            targetName: savedPlayer.name,
             metadata: { 
               changes: changes,
-              previousName: player.name,
-              previousEmail: player.email,
-              previousStatus: player.status
+              previousName: beforeUpdate.name,
+              previousEmail: beforeUpdate.email,
+              previousStatus: beforeUpdate.status,
+              previousTiltId: beforeUpdate.playerId,
             },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
             userAgent: (req as any)?.headers?.['user-agent'] || undefined
@@ -10614,6 +10733,7 @@ export class ClubsController {
         email: savedPlayer.email,
         phoneNumber: savedPlayer.phoneNumber,
         playerId: savedPlayer.playerId,
+        tiltId: savedPlayer.playerId,
         status: savedPlayer.status,
         notes: savedPlayer.notes,
         updatedAt: savedPlayer.updatedAt
@@ -10735,21 +10855,80 @@ export class ClubsController {
         }
       }
 
-      // Edge case: Ensure balance is not negative (safety check)
+      // Edge case: Ensure wallet balance is not negative (legacy safety check)
       availableBalance = Math.max(0, availableBalance);
-      
+
       // Edge case: Validate balance is a valid number
       if (isNaN(availableBalance) || !isFinite(availableBalance)) {
         console.error('Invalid balance calculated for player:', playerId);
         availableBalance = 0;
       }
 
+      // Calculate current session table balance (cash + credit) and credit-on-table.
+      let tableBalance = 0;
+      let creditUsedOnTable = 0;
+      try {
+        const seatedEntry = await this.dataSource.query(
+          `SELECT seated_at
+           FROM waitlist_entries
+           WHERE club_id = $1 AND player_id = $2 AND status = 'SEATED'
+           ORDER BY seated_at DESC
+           LIMIT 1`,
+          [clubId, playerId]
+        );
+
+        const seatedAt = seatedEntry?.[0]?.seated_at ? new Date(seatedEntry[0].seated_at) : null;
+        if (seatedAt) {
+          // Keep 30s buffer to include transactions created at seating boundary.
+          const sessionStart = new Date(seatedAt.getTime() - 30000);
+          const sessionTxns = await this.dataSource.query(
+            `SELECT type, amount
+             FROM financial_transactions
+             WHERE club_id = $1
+               AND player_id = $2
+               AND UPPER(status) = 'COMPLETED'
+               AND created_at >= $3
+             ORDER BY created_at ASC`,
+            [clubId, playerId, sessionStart.toISOString()]
+          );
+
+          for (const txn of sessionTxns) {
+            const amount = Number(txn?.amount || 0);
+            if (!Number.isFinite(amount) || amount <= 0) continue;
+            const upperType = String(txn?.type || '').toUpperCase();
+
+            if (['TABLE BUY IN', 'BUY IN', 'CREDIT'].includes(upperType)) {
+              tableBalance += amount;
+            } else if (['TABLE BUY OUT'].includes(upperType)) {
+              tableBalance -= amount;
+            }
+
+            if (upperType === 'CREDIT') {
+              creditUsedOnTable += amount;
+            } else if (upperType === 'DEBIT') {
+              creditUsedOnTable -= amount;
+            }
+          }
+        }
+      } catch (tableBalanceError) {
+        console.error('Failed to compute live table balance:', tableBalanceError);
+        tableBalance = 0;
+        creditUsedOnTable = 0;
+      }
+
+      creditUsedOnTable = Math.max(0, creditUsedOnTable);
+      tableBalance = Math.max(0, tableBalance);
+      const cashOnTable = Math.max(0, tableBalance - creditUsedOnTable);
+
       return {
         playerId: player.id,
         playerName: player.name,
         availableBalance: availableBalance,
-        tableBalance: 0, // Placeholder - would need actual game state
-        totalBalance: availableBalance,
+        tableBalance,
+        currentTableBalance: tableBalance,
+        creditUsedOnTable,
+        cashOnTable,
+        totalBalance: availableBalance + tableBalance,
         clubId: clubId
       };
     } catch (e) {
@@ -13273,6 +13452,7 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
           
+          const createGame = dto.rummy_variant ? 'Rummy' : 'Poker';
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13280,11 +13460,12 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_created',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Created tournament ${dto.name} (Type: ${dto.tournament_type}, Buy-in: ₹${dto.buy_in}, Starting Chips: ${dto.starting_chips})`,
+            description: `Created ${createGame} tournament "${dto.name}" (Type: ${dto.tournament_type}, Buy-in: ₹${dto.buy_in}, Starting Chips: ${dto.starting_chips})`,
             targetType: 'tournament',
             targetId: tournament.id,
             targetName: dto.name,
             metadata: { 
+              game: createGame,
               tournamentType: dto.tournament_type,
               buyIn: dto.buy_in,
               startingChips: dto.starting_chips,
@@ -13335,12 +13516,76 @@ export class ClubsController {
           if (dto.name !== undefined && dto.name !== existingTournament.name) {
             changes.push(`name: ${existingTournament.name} → ${dto.name}`);
           }
-          if (dto.buy_in !== undefined && dto.buy_in !== existingTournament.buy_in) {
+          if (dto.buy_in !== undefined && Number(dto.buy_in) !== Number(existingTournament.buy_in)) {
             changes.push(`buyIn: ₹${existingTournament.buy_in} → ₹${dto.buy_in}`);
           }
-          if (dto.starting_chips !== undefined && dto.starting_chips !== existingTournament.starting_chips) {
+          if (dto.starting_chips !== undefined && Number(dto.starting_chips) !== Number(existingTournament.starting_chips)) {
             changes.push(`startingChips: ${existingTournament.starting_chips} → ${dto.starting_chips}`);
           }
+          if (dto.prize_pool !== undefined && Number(dto.prize_pool) !== Number(existingTournament.prize_pool)) {
+            changes.push(`prizePool: ₹${existingTournament.prize_pool} → ₹${dto.prize_pool}`);
+          }
+          if (dto.max_players !== undefined && Number(dto.max_players) !== Number(existingTournament.max_players)) {
+            changes.push(`maxPlayers: ${existingTournament.max_players} → ${dto.max_players}`);
+          }
+          if (dto.start_time !== undefined) {
+            const prevSt = existingTournament.start_time ? new Date(existingTournament.start_time).toISOString() : 'null';
+            const nextSt = new Date(dto.start_time).toISOString();
+            if (prevSt !== nextSt) {
+              changes.push(`startTime: ${prevSt} → ${nextSt}`);
+            }
+          }
+          if (dto.status !== undefined && dto.status !== existingTournament.status) {
+            changes.push(`status: ${existingTournament.status} → ${dto.status}`);
+          }
+          if (dto.rummy_variant !== undefined && (existingTournament.rummy_variant || null) !== (dto.rummy_variant || null)) {
+            changes.push(`rummyVariant: ${existingTournament.rummy_variant || 'none'} → ${dto.rummy_variant || 'none'}`);
+          }
+          if (dto.number_of_deals !== undefined && Number(dto.number_of_deals) !== Number(existingTournament.number_of_deals)) {
+            changes.push(`numberOfDeals: ${existingTournament.number_of_deals ?? 'null'} → ${dto.number_of_deals}`);
+          }
+          if (dto.points_per_deal !== undefined && Number(dto.points_per_deal) !== Number(existingTournament.points_per_deal)) {
+            changes.push(`pointsPerDeal: ${existingTournament.points_per_deal ?? 'null'} → ${dto.points_per_deal}`);
+          }
+          if (dto.drop_points !== undefined && Number(dto.drop_points) !== Number(existingTournament.drop_points)) {
+            changes.push(`dropPoints: ${existingTournament.drop_points ?? 'null'} → ${dto.drop_points}`);
+          }
+          if (dto.max_points !== undefined && Number(dto.max_points) !== Number(existingTournament.max_points)) {
+            changes.push(`maxPoints: ${existingTournament.max_points ?? 'null'} → ${dto.max_points}`);
+          }
+          if (dto.deal_duration !== undefined && Number(dto.deal_duration) !== Number(existingTournament.deal_duration)) {
+            changes.push(`dealDuration: ${existingTournament.deal_duration ?? 'null'} → ${dto.deal_duration}`);
+          }
+          if (dto.min_players !== undefined && Number(dto.min_players) !== Number(existingTournament.min_players)) {
+            changes.push(`minPlayers: ${existingTournament.min_players ?? 'null'} → ${dto.min_players}`);
+          }
+          const structureTouched =
+            dto.entry_fee !== undefined ||
+            dto.tournament_type !== undefined ||
+            dto.blind_structure !== undefined ||
+            dto.starting_sb !== undefined ||
+            dto.starting_bb !== undefined ||
+            dto.number_of_levels !== undefined ||
+            dto.minutes_per_level !== undefined ||
+            dto.break_structure !== undefined ||
+            dto.break_duration !== undefined ||
+            dto.late_registration !== undefined ||
+            dto.payout_structure !== undefined ||
+            dto.seat_draw_method !== undefined ||
+            dto.clock_pause_rules !== undefined ||
+            dto.allow_rebuys !== undefined ||
+            dto.allow_addon !== undefined ||
+            dto.allow_reentry !== undefined ||
+            dto.bounty_amount !== undefined;
+          if (structureTouched) {
+            changes.push('poker blind/structure or schedule settings updated');
+          }
+
+          const effectiveRummyVariant =
+            dto.rummy_variant !== undefined ? dto.rummy_variant : existingTournament.rummy_variant;
+          const updGame = auditTournamentGameLabel({ rummy_variant: effectiveRummyVariant });
+          const displayName =
+            (dto.name !== undefined ? dto.name : existingTournament.name) || '(unnamed)';
           
           await this.auditLogsService.logAction({
             clubId,
@@ -13349,13 +13594,14 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_updated',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Updated tournament ${existingTournament.name}: ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
+            description: `Updated ${updGame} tournament "${displayName}": ${changes.length > 0 ? changes.join(', ') : 'details updated'}`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: existingTournament.name,
+            targetName: displayName,
             metadata: { 
+              game: updGame,
               changes: changes,
-              tournamentName: existingTournament.name
+              tournamentName: displayName
             },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
             userAgent: (req as any)?.headers?.['user-agent'] || undefined
@@ -13401,6 +13647,8 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
           
+          const delGame = auditTournamentGameLabel(existingTournament);
+          const delName = existingTournament.name || '(unnamed)';
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13408,12 +13656,13 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_deleted',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Deleted tournament ${existingTournament.name} (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
+            description: `Deleted ${delGame} tournament "${delName}" (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: existingTournament.name,
+            targetName: delName,
             metadata: { 
-              tournamentName: existingTournament.name,
+              game: delGame,
+              tournamentName: delName,
               tournamentType: existingTournament.tournament_type,
               buyIn: existingTournament.buy_in
             },
@@ -13456,6 +13705,8 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
           
+          const startGame = auditTournamentGameLabel(existingTournament);
+          const startName = existingTournament.name || '(unnamed)';
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13463,12 +13714,13 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_started',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Started tournament ${existingTournament.name} (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
+            description: `Started ${startGame} tournament "${startName}" (Type: ${existingTournament.tournament_type}, Buy-in: ₹${existingTournament.buy_in})`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: existingTournament.name,
+            targetName: startName,
             metadata: { 
-              tournamentName: existingTournament.name,
+              game: startGame,
+              tournamentName: startName,
               tournamentType: existingTournament.tournament_type,
               buyIn: existingTournament.buy_in
             },
@@ -13509,6 +13761,8 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
 
+          const pauseName = tournament?.name || '(unnamed)';
+          const pauseGame = auditTournamentGameLabel(tournament);
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13516,11 +13770,11 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_paused',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Paused tournament ${tournament.name}`,
+            description: `Paused ${pauseGame} tournament "${pauseName}"`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: tournament.name,
-            metadata: { tournamentName: tournament.name },
+            targetName: pauseName,
+            metadata: { game: pauseGame, tournamentName: pauseName },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
             userAgent: (req as any)?.headers?.['user-agent'] || undefined
           });
@@ -13558,6 +13812,8 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
 
+          const resumeName = tournament?.name || '(unnamed)';
+          const resumeGame = auditTournamentGameLabel(tournament);
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13565,11 +13821,11 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_resumed',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Resumed tournament ${tournament.name}`,
+            description: `Resumed ${resumeGame} tournament "${resumeName}"`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: tournament.name,
-            metadata: { tournamentName: tournament.name },
+            targetName: resumeName,
+            metadata: { game: resumeGame, tournamentName: resumeName },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
             userAgent: (req as any)?.headers?.['user-agent'] || undefined
           });
@@ -13607,6 +13863,8 @@ export class ClubsController {
           const allStaff = await this.staffService.findAll(clubId);
           const staff = allStaff.find(s => s.userId === userId || s.email === user?.email);
 
+          const stopName = tournament?.name || '(unnamed)';
+          const stopGame = auditTournamentGameLabel(tournament);
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13614,11 +13872,11 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_stopped',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Force stopped tournament ${tournament.name} without declaring winners`,
+            description: `Force stopped ${stopGame} tournament "${stopName}" without declaring winners`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: tournament.name,
-            metadata: { tournamentName: tournament.name },
+            targetName: stopName,
+            metadata: { game: stopGame, tournamentName: stopName },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
             userAgent: (req as any)?.headers?.['user-agent'] || undefined
           });
@@ -13662,6 +13920,8 @@ export class ClubsController {
           
           const winnersCount = dto.winners && Array.isArray(dto.winners) ? dto.winners.length : 0;
           
+          const endGame = auditTournamentGameLabel(existingTournament);
+          const endName = existingTournament.name || '(unnamed)';
           await this.auditLogsService.logAction({
             clubId,
             staffId: staff?.id || userId,
@@ -13669,12 +13929,13 @@ export class ClubsController {
             staffRole: staff?.role || 'Admin',
             actionType: 'tournament_ended',
             actionCategory: ActionCategory.TOURNAMENT,
-            description: `Ended tournament ${existingTournament.name}${winnersCount > 0 ? ` with ${winnersCount} winner(s)` : ''}`,
+            description: `Ended ${endGame} tournament "${endName}"${winnersCount > 0 ? ` with ${winnersCount} winner(s)` : ''}`,
             targetType: 'tournament',
             targetId: tournamentId,
-            targetName: existingTournament.name,
+            targetName: endName,
             metadata: { 
-              tournamentName: existingTournament.name,
+              game: endGame,
+              tournamentName: endName,
               winnersCount: winnersCount
             },
             ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
@@ -16185,6 +16446,22 @@ export class ClubsController {
     @Headers('x-user-id') userId?: string,
     @Req() req?: Request
   ) {
+    if (dto.reportType === ReportType.CUSTOM) {
+      const u = (req as any)?.user;
+      if (!u) {
+        throw new ForbiddenException('Custom reports require an authenticated user');
+      }
+      const clubEntry = u.clubRoles?.find((cr: { clubId: string }) => cr.clubId === clubId);
+      const isClubSuperAdmin = clubEntry?.roles?.includes(ClubRole.SUPER_ADMIN);
+      const isMaster = u.globalRoles?.includes(GlobalRole.MASTER_ADMIN);
+      const isTenantSuper = (u.tenantRoles || []).some((tr: { roles: string[] }) =>
+        tr.roles?.includes(TenantRole.SUPER_ADMIN),
+      );
+      if (!isClubSuperAdmin && !isMaster && !isTenantSuper) {
+        throw new ForbiddenException('Custom combined reports are restricted to Super Admin');
+      }
+    }
+
     const buffer = await this.reportsService.generateReport(clubId, dto);
     
     // Audit log: Generate report

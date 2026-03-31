@@ -166,7 +166,9 @@ export class FnbService {
     if (dto.chefAssigned !== undefined) order.chefAssigned = dto.chefAssigned;
     if (dto.specialInstructions !== undefined) order.specialInstructions = dto.specialInstructions;
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async cancelOrder(clubId: string, orderId: string, cancelledBy?: string): Promise<FnbOrder> {
@@ -192,7 +194,9 @@ export class FnbService {
     order.status = OrderStatus.CANCELLED;
     order.statusHistory = statusHistory;
 
-    return await this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
+    return saved;
   }
 
   async deleteOrder(clubId: string, orderId: string): Promise<void> {
@@ -204,6 +208,7 @@ export class FnbService {
     }
 
     await this.orderRepo.remove(order);
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
   }
 
   // ==================== MENU ITEMS ====================

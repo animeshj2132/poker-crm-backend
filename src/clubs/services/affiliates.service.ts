@@ -10,6 +10,7 @@ import { UsersService } from '../../users/users.service';
 import { ClubRole } from '../../common/rbac/roles';
 import { ProcessAffiliatePaymentDto } from '../dto/process-affiliate-payment.dto';
 import * as bcrypt from 'bcrypt';
+import { generateTiltIdCandidate, getClubTiltPrefix, isValidTiltIdFormat, normalizeTiltId } from '../../common/utils/tilt-id';
 
 @Injectable()
 export class AffiliatesService {
@@ -255,6 +256,36 @@ export class AffiliatesService {
     return password.split('').sort(() => Math.random() - 0.5).join('');
   }
 
+  private async resolveTiltId(clubId: string, clubName: string, requestedTiltId?: string): Promise<string> {
+    const requiredPrefix = getClubTiltPrefix(clubName);
+    const normalizedRequested = normalizeTiltId(requestedTiltId);
+    if (normalizedRequested) {
+      if (!isValidTiltIdFormat(normalizedRequested)) {
+        throw new BadRequestException('Tilt ID must be exactly 6 alphanumeric characters');
+      }
+      if (!normalizedRequested.startsWith(requiredPrefix)) {
+        throw new BadRequestException(`Tilt ID must start with club prefix "${requiredPrefix}"`);
+      }
+      const existingManual = await this.playersRepo.findOne({
+        where: { club: { id: clubId }, playerId: normalizedRequested },
+      });
+      if (existingManual) {
+        throw new ConflictException('Tilt ID already exists for this club');
+      }
+      return normalizedRequested;
+    }
+
+    for (let i = 0; i < 20; i++) {
+      const candidate = generateTiltIdCandidate(clubName);
+      const existing = await this.playersRepo.findOne({
+        where: { club: { id: clubId }, playerId: candidate },
+      });
+      if (!existing) return candidate;
+    }
+
+    throw new BadRequestException('Unable to generate unique Tilt ID. Please try again.');
+  }
+
   /**
    * Create a player with optional affiliate code
    */
@@ -269,7 +300,8 @@ export class AffiliatesService {
     panCard?: string,
     documentType?: string,
     documentUrl?: string,
-    initialBalance?: number
+    initialBalance?: number,
+    tiltId?: string
   ): Promise<{ player: Player; tempPassword: string }> {
     // Edge case: Validate inputs
     if (!clubId || typeof clubId !== 'string' || !clubId.trim()) {
@@ -403,6 +435,7 @@ export class AffiliatesService {
     const tempPassword = this.generateStrongPassword();
     const saltRounds = 12;
     const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
+    const resolvedTiltId = await this.resolveTiltId(clubId.trim(), club.name, tiltId ?? playerId);
 
     // Prepare KYC documents array
     const kycDocuments: any[] = [];
@@ -424,7 +457,7 @@ export class AffiliatesService {
       name: name.trim(),
       email: email.trim().toLowerCase(),
       phoneNumber: phoneNumber?.trim() || null,
-      playerId: playerId?.trim() || null,
+      playerId: resolvedTiltId,
       panCard: panCard?.trim().toUpperCase() || null,
       passwordHash,
       mustResetPassword: true, // Force password reset on first login

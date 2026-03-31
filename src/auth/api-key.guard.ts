@@ -17,6 +17,9 @@ export class ApiKeyAuthGuard implements CanActivate {
     { method: 'POST', path: /^\/api\/auth\/player\/signup$/ },
     { method: 'POST', path: /^\/api\/auth\/reset-password$/ },
     { method: 'POST', path: /^\/api\/auth\/player\/reset-password$/ },
+    // Public pre-auth club discovery endpoints used by player login flow.
+    { method: 'POST', path: /^\/api\/clubs\/verify-code$/ },
+    { method: 'GET', path: /^\/api\/clubs\/[0-9a-fA-F-]{36}\/branding$/ },
   ];
 
   private isPublicRoute(method: string, path: string): boolean {
@@ -56,6 +59,14 @@ export class ApiKeyAuthGuard implements CanActivate {
     const userId = jwtPayload.sub;
 
     if (jwtPayload.type === 'staff') {
+      // Enforce JWT claims as canonical identity for downstream legacy header consumers.
+      req.headers['x-user-id'] = jwtPayload.sub;
+      if (jwtPayload.clubId) req.headers['x-club-id'] = jwtPayload.clubId;
+      else delete req.headers['x-club-id'];
+      if (jwtPayload.tenantId) req.headers['x-tenant-id'] = jwtPayload.tenantId;
+      else delete req.headers['x-tenant-id'];
+      delete req.headers['x-player-id'];
+
       const user = await this.usersService.findById(userId);
       if (!user) {
         throw new UnauthorizedException('User not found for bearer token');
@@ -111,6 +122,12 @@ export class ApiKeyAuthGuard implements CanActivate {
     }
 
     // Player token: auth context (legacy headers are hydrated in middleware).
+    req.headers['x-player-id'] = jwtPayload.sub;
+    if (jwtPayload.clubId) req.headers['x-club-id'] = jwtPayload.clubId;
+    else delete req.headers['x-club-id'];
+    delete req.headers['x-user-id'];
+    delete req.headers['x-tenant-id'];
+
     req.user = {
       id: userId,
       globalRoles: [],

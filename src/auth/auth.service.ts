@@ -20,6 +20,7 @@ import { CreditRequestsService } from '../clubs/services/credit-requests.service
 import { AffiliatesService } from '../clubs/services/affiliates.service';
 import { FnbEnhancedService } from '../clubs/services/fnb-enhanced.service';
 import { EventsService } from '../events/events.service';
+import { generateTiltIdCandidate } from '../common/utils/tilt-id';
 
 @Injectable()
 export class AuthService {
@@ -42,6 +43,17 @@ export class AuthService {
     @InjectRepository(WaitlistEntry) private readonly waitlistRepo: Repository<WaitlistEntry>,
     @InjectRepository(Table) private readonly tablesRepo: Repository<Table>
   ) {}
+
+  private async generateUniqueTiltId(clubId: string, clubName?: string): Promise<string> {
+    for (let i = 0; i < 20; i++) {
+      const candidate = generateTiltIdCandidate(clubName);
+      const existing = await this.playersRepo.findOne({
+        where: { club: { id: clubId }, playerId: candidate },
+      });
+      if (!existing) return candidate;
+    }
+    throw new BadRequestException('Unable to generate unique Tilt ID. Please try again.');
+  }
 
   // Placeholder: integrate Supabase Auth/JWT verification later
   async validateApiKey(apiKey: string | undefined) {
@@ -400,7 +412,7 @@ export class AuthService {
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
           panCard: (player as any).panCard || (player as any).pan_card || null,
           playerId: player.playerId ? player.playerId.trim() : null,
-          nickname: player.playerId ? player.playerId.trim() : null,
+          nickname: player.nickname ? player.nickname.trim() : (player.playerId ? player.playerId.trim() : null),
           status: player.status || 'Active',
           kycStatus: playerKycStatus || 'pending', // Use actual kycStatus from database
           kycApproved: playerKycStatus === 'approved' || playerKycStatus === 'verified',
@@ -723,12 +735,14 @@ export class AuthService {
       // Players created from player portal signup should NOT need password reset
       // (they set their own password during signup)
       // ✅ Self-signup players get 'pending' KYC status (must complete verification)
+      const generatedTiltId = await this.generateUniqueTiltId(club.id, club.name);
       const player = this.playersRepo.create({
         club: club,
         name: fullName,
         email: lowerEmail,
         phoneNumber: trimmedPhone,
-        playerId: trimmedNickname,
+        playerId: generatedTiltId,
+        nickname: trimmedNickname,
         passwordHash: passwordHash,
         affiliate: affiliate,
         status: 'Active',
@@ -875,7 +889,7 @@ export class AuthService {
           phoneNumber: player.phoneNumber ? player.phoneNumber.trim() : null,
           panCard: (player as any).panCard || (player as any).pan_card || null,
           playerId: player.playerId ? player.playerId.trim() : null,
-          nickname: player.playerId ? player.playerId.trim() : null,
+          nickname: player.nickname ? player.nickname.trim() : (player.playerId ? player.playerId.trim() : null),
           status: player.status || 'Active',
           kycStatus: player.kycStatus || (player as any).kycStatus || 'pending',
           kycApproved: (player.kycStatus || (player as any).kycStatus) === 'approved' || (player.kycStatus || (player as any).kycStatus) === 'verified',

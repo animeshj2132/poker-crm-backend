@@ -27,8 +27,9 @@ export function getAllowedOrigins(): string[] {
 }
 
 export function isOriginAllowed(origin?: string): boolean {
-  // Non-browser clients can connect without Origin header.
-  if (!origin) return true;
+  // Tight default: reject no-origin clients unless explicitly allowed.
+  // Set ALLOW_NO_ORIGIN_WS=true only if you intentionally support server/native clients without Origin.
+  if (!origin) return String(process.env.ALLOW_NO_ORIGIN_WS || '').toLowerCase() === 'true';
   const normalized = normalizeOrigin(origin);
   return getAllowedOrigins().includes(normalized);
 }

@@ -1,15 +1,33 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  Inject,
+  Optional,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VipProduct } from '../entities/vip-product.entity';
 import { Club } from '../club.entity';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class VipProductsService {
   constructor(
     @InjectRepository(VipProduct) private readonly productsRepo: Repository<VipProduct>,
-    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>
+    @InjectRepository(Club) private readonly clubsRepo: Repository<Club>,
+    @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
+
+  private notifyVipCatalog(clubId: string) {
+    try {
+      this.eventsService?.emitVipStoreUpdated(clubId);
+    } catch (e) {
+      console.error('VIP catalog socket emit failed (non-fatal):', e);
+    }
+  }
 
   async create(clubId: string, data: { 
     title: string; 
@@ -75,7 +93,9 @@ export class VipProductsService {
       club
     });
 
-    return this.productsRepo.save(product);
+    const saved = await this.productsRepo.save(product);
+    this.notifyVipCatalog(clubId);
+    return saved;
   }
 
   async findAll(clubId: string) {
@@ -163,12 +183,15 @@ export class VipProductsService {
     }
 
     Object.assign(product, data);
-    return this.productsRepo.save(product);
+    const saved = await this.productsRepo.save(product);
+    this.notifyVipCatalog(clubId);
+    return saved;
   }
 
   async remove(id: string, clubId: string) {
     const product = await this.findOne(id, clubId);
     await this.productsRepo.remove(product);
+    this.notifyVipCatalog(clubId);
   }
 }
 

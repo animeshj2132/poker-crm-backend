@@ -1,4 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { playerFacingStaffSenderLabel } from '../player-chat/player-chat-display.util';
+import {
+  chatCreatedAtToIsoUtc,
+  chatCreatedAtToUtcMs,
+} from '../common/utils/chat-created-at.util';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Server, Socket } from 'socket.io';
@@ -243,7 +248,7 @@ export class EventsService {
   emitTableStatusChange(clubId: string, table: any) {
     const clients = this.clubSubscriptions.get(clubId);
     if (clients && clients.size > 0) {
-      this.server.emit('table:status-changed', {
+      this.emitToClub(clubId, 'table:status-changed', {
         clubId,
         table: {
           id: table.id,
@@ -265,7 +270,7 @@ export class EventsService {
   emitTablesUpdated(clubId: string, tables: any[]) {
     const clients = this.clubSubscriptions.get(clubId);
     if (clients && clients.size > 0) {
-      this.server.emit('tables:updated', {
+      this.emitToClub(clubId, 'tables:updated', {
         clubId,
         tables: tables.map(t => ({
           id: t.id,
@@ -285,74 +290,93 @@ export class EventsService {
 
   // Emit credit request status change to specific player
   emitCreditRequestStatusChange(playerId: string, clubId: string, request: any) {
+    const payload = {
+      playerId,
+      clubId,
+      request: {
+        id: request.id,
+        amount: Number(request.amount),
+        status: request.status,
+        limit: Number(request.limit) || 0,
+        createdAt: request.createdAt,
+        updatedAt: request.updatedAt
+      }
+    };
+
     const clients = this.playerSubscriptions.get(playerId);
     if (clients && clients.size > 0) {
       clients.forEach(clientId => {
-        this.server.to(clientId).emit('credit:status-changed', {
-          playerId,
-          clubId,
-          request: {
-            id: request.id,
-            amount: Number(request.amount),
-            status: request.status,
-            limit: Number(request.limit) || 0,
-            createdAt: request.createdAt,
-            updatedAt: request.updatedAt
-          }
-        });
+        this.server.to(clientId).emit('credit:status-changed', payload);
+        this.server.to(clientId).emit('credit:request-updated', payload);
       });
       this.logger.log(`Emitted credit status change for player ${playerId} to ${clients.size} clients`);
     }
+
+    // Also notify staff/club dashboards to refresh in real-time.
+    this.emitToClub(clubId, 'credit:status-changed', payload);
+    this.emitToClub(clubId, 'credit:request-updated', payload);
   }
 
   // Emit waitlist position update to specific player
   emitWaitlistPositionUpdate(playerId: string, clubId: string, position: number, totalInQueue: number, entry: any) {
+    const payload = {
+      playerId,
+      clubId,
+      position,
+      totalInQueue,
+      entry: {
+        id: entry.id,
+        status: entry.status,
+        tableNumber: entry.tableNumber,
+        tableType: entry.tableType
+      }
+    };
+
     const clients = this.playerSubscriptions.get(playerId);
     if (clients && clients.size > 0) {
       clients.forEach(clientId => {
-        this.server.to(clientId).emit('waitlist:position-updated', {
-          playerId,
-          clubId,
-          position,
-          totalInQueue,
-          entry: {
-            id: entry.id,
-            status: entry.status,
-            tableNumber: entry.tableNumber,
-            tableType: entry.tableType
-          }
-        });
+        this.server.to(clientId).emit('waitlist:position-updated', payload);
       });
       this.logger.log(`Emitted waitlist position update for player ${playerId} to ${clients.size} clients`);
     }
+
+    // Also notify club subscribers (staff dashboards) so waitlist cards update live.
+    this.emitToClub(clubId, 'waitlist:position-updated', payload);
   }
 
   // Emit waitlist status change (seated, cancelled, etc.)
-  emitWaitlistStatusChange(playerId: string, clubId: string, entry: any) {
-    const clients = this.playerSubscriptions.get(playerId);
-    if (clients && clients.size > 0) {
-      clients.forEach(clientId => {
-        this.server.to(clientId).emit('waitlist:status-changed', {
-          playerId,
-          clubId,
-          entry: {
-            id: entry.id,
-            status: entry.status,
-            tableNumber: entry.tableNumber,
-            tableType: entry.tableType,
-            createdAt: entry.createdAt
-          }
+  emitWaitlistStatusChange(playerId: string | null | undefined, clubId: string, entry: any) {
+    const payload = {
+      playerId: playerId || entry?.playerId || null,
+      clubId,
+      entry: {
+        id: entry.id,
+        status: entry.status,
+        tableNumber: entry.tableNumber,
+        tableType: entry.tableType,
+        createdAt: entry.createdAt
+      }
+    };
+
+    if (playerId) {
+      const clients = this.playerSubscriptions.get(playerId);
+      if (clients && clients.size > 0) {
+        clients.forEach(clientId => {
+          this.server.to(clientId).emit('waitlist:status-changed', payload);
         });
-      });
-      this.logger.log(`Emitted waitlist status change for player ${playerId} to ${clients.size} clients`);
+        this.logger.log(`Emitted waitlist status change for player ${playerId} to ${clients.size} clients`);
+      }
     }
+
+    // Always notify club subscribers (staff dashboards).
+    this.emitToClub(clubId, 'waitlist:status-changed', payload);
   }
 
   // Emit table available notification to all players on waitlist for that club
   emitTableAvailableNotification(clubId: string, table: any) {
     const clients = this.clubSubscriptions.get(clubId);
     if (clients && clients.size > 0) {
-      this.server.emit('table:available', {
+      this.emitToClub(clubId, 'table:available', {
         clubId,
         table: {
           id: table.id,
@@ -368,10 +392,12 @@ export class EventsService {
   // ==================== CHAT EVENTS (with guaranteed delivery) ====================
 
   emitNewChatMessage(clubId: string, sessionId: string, message: any, playerId?: string, recipientStaffId?: string) {
+    const createdAtIso = chatCreatedAtToIsoUtc(message.createdAt);
+    const createdAtUtcMs = chatCreatedAtToUtcMs(message.createdAt);
     // Broadcast to club (for all staff to update their chat lists)
     const clubClients = this.clubSubscriptions.get(clubId);
     if (clubClients && clubClients.size > 0) {
-      this.server.emit('chat:new-message', {
+      this.emitToClub(clubId, 'chat:new-message', {
         clubId,
         sessionId,
         message: {
@@ -380,7 +406,10 @@ export class EventsService {
           senderType: message.senderType,
           senderName: message.senderName,
           senderStaffId: message.senderStaff?.id,
-          createdAt: message.createdAt,
+          senderStaffUserId: message.senderStaff?.userId,
+          senderStaffEmail: message.senderStaff?.email,
+          createdAt: createdAtIso,
+          createdAtUtcMs,
           isRead: message.isRead
         }
       });
@@ -398,14 +427,18 @@ export class EventsService {
           senderType: message.senderType,
           senderName: message.senderName,
           senderStaffId: message.senderStaff?.id,
-          createdAt: message.createdAt,
+          senderStaffUserId: message.senderStaff?.userId,
+          senderStaffEmail: message.senderStaff?.email,
+          createdAt: createdAtIso,
+          createdAtUtcMs,
           isRead: message.isRead
         }
       });
     }
 
-    // Guaranteed delivery to player
+    // Guaranteed delivery to player (never expose real staff names)
     if (playerId) {
+      const isStaff = message.senderType === 'staff';
       this.emitToRecipientWithGuarantee('player', playerId, 'chat:new-message', {
         clubId,
         sessionId,
@@ -414,8 +447,11 @@ export class EventsService {
           id: message.id,
           message: message.message,
           senderType: message.senderType,
-          senderName: message.senderName,
-          createdAt: message.createdAt,
+          senderName: isStaff
+            ? playerFacingStaffSenderLabel(message.senderStaff?.id)
+            : message.senderName,
+          createdAt: createdAtIso,
+          createdAtUtcMs,
           isRead: message.isRead
         }
       });
@@ -426,7 +462,7 @@ export class EventsService {
     // Broadcast to club (for staff)
     const clubClients = this.clubSubscriptions.get(clubId);
     if (clubClients && clubClients.size > 0) {
-      this.server.emit('chat:session-updated', {
+      this.emitToClub(clubId, 'chat:session-updated', {
         clubId,
         session: {
           id: session.id,
@@ -476,7 +512,7 @@ export class EventsService {
   emitBuyInRequest(clubId: string, request: any) {
     const clients = this.clubSubscriptions.get(clubId);
     if (clients && clients.size > 0) {
-      this.server.emit('buyin:new-request', {
+      this.emitToClub(clubId, 'buyin:new-request', {
         clubId,
         request: {
           id: request.id,
@@ -498,7 +534,7 @@ export class EventsService {
   emitBuyOutRequest(clubId: string, request: any) {
     const clients = this.clubSubscriptions.get(clubId);
     if (clients && clients.size > 0) {
-      this.server.emit('buyout:new-request', {
+      this.emitToClub(clubId, 'buyout:new-request', {
         clubId,
         request: {
           id: request.id,
@@ -529,11 +565,13 @@ export class EventsService {
 
   emitTournamentBlindsUpdated(clubId: string, payload: { id: string; name: string; currentRound: number; currentSb: number; currentBb: number; structure: any }) {
     // Broadcast to all subscribers of this club (both admin and player clients)
-    this.server.emit('tournament:blinds-updated', { clubId, tournament: payload });
+    this.emitToClub(clubId, 'tournament:blinds-updated', { clubId, tournament: payload });
     this.logger.log(`Emitted tournament:blinds-updated for club ${clubId}, tournament ${payload.id} (Level ${payload.currentRound}: ${payload.currentSb}/${payload.currentBb})`);
   }
 
   emitNewChatMessageDirect(clubId: string, sessionId: string, message: any, recipientStaffUserId: string) {
+    const createdAtIso = chatCreatedAtToIsoUtc(message.createdAt);
+    const createdAtUtcMs = chatCreatedAtToUtcMs(message.createdAt);
     this.emitToRecipientWithGuarantee('staff', recipientStaffUserId, 'chat:new-message-direct', {
       clubId,
       sessionId,
@@ -543,9 +581,13 @@ export class EventsService {
         message: message.message,
         senderType: message.senderType,
         senderName: message.senderName,
-        createdAt: message.createdAt,
+        createdAt: createdAtIso,
+        createdAtUtcMs,
         isRead: message.isRead,
-        senderStaff: message.senderStaff
+        senderStaff: message.senderStaff,
+        senderStaffId: message.senderStaff?.id,
+        senderStaffUserId: message.senderStaff?.userId,
+        senderStaffEmail: message.senderStaff?.email,
       }
     });
   }
@@ -636,6 +678,14 @@ export class EventsService {
 
   emitFnbOrderUpdated(clubId: string) {
     this.emitToClub(clubId, 'fnb:order-updated', { clubId });
+  }
+
+  /** VIP product purchase or stock change — refresh player VIP UI and staff VIP Store. */
+  emitVipStoreUpdated(clubId: string, playerId?: string) {
+    this.emitToClub(clubId, 'vip:store-updated', { clubId, playerId });
+    if (playerId) {
+      this.emitToRecipientWithGuarantee('player', playerId, 'vip:store-updated', { clubId, playerId });
+    }
   }
 
   // ==================== STAFF EVENTS ====================

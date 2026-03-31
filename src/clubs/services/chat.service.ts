@@ -647,6 +647,11 @@ export class ChatService {
       });
 
       const savedMessage = await this.messageRepo.save(message);
+      const hydratedMessage = await this.messageRepo.findOne({
+        where: { id: savedMessage.id },
+        relations: ['session', 'senderStaff', 'senderPlayer'],
+      });
+      const emittedMessage = hydratedMessage || savedMessage;
 
       // Update session last message time
       session.lastMessageAt = new Date();
@@ -682,11 +687,11 @@ export class ChatService {
       // Emit real-time event for staff-to-staff chat
       try {
         // Emit to club for general updates
-        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage, undefined, recipientStaffId);
+        this.eventsService.emitNewChatMessage(clubId, sessionId, emittedMessage, undefined, recipientStaffId);
         
         // Emit direct notification to recipient staff's user ID
         if (recipientUserId) {
-          this.eventsService.emitNewChatMessageDirect(clubId, sessionId, savedMessage, recipientUserId);
+          this.eventsService.emitNewChatMessageDirect(clubId, sessionId, emittedMessage, recipientUserId);
         } else {
           console.warn(`No userId found for recipient staff ${recipientStaffId} (${recipientStaff?.email}), notification may not be delivered`);
         }
@@ -695,7 +700,7 @@ export class ChatService {
         console.error('Failed to emit chat message event:', err);
       }
 
-      return savedMessage;
+      return emittedMessage as ChatMessage;
     } else if (session.sessionType === ChatSessionType.PLAYER) {
       // Player chat - staff is replying to player
       // Verify staff has access (any staff with player chat access can reply)
@@ -708,22 +713,39 @@ export class ChatService {
         isRead: false // Player messages are unread by default
       });
 
-      // Update session last message time
+      if (session.status === ChatSessionStatus.OPEN) {
+        session.status = ChatSessionStatus.IN_PROGRESS;
+      }
+      if (!session.assignedStaff) {
+        session.assignedStaff = sender;
+      }
       session.lastMessageAt = new Date();
       await this.sessionRepo.save(session);
 
       const savedMessage = await this.messageRepo.save(message);
+      const hydratedMessage = await this.messageRepo.findOne({
+        where: { id: savedMessage.id },
+        relations: ['session', 'senderStaff', 'senderPlayer'],
+      });
+      const emittedMessage = hydratedMessage || savedMessage;
 
       // Emit real-time event for player-staff chat
       try {
         const playerId = session.player?.id;
-        this.eventsService.emitNewChatMessage(clubId, sessionId, savedMessage, playerId);
+        this.eventsService.emitNewChatMessage(clubId, sessionId, emittedMessage, playerId);
+        const sessionForPlayer = await this.sessionRepo.findOne({
+          where: { id: sessionId },
+          relations: ['player', 'staffInitiator', 'staffRecipient', 'assignedStaff'],
+        });
+        if (sessionForPlayer) {
+          this.eventsService.emitChatSessionUpdate(clubId, sessionForPlayer, playerId);
+        }
       } catch (err) {
         // Non-critical - log but don't fail
         console.error('Failed to emit chat message event:', err);
       }
 
-      return savedMessage;
+      return emittedMessage as ChatMessage;
     } else {
       throw new BadRequestException('Invalid session type');
     }
@@ -834,7 +856,10 @@ export class ChatService {
     }
 
     return {
-      messages,
+      messages: messages.map((m) => ({
+        ...m,
+        createdAtUtcMs: m.createdAt?.getTime?.() ?? undefined,
+      })),
       total,
       page,
       totalPages: Math.ceil(total / limit)

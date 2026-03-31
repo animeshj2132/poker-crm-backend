@@ -10,6 +10,7 @@ import { ChangePlayerPasswordDto } from './dto/change-player-password.dto';
 import { ChangeStaffPasswordDto } from './dto/change-staff-password.dto';
 import { PlayerResetPasswordDto } from './dto/player-reset-password.dto';
 import { AuditLogsService } from '../clubs/services/audit-logs.service';
+import { PushNotificationsService } from '../clubs/services/push-notifications.service';
 import { ActionCategory } from '../clubs/dto/create-audit-log.dto';
 import { DataSource } from 'typeorm';
 import { signAppJwt } from '../common/security/jwt';
@@ -20,6 +21,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
     private readonly auditLogsService: AuditLogsService,
+    private readonly pushNotificationsService: PushNotificationsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -581,6 +583,73 @@ export class AuthController {
       throw new BadRequestException('x-club-id header is required');
     }
     return this.authService.getPlayerCreditRequests(playerId.trim(), clubId.trim());
+  }
+
+  /**
+   * Get player notification inbox
+   * GET /api/auth/player/push-notifications
+   */
+  @Get('player/push-notifications')
+  async getPlayerPushNotifications(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    const inbox = await this.pushNotificationsService.getInboxNotifications(
+      clubId.trim(),
+      playerId.trim(),
+      'player'
+    );
+    return (inbox.notifications || []).map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      message: n.details ?? '',
+      details: n.details ?? '',
+      imageUrl: n.imageUrl ?? null,
+      image_url: n.imageUrl ?? null,
+      videoUrl: n.videoUrl ?? null,
+      video_url: n.videoUrl ?? null,
+      isRead: !!n.isRead,
+      delivery_status: n.isRead ? 'read' : 'unread',
+      readAt: n.readAt ?? null,
+      read_at: n.readAt ?? null,
+      sentAt: n.sentAt ?? null,
+      sent_at: n.sentAt ?? null,
+      createdAt: n.createdAt ?? null,
+      created_at: n.createdAt ?? null,
+    }));
+  }
+
+  /**
+   * Mark one player notification as read
+   * PATCH /api/auth/player/push-notifications/:notificationId/read
+   */
+  @Put('player/push-notifications/:notificationId/read')
+  async markPlayerPushNotificationRead(
+    @Param('notificationId') notificationId: string,
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!notificationId || !notificationId.trim()) {
+      throw new BadRequestException('notificationId is required');
+    }
+    return this.pushNotificationsService.markAsRead(
+      clubId.trim(),
+      notificationId.trim(),
+      playerId.trim(),
+      'player'
+    );
   }
 
   /**

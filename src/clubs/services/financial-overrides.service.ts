@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { FinancialTransaction } from '../entities/financial-transaction.entity';
+import { Player } from '../entities/player.entity';
 import { PlayerBonus } from '../entities/player-bonus.entity';
 import { StaffBonus } from '../entities/staff-bonus.entity';
 import { SalaryPayment } from '../entities/salary-payment.entity';
@@ -23,6 +24,8 @@ export interface UnifiedTransaction {
   isOverridden?: boolean;
   transactionId?: string; // For financial transactions
   gameType?: string; // 'poker' or 'rummy'
+  /** Club Tilt ID (players.player_id), when category is player */
+  tiltId?: string | null;
 }
 
 @Injectable()
@@ -40,7 +43,19 @@ export class FinancialOverridesService {
     private readonly dealerCashoutRepo: Repository<DealerCashout>,
     @InjectRepository(ManagerCashout)
     private readonly managerCashoutRepo: Repository<ManagerCashout>,
+    @InjectRepository(Player)
+    private readonly playerRepo: Repository<Player>,
   ) {}
+
+  private async tiltIdByPlayerUuid(clubId: string, playerUuids: string[]): Promise<Map<string, string | null>> {
+    const unique = [...new Set((playerUuids || []).filter(Boolean))];
+    if (!unique.length) return new Map();
+    const rows = await this.playerRepo.find({
+      where: { club: { id: clubId }, id: In(unique) },
+      select: ['id', 'playerId'],
+    });
+    return new Map(rows.map((p) => [p.id, p.playerId ?? null]));
+  }
 
   /**
    * Get all transactions (player and staff) for a club
@@ -235,6 +250,17 @@ export class FinancialOverridesService {
         // Log the full error for debugging
         console.error('Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
         throw error;
+      }
+    }
+
+    const playerRows = transactions.filter((t) => t.category === 'player' && t.entityId);
+    const tiltMap = await this.tiltIdByPlayerUuid(
+      clubId,
+      playerRows.map((t) => t.entityId),
+    );
+    for (const t of transactions) {
+      if (t.category === 'player' && t.entityId) {
+        t.tiltId = tiltMap.get(t.entityId) ?? null;
       }
     }
 

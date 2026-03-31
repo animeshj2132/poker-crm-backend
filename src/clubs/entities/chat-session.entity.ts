@@ -10,6 +10,7 @@ import {
 import { Club } from '../club.entity';
 import { Staff } from './staff.entity';
 import { Player } from './player.entity';
+import { utcNaiveTimestampTransformer } from '../../common/utils/chat-created-at.util';
 
 export enum ChatSessionType {
   STAFF = 'staff',
@@ -59,16 +60,16 @@ export class ChatSession {
   @Column({ type: 'varchar', length: 20, default: ChatSessionStatus.OPEN })
   status!: ChatSessionStatus;
 
-  @Column({ type: 'timestamp', name: 'last_message_at', default: () => 'NOW()' })
+  @Column({ type: 'timestamp', name: 'last_message_at', default: () => 'NOW()', transformer: utcNaiveTimestampTransformer })
   lastMessageAt!: Date;
 
-  @CreateDateColumn({ name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at', transformer: utcNaiveTimestampTransformer })
   createdAt!: Date;
 
-  @UpdateDateColumn({ name: 'updated_at' })
+  @UpdateDateColumn({ name: 'updated_at', transformer: utcNaiveTimestampTransformer })
   updatedAt!: Date;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'closed_at' })
+  @Column({ type: 'timestamp', nullable: true, name: 'closed_at', transformer: utcNaiveTimestampTransformer })
   closedAt!: Date | null;
 
   // One-sided archiving (user can delete chat from their side only)
