@@ -120,6 +120,9 @@ import { ApproveBuyInDto } from './dto/approve-buyin.dto';
 import { RejectBuyInDto } from './dto/reject-buyin.dto';
 import { AttendanceTrackingService } from './services/attendance-tracking.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
+import { UpdateAttendanceDto } from './dto/update-attendance.dto';
+import { getAttendanceMarkTier } from '../common/rbac/attendance-authority.util';
+import type { RequestUser } from '../common/rbac/roles.guard';
 import { LeaveManagementService } from './services/leave-management.service';
 import { CreateLeavePolicyDto } from './dto/create-leave-policy.dto';
 import { UpdateLeavePolicyDto } from './dto/update-leave-policy.dto';
@@ -2929,8 +2932,7 @@ export class ClubsController {
     ClubRole.SUPER_ADMIN,
     ClubRole.ADMIN,
     ClubRole.MANAGER,
-    ClubRole.CASHIER,
-    ClubRole.GRE
+    ClubRole.CASHIER
   )
   async listTransactions(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -17153,7 +17155,13 @@ export class ClubsController {
   // =========================================================================
 
   @Get(':id/attendance')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
   async getAttendanceRecords(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -17188,7 +17196,13 @@ export class ClubsController {
   }
 
   @Get(':id/attendance/stats')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
   async getAttendanceStats(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -17217,7 +17231,13 @@ export class ClubsController {
   }
 
   @Post(':id/attendance')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
   async createAttendanceRecord(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -17225,7 +17245,7 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Body() dto: CreateAttendanceDto,
-    @Req() req?: Request
+    @Req() req: Request & { user?: RequestUser },
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -17237,7 +17257,13 @@ export class ClubsController {
           throw new ForbiddenException('You can only create attendance records for your assigned club');
         }
       }
-      const record = await this.attendanceTrackingService.createAttendanceRecord(clubId, dto, userId || '');
+      const markTier = getAttendanceMarkTier(req?.user, clubId, tenantId);
+      const record = await this.attendanceTrackingService.createAttendanceRecord(
+        clubId,
+        dto,
+        userId || '',
+        markTier,
+      );
       
       // Audit log: Record attendance
       try {
@@ -17285,7 +17311,13 @@ export class ClubsController {
    * GET /api/clubs/:id/attendance/daily-roster?date=YYYY-MM-DD
    */
   @Get(':id/attendance/daily-roster')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
   @UseGuards(RolesGuard)
   async getDailyRoster(
     @Headers('x-tenant-id') tenantId: string | undefined,
@@ -17312,26 +17344,166 @@ export class ClubsController {
    * POST /api/clubs/:id/attendance/bulk
    */
   @Post(':id/attendance/bulk')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.HR)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
   @UseGuards(RolesGuard)
   async bulkCreateAttendance(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Body() body: { entries: Array<{ staffId: string; date: string; loginTime?: string; logoutTime?: string; useShiftTimes?: boolean }> },
+    @Body()
+    body: {
+      entries: Array<{
+        staffId: string;
+        date: string;
+        loginTime?: string;
+        logoutTime?: string;
+        useShiftTimes?: boolean;
+        overtimeHours?: number;
+        workedRosterOffDay?: boolean;
+      }>;
+      allowOffDayExtraAttendance?: boolean;
+    },
+    @Req() req: Request & { user?: RequestUser },
   ) {
     try {
       const effectiveClubId = headerClubId?.trim() || clubId;
       if (!body.entries || !Array.isArray(body.entries) || body.entries.length === 0) {
         throw new BadRequestException('At least one attendance entry is required');
       }
-      return await this.attendanceTrackingService.bulkCreateAttendance(effectiveClubId, body.entries, userId || '');
+      const markTier = getAttendanceMarkTier(req?.user, effectiveClubId, tenantId);
+      return await this.attendanceTrackingService.bulkCreateAttendance(
+        effectiveClubId,
+        body.entries,
+        userId || '',
+        Boolean(body.allowOffDayExtraAttendance),
+        markTier,
+      );
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException) {
         throw e;
       }
       throw new BadRequestException(`Failed to bulk create attendance: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Patch(':id/attendance/:recordId')
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
+  @UseGuards(RolesGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  async updateAttendanceRecord(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('recordId', new ParseUUIDPipe()) recordId: string,
+    @Body() dto: UpdateAttendanceDto,
+    @Req() req: Request & { user?: RequestUser },
+  ) {
+    try {
+      const effectiveClubId = headerClubId?.trim() || clubId;
+      const markTier = getAttendanceMarkTier(req?.user, effectiveClubId, tenantId);
+      return await this.attendanceTrackingService.updateAttendanceRecord(
+        effectiveClubId,
+        recordId,
+        dto,
+        userId || '',
+        markTier,
+      );
+    } catch (e) {
+      if (
+        e instanceof BadRequestException ||
+        e instanceof NotFoundException ||
+        e instanceof ForbiddenException
+      ) {
+        throw e;
+      }
+      throw new BadRequestException(
+        `Failed to update attendance: ${e instanceof Error ? e.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  @Post(':id/attendance/bulk-delete')
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
+  @UseGuards(RolesGuard)
+  async bulkDeleteAttendanceRecords(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() body: { recordIds: string[] },
+    @Req() req: Request & { user?: RequestUser },
+  ) {
+    try {
+      const effectiveClubId = headerClubId?.trim() || clubId;
+      if (!body.recordIds || !Array.isArray(body.recordIds)) {
+        throw new BadRequestException('recordIds array is required');
+      }
+      const markTier = getAttendanceMarkTier(req?.user, effectiveClubId, tenantId);
+      return await this.attendanceTrackingService.bulkDeleteAttendanceRecords(
+        effectiveClubId,
+        body.recordIds,
+        markTier,
+        userId || '',
+      );
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to bulk delete attendance: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  @Delete(':id/attendance/:recordId')
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.HR,
+  )
+  @UseGuards(RolesGuard)
+  async deleteAttendanceRecord(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('recordId', new ParseUUIDPipe()) recordId: string,
+    @Req() req: Request & { user?: RequestUser },
+  ) {
+    try {
+      const effectiveClubId = headerClubId?.trim() || clubId;
+      const markTier = getAttendanceMarkTier(req?.user, effectiveClubId, tenantId);
+      return await this.attendanceTrackingService.deleteAttendanceRecord(
+        effectiveClubId,
+        recordId,
+        markTier,
+        userId || '',
+      );
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to delete attendance: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 

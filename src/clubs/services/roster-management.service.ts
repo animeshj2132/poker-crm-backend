@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, In, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import { Repository, In, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { RosterTemplate } from '../entities/roster-template.entity';
 import { Shift } from '../entities/shift.entity';
 import { Staff, StaffStatus } from '../entities/staff.entity';
@@ -8,6 +8,9 @@ import { LeaveApplication, LeaveStatus } from '../entities/leave-application.ent
 import { CreateRosterTemplateDto } from '../dto/create-roster-template.dto';
 import { UpdateRosterTemplateDto } from '../dto/update-roster-template.dto';
 import { GenerateRosterDto, RosterPeriodType } from '../dto/generate-roster.dto';
+
+/** Club operations timezone: shift wall times in templates are interpreted in this zone. */
+const ROSTER_TZ_OFFSET = '+05:30';
 
 @Injectable()
 export class RosterManagementService {
@@ -22,29 +25,27 @@ export class RosterManagementService {
     private leaveApplicationRepo: Repository<LeaveApplication>,
   ) {}
 
-  /** YYYY-MM-DD in the server local calendar (matches how JS Date builds shift days). */
-  private ymdFromLocalDate(d: Date): string {
-    const x = d instanceof Date ? d : new Date(d);
-    const y = x.getFullYear();
-    const m = String(x.getMonth() + 1).padStart(2, '0');
-    const day = String(x.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+  /** Calendar YYYY-MM-DD from a stored shift date (timezone-safe for roster grid). */
+  private ymdFromStoredShiftDate(d: Date | string): string {
+    if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) {
+      return d.slice(0, 10);
+    }
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(d as Date));
   }
 
-  private localMidnight(ymd: string): Date {
-    const [y, m, d] = ymd.split('-').map(Number);
-    return new Date(y, m - 1, d, 0, 0, 0, 0);
-  }
-
-  private localEndOfDay(ymd: string): Date {
-    const [y, m, d] = ymd.split('-').map(Number);
-    return new Date(y, m - 1, d, 23, 59, 59, 999);
-  }
-
+  /** Add calendar days to YYYY-MM-DD (no server-local timezone drift). */
   private addDaysToYmd(ymd: string, delta: number): string {
     const [y, m, d] = ymd.split('-').map(Number);
-    const n = new Date(y, m - 1, d + delta);
-    return this.ymdFromLocalDate(n);
+    const dt = new Date(Date.UTC(y, m - 1, d + delta));
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
   }
 
   private endYmdForPeriod(startYmd: string, periodType: RosterPeriodType): string {
@@ -52,8 +53,36 @@ export class RosterManagementService {
       return this.addDaysToYmd(startYmd, 6);
     }
     const [y, m] = startYmd.split('-').map(Number);
-    const last = new Date(y, m, 0);
-    return this.ymdFromLocalDate(last);
+    const last = new Date(Date.UTC(y, m, 0));
+    const yy = last.getUTCFullYear();
+    const mm = String(last.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(last.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  /** Use noon in club TZ for DATE column to avoid UTC midnight rolling the calendar day. */
+  private dateOnlyNoonClubTz(ymd: string): Date {
+    return new Date(`${ymd}T12:00:00${ROSTER_TZ_OFFSET}`);
+  }
+
+  private normalizeTimeToHhMmSs(time: string): string {
+    const parts = String(time || '').split(':');
+    const h = String(parseInt(parts[0] || '0', 10)).padStart(2, '0');
+    const min = String(parseInt(parts[1] || '0', 10)).padStart(2, '0');
+    const secPart = (parts[2] || '00').replace(/\D/g, '').slice(0, 2) || '00';
+    const s = String(parseInt(secPart, 10)).padStart(2, '0');
+    return `${h}:${min}:${s}`;
+  }
+
+  /** Wall-clock time on calendar day ymd in club timezone → absolute Date. */
+  private combineYmdTimeClubTz(ymd: string, time: string): Date {
+    const t = this.normalizeTimeToHhMmSs(time);
+    return new Date(`${ymd}T${t}${ROSTER_TZ_OFFSET}`);
+  }
+
+  private dayOfWeekFromYmd(ymd: string): number {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
   }
 
   // ==================== ROSTER TEMPLATE MANAGEMENT ====================
@@ -230,15 +259,17 @@ export class RosterManagementService {
 
     const startYmd = String(startDate).split('T')[0];
     const endYmd = this.endYmdForPeriod(startYmd, periodType);
-    const rangeStart = this.localMidnight(startYmd);
-    const rangeEnd = this.localEndOfDay(endYmd);
 
-    // If overwrite is enabled, delete existing shifts in the period
+    // If overwrite is enabled, delete existing shifts in the period (calendar dates, no UTC drift)
     if (overwriteExisting) {
-      await this.shiftRepo.delete({
-        clubId,
-        shiftDate: Between(rangeStart, rangeEnd),
-      });
+      await this.shiftRepo
+        .createQueryBuilder()
+        .delete()
+        .from(Shift)
+        .where('club_id = :clubId', { clubId })
+        .andWhere('shift_date >= :startYmd', { startYmd })
+        .andWhere('shift_date <= :endYmd', { endYmd })
+        .execute();
     }
 
     // Generate shifts for each staff member
@@ -286,30 +317,25 @@ export class RosterManagementService {
     userId?: string,
   ): Promise<Shift[]> {
     const shifts: Shift[] = [];
-    const rangeStart = this.localMidnight(startYmd);
-    const rangeEnd = this.localEndOfDay(endYmd);
 
     // First, check for existing shifts in this period for this staff member
-    const existingShifts = await this.shiftRepo.find({
-      where: {
-        clubId,
-        staffId: template.staffId,
-        shiftDate: Between(rangeStart, rangeEnd),
-      },
-    });
+    const existingShifts = await this.shiftRepo
+      .createQueryBuilder('s')
+      .where('s.clubId = :clubId', { clubId })
+      .andWhere('s.staffId = :staffId', { staffId: template.staffId })
+      .andWhere('s.shiftDate >= :startYmd', { startYmd })
+      .andWhere('s.shiftDate <= :endYmd', { endYmd })
+      .getMany();
 
-    // Use local calendar YYYY-MM-DD so this matches the loop (avoids duplicate rows from UTC vs local ISO mismatch).
-    const existingDates = new Set(
-      existingShifts.map((shift) => this.ymdFromLocalDate(new Date(shift.shiftDate))),
-    );
+    const existingDates = new Set(existingShifts.map((shift) => this.ymdFromStoredShiftDate(shift.shiftDate)));
 
     for (let ymd = startYmd; ymd <= endYmd; ymd = this.addDaysToYmd(ymd, 1)) {
       if (existingDates.has(ymd)) {
         continue;
       }
 
-      const currentDate = this.localMidnight(ymd);
-      const dayOfWeek = currentDate.getDay();
+      const shiftDateOnly = this.dateOnlyNoonClubTz(ymd);
+      const dayOfWeek = this.dayOfWeekFromYmd(ymd);
 
       const isOffDay = template.offDays.includes(dayOfWeek);
 
@@ -317,33 +343,29 @@ export class RosterManagementService {
         const shift = this.shiftRepo.create({
           clubId,
           staffId: template.staffId,
-          shiftDate: currentDate,
-          shiftStartTime: new Date(currentDate),
-          shiftEndTime: new Date(currentDate),
+          shiftDate: shiftDateOnly,
+          shiftStartTime: shiftDateOnly,
+          shiftEndTime: shiftDateOnly,
           isOffDay: true,
           notes: 'Scheduled day off',
           createdBy: userId,
         });
         shifts.push(shift);
       } else {
-        const shiftStartTime = this.combineDateAndTime(
-          currentDate,
-          template.defaultShiftStartTime,
-        );
+        const shiftStartTime = this.combineYmdTimeClubTz(ymd, template.defaultShiftStartTime);
 
         let shiftEndTime: Date;
         if (template.shiftCrossesMidnight) {
-          const nextDay = this.addDaysToYmd(ymd, 1);
-          const nextDate = this.localMidnight(nextDay);
-          shiftEndTime = this.combineDateAndTime(nextDate, template.defaultShiftEndTime);
+          const nextYmd = this.addDaysToYmd(ymd, 1);
+          shiftEndTime = this.combineYmdTimeClubTz(nextYmd, template.defaultShiftEndTime);
         } else {
-          shiftEndTime = this.combineDateAndTime(currentDate, template.defaultShiftEndTime);
+          shiftEndTime = this.combineYmdTimeClubTz(ymd, template.defaultShiftEndTime);
         }
 
         const shift = this.shiftRepo.create({
           clubId,
           staffId: template.staffId,
-          shiftDate: currentDate,
+          shiftDate: shiftDateOnly,
           shiftStartTime,
           shiftEndTime,
           isOffDay: false,
@@ -361,16 +383,6 @@ export class RosterManagementService {
   }
 
   /**
-   * Helper: Combine date and time strings
-   */
-  private combineDateAndTime(date: Date, time: string): Date {
-    const [hours, minutes, seconds = '00'] = time.split(':');
-    const combined = new Date(date);
-    combined.setHours(parseInt(hours, 10), parseInt(minutes, 10), parseInt(seconds, 10), 0);
-    return combined;
-  }
-
-  /**
    * Get roster overview for a period (all staff shifts)
    * Shows calendar view with working days properly counted
    * Includes approved leave information
@@ -380,21 +392,18 @@ export class RosterManagementService {
     startDate: string,
     endDate: string,
   ) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    const startYmd = String(startDate).split('T')[0];
+    const endYmd = String(endDate).split('T')[0];
 
-    // Get all shifts in the period
-    const shifts = await this.shiftRepo.find({
-      where: {
-        clubId,
-        shiftDate: Between(start, end),
-      },
-      relations: ['staff'],
-      order: {
-        shiftDate: 'ASC',
-        staff: { name: 'ASC' },
-      },
-    });
+    const shifts = await this.shiftRepo
+      .createQueryBuilder('shift')
+      .leftJoinAndSelect('shift.staff', 'staff')
+      .where('shift.clubId = :clubId', { clubId })
+      .andWhere('shift.shiftDate >= :startYmd', { startYmd })
+      .andWhere('shift.shiftDate <= :endYmd', { endYmd })
+      .orderBy('shift.shiftDate', 'ASC')
+      .addOrderBy('staff.name', 'ASC')
+      .getMany();
 
     // Get all staff members with templates
     const templates = await this.getAllTemplates(clubId, false);
@@ -439,13 +448,12 @@ export class RosterManagementService {
           shift.shiftDate <= leave.endDate
         );
 
-        // Format shift date properly
-        const shiftDateObj = typeof shift.shiftDate === 'string' ? new Date(shift.shiftDate) : shift.shiftDate;
-        
+        const dateYmd = this.ymdFromStoredShiftDate(shift.shiftDate);
+
         const shiftData = {
           id: shift.id,
-          date: shiftDateObj.toISOString().split('T')[0],
-          dayOfWeek: shiftDateObj.getDay(), // 0=Sun, 1=Mon, etc.
+          date: dateYmd,
+          dayOfWeek: this.dayOfWeekFromYmd(dateYmd),
           startTime: this.formatTime(shift.shiftStartTime),
           endTime: this.formatTime(shift.shiftEndTime),
           isOffDay: shift.isOffDay,
@@ -473,24 +481,16 @@ export class RosterManagementService {
     };
   }
 
-  /**
-   * Format time to HH:MM (IST format)
-   * Converts UTC timestamp to IST (UTC+5:30)
-   */
+  /** Wall-clock time in Asia/Kolkata for display (matches template HH:mm). */
   private formatTime(date: Date | string): string {
     if (!date) return '00:00';
-    
-    // Convert to Date if string
     const d = typeof date === 'string' ? new Date(date) : date;
-    
-    // IST is UTC+5:30
-    const istOffset = 5.5 * 60; // 330 minutes
-    const utcTime = d.getTime();
-    const istTime = new Date(utcTime + (istOffset * 60 * 1000));
-    
-    const hours = istTime.getUTCHours().toString().padStart(2, '0');
-    const minutes = istTime.getUTCMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(d);
   }
 
   /**

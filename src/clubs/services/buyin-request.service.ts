@@ -31,19 +31,74 @@ export class BuyInRequestService {
       order: { requestedAt: 'ASC' },
     });
 
-    return requests.map(req => ({
-      id: req.id,
-      playerId: req.player.id,
-      playerName: req.player.name,
-      playerEmail: req.player.email,
-      tableId: req.table?.id || null,
-      tableNumber: req.tableNumber,
-      seatNumber: req.seatNumber,
-      requestedAmount: req.requestedAmount ? Number(req.requestedAmount) : 0,
-      currentTableBalance: req.currentTableBalance ? Number(req.currentTableBalance) : null,
-      requestedAt: req.requestedAt,
-      status: req.status,
-    }));
+    const rows = await Promise.all(
+      requests.map(async (req) => {
+        // Compute live table balance so pending cards always show latest value, not stale snapshot.
+        let liveTableBalance: number | null = null;
+        try {
+          const seatedEntry = await this.dataSource.query(
+            `SELECT seated_at
+             FROM waitlist_entries
+             WHERE club_id = $1
+               AND player_id = $2
+               AND status = 'SEATED'
+               AND table_number = $3
+             ORDER BY seated_at DESC NULLS LAST
+             LIMIT 1`,
+            [clubId, req.player.id, req.tableNumber]
+          );
+
+          const baseTime =
+            seatedEntry?.[0]?.seated_at ||
+            req.requestedAt ||
+            new Date(0);
+          const fromTime = new Date(new Date(baseTime).getTime() - 30000);
+
+          const balanceResult = await this.dataSource.query(
+            `SELECT COALESCE(SUM(
+               CASE
+                 WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
+                 WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
+                 ELSE 0
+               END
+             ), 0) AS table_balance
+             FROM financial_transactions
+             WHERE club_id = $1
+               AND player_id = $2
+               AND UPPER(status) = 'COMPLETED'
+               AND created_at >= $3`,
+            [clubId, req.player.id, fromTime]
+          );
+
+          liveTableBalance = Math.max(
+            0,
+            Number(balanceResult?.[0]?.table_balance || 0),
+          );
+        } catch {
+          // Keep fallback below if live calc fails.
+          liveTableBalance = null;
+        }
+
+        return {
+          id: req.id,
+          playerId: req.player.id,
+          playerName: req.player.name,
+          playerEmail: req.player.email,
+          tableId: req.table?.id || null,
+          tableNumber: req.tableNumber,
+          seatNumber: req.seatNumber,
+          requestedAmount: req.requestedAmount ? Number(req.requestedAmount) : 0,
+          currentTableBalance:
+            liveTableBalance != null
+              ? liveTableBalance
+              : (req.currentTableBalance ? Number(req.currentTableBalance) : 0),
+          requestedAt: req.requestedAt,
+          status: req.status,
+        };
+      })
+    );
+
+    return rows;
   }
 
   async approveBuyInRequest(

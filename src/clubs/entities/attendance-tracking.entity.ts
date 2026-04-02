@@ -50,6 +50,27 @@ export class AttendanceTracking {
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
+  /** Hours beyond scheduled shift (manual or computed); default 0 */
+  @Column({ name: 'overtime_hours', type: 'decimal', precision: 6, scale: 2, default: 0 })
+  overtimeHours!: string;
+
+  /** Higher wins when multiple roles mark same day: 3 tenant super, 2 club super, 1 HR/Admin/Manager */
+  @Column({ name: 'marked_by_tier', type: 'int', default: 0 })
+  markedByTier!: number;
+
+  @Column({ name: 'marked_by_user_id', type: 'uuid', nullable: true })
+  markedByUserId!: string | null;
+
+  /** True when attendance was for a roster off day (overtime / extra work day) */
+  @Column({ name: 'worked_roster_off_day', type: 'boolean', default: false })
+  workedRosterOffDay!: boolean;
+
+  @Column({ name: 'last_edit_reason', type: 'text', nullable: true })
+  lastEditReason!: string | null;
+
+  @Column({ name: 'last_edited_by_user_id', type: 'uuid', nullable: true })
+  lastEditedByUserId!: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 

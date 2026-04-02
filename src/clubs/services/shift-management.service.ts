@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { Shift } from '../entities/shift.entity';
+import { RosterTemplate } from '../entities/roster-template.entity';
 import { Staff, StaffRole, StaffStatus } from '../entities/staff.entity';
 import { LeaveApplication, LeaveStatus } from '../entities/leave-application.entity';
 import { CreateShiftDto } from '../dto/create-shift.dto';
@@ -17,7 +18,20 @@ export class ShiftManagementService {
     private staffRepo: Repository<Staff>,
     @InjectRepository(LeaveApplication)
     private leaveApplicationRepo: Repository<LeaveApplication>,
+    @InjectRepository(RosterTemplate)
+    private rosterTemplateRepo: Repository<RosterTemplate>,
   ) {}
+
+  /** Wall-clock HH:mm in club operations TZ (same as attendance roster). */
+  private formatTimeClubHhmm(date: Date | string): string {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(d);
+  }
 
   // Create a new shift
   async createShift(clubId: string, createShiftDto: CreateShiftDto, userId?: string) {
@@ -146,40 +160,66 @@ export class ShiftManagementService {
     }
 
     const shifts = await queryBuilder.getMany();
-    
+
+    const templates = await this.rosterTemplateRepo.find({
+      where: { clubId, isActive: true },
+    });
+    const templateMap = new Map<string, RosterTemplate>();
+    templates.forEach((t) => templateMap.set(t.staffId, t));
+
+    const attachTemplateDisplay = (shift: Shift) => {
+      const template = templateMap.get(shift.staffId);
+      let shiftStartDisplay: string | null = null;
+      let shiftEndDisplay: string | null = null;
+      let shiftCrossesMidnight = false;
+      if (template) {
+        shiftStartDisplay = String(template.defaultShiftStartTime).slice(0, 5);
+        shiftEndDisplay = String(template.defaultShiftEndTime).slice(0, 5);
+        shiftCrossesMidnight = !!template.shiftCrossesMidnight;
+      } else if (!shift.isOffDay) {
+        shiftStartDisplay = this.formatTimeClubHhmm(shift.shiftStartTime);
+        shiftEndDisplay = this.formatTimeClubHhmm(shift.shiftEndTime);
+      }
+      return { shiftStartDisplay, shiftEndDisplay, shiftCrossesMidnight };
+    };
+
     // Check for approved leaves and add leave information to shifts
     if (shifts.length > 0) {
-      const staffIds = [...new Set(shifts.map(s => s.staffId))];
-      
+      const staffIds = [...new Set(shifts.map((s) => s.staffId))];
+
       // Get all approved leaves for these staff members
       const approvedLeaves = await this.leaveApplicationRepo.find({
-        where: staffIds.map(sid => ({
+        where: staffIds.map((sid) => ({
           staffId: sid,
           status: LeaveStatus.APPROVED,
         })),
       });
 
       // Add leave information to shifts
-      return shifts.map(shift => {
-        const leave = approvedLeaves.find(l => 
-          l.staffId === shift.staffId &&
-          l.startDate <= shift.shiftDate &&
-          l.endDate >= shift.shiftDate
+      return shifts.map((shift) => {
+        const leave = approvedLeaves.find(
+          (l) =>
+            l.staffId === shift.staffId &&
+            l.startDate <= shift.shiftDate &&
+            l.endDate >= shift.shiftDate,
         );
-        
+
         return {
           ...shift,
+          ...attachTemplateDisplay(shift),
           onLeave: !!leave,
-          leaveInfo: leave ? {
-            startDate: leave.startDate,
-            endDate: leave.endDate,
-            reason: leave.reason,
-          } : null,
+          leaveInfo: leave
+            ? {
+                startDate: leave.startDate,
+                endDate: leave.endDate,
+                reason: leave.reason,
+              }
+            : null,
         };
       });
     }
-    
-    return shifts;
+
+    return shifts.map((s) => ({ ...s, ...attachTemplateDisplay(s) }));
   }
 
   // Get shift by ID

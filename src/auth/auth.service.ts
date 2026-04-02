@@ -2143,7 +2143,7 @@ export class AuthService {
           tableType: entry.tableType,
           status: entry.status.toLowerCase(), // Return lowercase for frontend compatibility
           tableNumber: entry.tableNumber,
-          seatNumber: entry.requestedSeat, // Include requested seat
+          seatNumber: (entry as any).assignedSeat ?? entry.requestedSeat, // Prefer actual assigned seat
           seatedAt: entry.seatedAt,
           createdAt: entry.createdAt
         },

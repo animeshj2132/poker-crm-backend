@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsUUID, IsDateString, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsUUID, IsDateString, IsOptional, IsString, IsNumber, Min, IsBoolean } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateAttendanceDto {
   @IsNotEmpty()
@@ -20,5 +21,16 @@ export class CreateAttendanceDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  overtimeHours?: number;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  workedRosterOffDay?: boolean;
 }
 
