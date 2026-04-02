@@ -2924,7 +2924,14 @@ export class ClubsController {
 
   // ========== Financial Transactions ==========
   @Get(':id/transactions')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.CASHIER,
+    ClubRole.GRE
+  )
   async listTransactions(
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
@@ -6613,7 +6620,14 @@ export class ClubsController {
    * GET /api/clubs/:id/tables/:tableId/seated-players
    */
   @Get(':id/tables/:tableId/seated-players')
-  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(
+    TenantRole.SUPER_ADMIN,
+    ClubRole.SUPER_ADMIN,
+    ClubRole.ADMIN,
+    ClubRole.MANAGER,
+    ClubRole.CASHIER,
+    ClubRole.GRE
+  )
   @HttpCode(HttpStatus.OK)
   async getSeatedPlayersForTable(
     @Headers('x-tenant-id') tenantId: string | undefined,
