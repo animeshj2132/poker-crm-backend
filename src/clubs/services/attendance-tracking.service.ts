@@ -16,7 +16,14 @@ import { UserClubRole } from '../../users/user-club-role.entity';
 import { UserTenantRole } from '../../users/user-tenant-role.entity';
 import { TenantRole } from '../../common/rbac/roles';
 
-/** Wall-clock datetimes from the CRM are interpreted in this offset (club operations). */
+/**
+ * pg driver WRITES Dates in local time (IST on this machine) and strips the offset
+ * for "timestamp without time zone", so Postgres stores the IST wall-clock digits.
+ * pg-types (main.ts) READS by appending "Z", so the Date comes back with those
+ * same digits as UTC.  Therefore:
+ *   WRITE with +05:30  → pg serialises as IST wall clock → Postgres stores correct digits.
+ *   READ  comes back as <digits>Z → use getUTCHours/getUTCMinutes to display.
+ */
 const CLUB_TZ_OFFSET = '+05:30';
 
 @Injectable()
@@ -123,17 +130,80 @@ export class AttendanceTrackingService {
     }
   }
 
-  /**
-   * Parse "YYYY-MM-DDTHH:mm[:ss]" or ISO with Z as club wall time when no offset is present
-   * (avoids Node interpreting naive strings as UTC).
-   */
-  /** Wall-clock time on calendar day ymd in club timezone → absolute Date. */
-  private combineYmdTimeClubTz(ymd: string, time: string): Date {
+  /** Wall-clock on calendar day → Date via IST offset so pg writes correct local digits. */
+  private combineYmdTimeIst(ymd: string, time: string): Date {
     const parts = String(time || '').split(':');
     const h = String(parseInt(parts[0] || '0', 10)).padStart(2, '0');
     const m = String(parseInt(parts[1] || '0', 10)).padStart(2, '0');
     const s = String(parseInt(parts[2] || '0', 10)).padStart(2, '0');
     return new Date(`${ymd}T${h}:${m}:${s}${CLUB_TZ_OFFSET}`);
+  }
+
+  /** Parse roster template time column (time / string / Date) → wall-clock parts. */
+  private extractTemplateWallClock(t: string | Date | undefined | null): { h: string; m: string; s: string } {
+    if (t == null || t === '') {
+      return { h: '00', m: '00', s: '00' };
+    }
+    if (t instanceof Date) {
+      return {
+        h: String(t.getUTCHours()).padStart(2, '0'),
+        m: String(t.getUTCMinutes()).padStart(2, '0'),
+        s: String(t.getUTCSeconds()).padStart(2, '0'),
+      };
+    }
+    const s0 = String(t).trim();
+    const m = s0.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) {
+      return {
+        h: String(parseInt(m[1], 10)).padStart(2, '0'),
+        m: String(parseInt(m[2], 10)).padStart(2, '0'),
+        s: String(parseInt(m[3] || '0', 10)).padStart(2, '0'),
+      };
+    }
+    return { h: '00', m: '00', s: '00' };
+  }
+
+  /** Same wall-clock as roster template UI → IST Date so pg writes correct digits. */
+  private combineYmdWithTemplateTime(ymd: string, t: string | Date | undefined | null): Date {
+    const { h, m, s } = this.extractTemplateWallClock(t);
+    return new Date(`${ymd}T${h}:${m}:${s}${CLUB_TZ_OFFSET}`);
+  }
+
+  private templateFieldToHhmm(t: string | Date | undefined | null): string {
+    const { h, m } = this.extractTemplateWallClock(t);
+    return `${h}:${m}`;
+  }
+
+  /** Prefer active template per staff; fall back to any row for that staff. */
+  private async buildRosterTemplateMap(clubId: string): Promise<Map<string, RosterTemplate>> {
+    const all = await this.rosterTemplateRepo.find({ where: { clubId } });
+    const lists = new Map<string, RosterTemplate[]>();
+    for (const t of all) {
+      if (!lists.has(t.staffId)) lists.set(t.staffId, []);
+      lists.get(t.staffId)!.push(t);
+    }
+    const map = new Map<string, RosterTemplate>();
+    for (const [sid, list] of lists) {
+      map.set(sid, list.find((x) => x.isActive) || list[0]);
+    }
+    return map;
+  }
+
+  /** When no template: extract wall-clock from shift (UTC face via pg Z), re-store via IST offset. */
+  private loginLogoutFromShiftWallClock(
+    dateYmd: string,
+    shift: Shift,
+  ): { loginTime: Date; logoutTime: Date } {
+    const startHm = this.formatTimeUtcWall(shift.shiftStartTime);
+    const endHm = this.formatTimeUtcWall(shift.shiftEndTime);
+    const loginTime = this.combineYmdTimeIst(dateYmd, `${startHm}:00`);
+    const [sh, sm] = startHm.split(':').map((x) => parseInt(x, 10));
+    const [eh, em] = endHm.split(':').map((x) => parseInt(x, 10));
+    const crossesMidnight = eh < sh || (eh === sh && em < sm);
+    const logoutTime = crossesMidnight
+      ? this.combineYmdTimeIst(this.addDaysToYmd(dateYmd, 1), `${endHm}:00`)
+      : this.combineYmdTimeIst(dateYmd, `${endHm}:00`);
+    return { loginTime, logoutTime };
   }
 
   private addDaysToYmd(ymd: string, delta: number): string {
@@ -142,17 +212,19 @@ export class AttendanceTrackingService {
     return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
   }
 
-  private formatTimeClubTz(date: Date | string): string {
+  /** Format shift/attendance Date whose UTC face = wall clock (pg Z parser convention). */
+  private formatTimeUtcWall(date: Date | string): string {
     if (!date) return '';
     const d = typeof date === 'string' ? new Date(date) : date;
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d);
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
   }
 
+  /**
+   * Parse CRM datetime input: naive "YYYY-MM-DDTHH:mm" = IST wall clock (what HR typed).
+   * Values with explicit offset/Z are kept as-is.
+   */
   private parseClubDateTimeInput(isoLike: string): Date {
     const s = String(isoLike).trim();
     const zMatch = s.match(
@@ -208,6 +280,8 @@ export class AttendanceTrackingService {
       employeeId: record.staff.employeeId,
       loginTime: record.loginTime,
       logoutTime: record.logoutTime,
+      loginDisplay: record.loginTime ? this.formatTimeUtcWall(record.loginTime) : null,
+      logoutDisplay: record.logoutTime ? this.formatTimeUtcWall(record.logoutTime) : null,
       date: record.date,
       totalHours: record.totalHours ? Number(record.totalHours) : null,
       status: record.status,
@@ -553,12 +627,7 @@ export class AttendanceTrackingService {
     const shiftMap = new Map<string, Shift>();
     shifts.forEach(s => shiftMap.set(s.staffId, s));
 
-    // Fetch roster templates for authoritative shift time strings
-    const templates = await this.rosterTemplateRepo.find({
-      where: { clubId, isActive: true },
-    });
-    const templateMap = new Map<string, RosterTemplate>();
-    templates.forEach(t => templateMap.set(t.staffId, t));
+    const templateMap = await this.buildRosterTemplateMap(clubId);
 
     const existingAttendance = await this.attendanceRepo
       .createQueryBuilder('a')
@@ -590,25 +659,24 @@ export class AttendanceTrackingService {
       let shiftStartDisplay: string | null = null;
       let shiftEndDisplay: string | null = null;
       if (template && shift && !shift.isOffDay) {
-        shiftStartDisplay = String(template.defaultShiftStartTime).slice(0, 5);
-        shiftEndDisplay = String(template.defaultShiftEndTime).slice(0, 5);
+        shiftStartDisplay = this.templateFieldToHhmm(template.defaultShiftStartTime);
+        shiftEndDisplay = this.templateFieldToHhmm(template.defaultShiftEndTime);
       } else if (template && shift && shift.isOffDay) {
         // Template wall times still apply when HR marks an extra work day on a roster off day
-        shiftStartDisplay = String(template.defaultShiftStartTime).slice(0, 5);
-        shiftEndDisplay = String(template.defaultShiftEndTime).slice(0, 5);
+        shiftStartDisplay = this.templateFieldToHhmm(template.defaultShiftStartTime);
+        shiftEndDisplay = this.templateFieldToHhmm(template.defaultShiftEndTime);
       } else if (shift && !shift.isOffDay) {
-        shiftStartDisplay = this.formatTimeClubTz(shift.shiftStartTime);
-        shiftEndDisplay = this.formatTimeClubTz(shift.shiftEndTime);
+        shiftStartDisplay = this.formatTimeUtcWall(shift.shiftStartTime);
+        shiftEndDisplay = this.formatTimeUtcWall(shift.shiftEndTime);
       }
 
-      // For attendance records, format with correct timezone
       let loginDisplay: string | null = null;
       let logoutDisplay: string | null = null;
       if (attendance?.loginTime) {
-        loginDisplay = this.formatTimeClubTz(attendance.loginTime);
+        loginDisplay = this.formatTimeUtcWall(attendance.loginTime);
       }
       if (attendance?.logoutTime) {
-        logoutDisplay = this.formatTimeClubTz(attendance.logoutTime);
+        logoutDisplay = this.formatTimeUtcWall(attendance.logoutTime);
       }
 
       return {
@@ -671,11 +739,7 @@ export class AttendanceTrackingService {
     const shiftMap = new Map<string, Shift>();
     shifts.forEach((s) => shiftMap.set(s.staffId, s));
 
-    const templates = await this.rosterTemplateRepo.find({
-      where: { clubId, isActive: true },
-    });
-    const templateMap = new Map<string, RosterTemplate>();
-    templates.forEach((t) => templateMap.set(t.staffId, t));
+    const templateMap = await this.buildRosterTemplateMap(clubId);
 
     const existingAttendance = await this.attendanceRepo
       .createQueryBuilder('a')
@@ -742,11 +806,14 @@ export class AttendanceTrackingService {
         }
         const template = templateMap.get(staffId);
         if (template) {
-          loginTime = this.combineYmdTimeClubTz(dateYmd, template.defaultShiftStartTime);
+          loginTime = this.combineYmdWithTemplateTime(dateYmd, template.defaultShiftStartTime);
           if (template.shiftCrossesMidnight) {
-            logoutTime = this.combineYmdTimeClubTz(this.addDaysToYmd(dateYmd, 1), template.defaultShiftEndTime);
+            logoutTime = this.combineYmdWithTemplateTime(
+              this.addDaysToYmd(dateYmd, 1),
+              template.defaultShiftEndTime,
+            );
           } else {
-            logoutTime = this.combineYmdTimeClubTz(dateYmd, template.defaultShiftEndTime);
+            logoutTime = this.combineYmdWithTemplateTime(dateYmd, template.defaultShiftEndTime);
           }
         } else if (shift.isOffDay) {
           results.push({
@@ -756,8 +823,9 @@ export class AttendanceTrackingService {
           });
           continue;
         } else {
-          loginTime = new Date(shift.shiftStartTime);
-          logoutTime = new Date(shift.shiftEndTime);
+          const wall = this.loginLogoutFromShiftWallClock(dateYmd, shift);
+          loginTime = wall.loginTime;
+          logoutTime = wall.logoutTime;
         }
       } else {
         const shift = shiftMap.get(staffId);

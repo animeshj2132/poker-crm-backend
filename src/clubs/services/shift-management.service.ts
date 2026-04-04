@@ -22,15 +22,12 @@ export class ShiftManagementService {
     private rosterTemplateRepo: Repository<RosterTemplate>,
   ) {}
 
-  /** Wall-clock HH:mm in club operations TZ (same as attendance roster). */
+  /** Wall-clock HH:mm — pg-types appends Z so UTC face = actual wall-clock time. */
   private formatTimeClubHhmm(date: Date | string): string {
     const d = typeof date === 'string' ? new Date(date) : date;
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d);
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
   }
 
   // Create a new shift

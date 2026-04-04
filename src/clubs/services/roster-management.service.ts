@@ -9,7 +9,10 @@ import { CreateRosterTemplateDto } from '../dto/create-roster-template.dto';
 import { UpdateRosterTemplateDto } from '../dto/update-roster-template.dto';
 import { GenerateRosterDto, RosterPeriodType } from '../dto/generate-roster.dto';
 
-/** Club operations timezone: shift wall times in templates are interpreted in this zone. */
+/**
+ * pg driver writes Dates in local IST; pg-types reads by appending Z.
+ * Store with +05:30 so pg writes correct IST digits; display via UTC extraction.
+ */
 const ROSTER_TZ_OFFSET = '+05:30';
 
 @Injectable()
@@ -60,7 +63,7 @@ export class RosterManagementService {
     return `${yy}-${mm}-${dd}`;
   }
 
-  /** Use noon in club TZ for DATE column to avoid UTC midnight rolling the calendar day. */
+  /** Use noon IST for DATE column to avoid midnight rolling the calendar day. */
   private dateOnlyNoonClubTz(ymd: string): Date {
     return new Date(`${ymd}T12:00:00${ROSTER_TZ_OFFSET}`);
   }
@@ -74,7 +77,7 @@ export class RosterManagementService {
     return `${h}:${min}:${s}`;
   }
 
-  /** Wall-clock time on calendar day ymd in club timezone → absolute Date. */
+  /** Wall-clock on ymd via IST offset → pg writes correct local digits to Postgres. */
   private combineYmdTimeClubTz(ymd: string, time: string): Date {
     const t = this.normalizeTimeToHhMmSs(time);
     return new Date(`${ymd}T${t}${ROSTER_TZ_OFFSET}`);
