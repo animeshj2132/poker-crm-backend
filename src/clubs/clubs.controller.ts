@@ -11811,13 +11811,20 @@ export class ClubsController {
   @Post(':id/fnb/menu')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.FNB)
   async createMenuItem(
-    @Param('id', ParseUUIDPipe) clubId: string,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
     @Body() dto: CreateMenuItemDto,
     @Headers('x-user-id') userId?: string,
     @Req() req?: Request
   ) {
-    const menuItem = await this.fnbEnhancedService.createMenuItem(clubId, dto);
-    
+    let menuItem: Awaited<ReturnType<typeof this.fnbEnhancedService.createMenuItem>>;
+    try {
+      menuItem = await this.fnbEnhancedService.createMenuItem(clubId, dto);
+    } catch (e: any) {
+      // Unique name-per-club violation
+      if (e?.code === '23505') throw new BadRequestException(`A menu item named "${dto.name}" already exists in this club`);
+      throw new BadRequestException(e?.message || 'Failed to create menu item');
+    }
+
     // Audit log: Create menu item
     try {
       if (userId && menuItem) {
