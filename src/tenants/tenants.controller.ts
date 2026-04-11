@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { TenantsService } from './tenants.service';
 import { RolesGuard } from '../common/rbac/roles.guard';
 import { GlobalRole, TenantRole } from '../common/rbac/roles';
@@ -292,6 +292,35 @@ export class TenantsController {
         tenantId: result.tenantId,
         isExistingUser: result.isExistingUser || false
       };
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  @Post(':id/reset-super-admin-password')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  async resetTenantSuperAdminPassword(
+    @Param('id', new ParseUUIDPipe()) tenantId: string,
+  ) {
+    try {
+      return await this.usersService.resetTenantSuperAdminPassword(tenantId);
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  @Delete(':id')
+  @Roles(GlobalRole.MASTER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  async deleteTenantPermanently(
+    @Param('id', new ParseUUIDPipe()) tenantId: string,
+    @Body() body?: { forceDeleteActiveClubs?: boolean }
+  ) {
+    try {
+      return await this.tenantsService.deleteTenantPermanently(tenantId, {
+        forceDeleteActiveClubs: !!body?.forceDeleteActiveClubs,
+      });
     } catch (e) {
       throw e;
     }

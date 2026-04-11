@@ -268,6 +268,37 @@ export class UsersService {
     return tenantRole?.user || null;
   }
 
+  async resetTenantSuperAdminPassword(tenantId: string) {
+    const tenantRole = await this.userTenantRoleRepo.findOne({
+      where: { tenant: { id: tenantId }, role: TenantRole.SUPER_ADMIN },
+      relations: ['tenant', 'user'],
+    });
+
+    if (!tenantRole || !tenantRole.user) {
+      throw new NotFoundException('No Super Admin account found for this tenant');
+    }
+
+    const tempPassword = this.generateStrongPassword();
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
+
+    await this.usersRepo.update(tenantRole.user.id, {
+      passwordHash,
+      mustResetPassword: true,
+    });
+
+    return {
+      success: true,
+      tenantId: tenantRole.tenant.id,
+      tenantName: tenantRole.tenant.name,
+      superAdminUserId: tenantRole.user.id,
+      superAdminEmail: tenantRole.user.email,
+      superAdminDisplayName: tenantRole.user.displayName,
+      tempPassword,
+      message: 'Super Admin password reset successfully. Share the temporary password securely.',
+    };
+  }
+
   async createSuperAdmin(
     email: string,
     displayName: string | null,

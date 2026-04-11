@@ -26,6 +26,13 @@ export class ApiKeyAuthGuard implements CanActivate {
     return this.publicRoutes.some((route) => route.method === method && route.path.test(path));
   }
 
+  private isAllowedDuringForcedPasswordReset(method: string, path: string): boolean {
+    return (
+      (method === 'POST' && /^\/api\/auth\/reset-password$/.test(path)) ||
+      (method === 'POST' && /^\/api\/auth\/login$/.test(path))
+    );
+  }
+
   constructor(
     private readonly usersService: UsersService,
     @InjectRepository(UserTenantRole) private readonly userTenantRoleRepo: Repository<UserTenantRole>,
@@ -70,6 +77,10 @@ export class ApiKeyAuthGuard implements CanActivate {
       const user = await this.usersService.findById(userId);
       if (!user) {
         throw new UnauthorizedException('User not found for bearer token');
+      }
+
+      if (user.mustResetPassword && !this.isAllowedDuringForcedPasswordReset(method, path)) {
+        throw new UnauthorizedException('Password reset required. Please login with temporary password and reset first.');
       }
 
       const tenantRoles = await this.userTenantRoleRepo.find({

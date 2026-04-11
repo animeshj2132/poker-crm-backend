@@ -1,13 +1,19 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Tenant } from './tenant.entity';
+import { Club } from '../clubs/club.entity';
+import { UserTenantRole } from '../users/user-tenant-role.entity';
 
 @Injectable()
 export class TenantsService {
   constructor(
     @InjectRepository(Tenant)
-    private readonly tenantsRepo: Repository<Tenant>
+    private readonly tenantsRepo: Repository<Tenant>,
+    @InjectRepository(Club)
+    private readonly clubsRepo: Repository<Club>,
+    @InjectRepository(UserTenantRole)
+    private readonly userTenantRoleRepo: Repository<UserTenantRole>,
   ) {}
 
   async create(name: string) {
@@ -95,6 +101,128 @@ export class TenantsService {
 
     Object.assign(tenant, data);
     return this.tenantsRepo.save(tenant);
+  }
+
+  async deleteTenantPermanently(
+    tenantId: string,
+    options?: { forceDeleteActiveClubs?: boolean }
+  ) {
+    const tenant = await this.tenantsRepo.findOne({ where: { id: tenantId } });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    const forceDeleteActiveClubs = !!options?.forceDeleteActiveClubs;
+
+    const tenantClubs = await this.clubsRepo.find({
+      where: { tenant: { id: tenantId } },
+      relations: ['tenant'],
+    });
+
+    const activeClubs = tenantClubs.filter(
+      (club) => String(club.status || '').toLowerCase() === 'active'
+    );
+    if (activeClubs.length > 0 && !forceDeleteActiveClubs) {
+      const activeNames = activeClubs.map((club) => club.name).join(', ');
+      throw new BadRequestException(
+        `Cannot delete tenant while active club(s) exist: ${activeNames}. Suspend/kill first, or retry with force delete override.`
+      );
+    }
+
+    const invalidStatusClubs = tenantClubs.filter((club) => {
+      const status = String(club.status || '').toLowerCase();
+      return status !== 'suspended' && status !== 'killed';
+    });
+    if (invalidStatusClubs.length > 0 && !forceDeleteActiveClubs) {
+      const invalidNames = invalidStatusClubs.map((club) => `${club.name} (${club.status})`).join(', ');
+      throw new BadRequestException(
+        `Tenant can only be permanently deleted when all clubs are suspended or killed. Invalid status found: ${invalidNames}. You can use force delete override if required.`
+      );
+    }
+
+    try {
+      await this.tenantsRepo.manager.transaction(async (manager) => {
+        const clubIds = tenantClubs.map((club) => club.id);
+        await this.cleanupDependentRowsForTenant(manager, tenantId, clubIds);
+
+        await manager
+          .createQueryBuilder()
+          .delete()
+          .from(UserTenantRole)
+          .where('tenant_id = :tenantId', { tenantId })
+          .execute();
+
+        if (clubIds.length > 0) {
+          await manager
+            .createQueryBuilder()
+            .delete()
+            .from(Club)
+            .where('tenant_id = :tenantId', { tenantId })
+            .execute();
+        }
+
+        await manager
+          .createQueryBuilder()
+          .delete()
+          .from(Tenant)
+          .where('id = :tenantId', { tenantId })
+          .execute();
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        'Unable to permanently delete tenant. Ensure all tenant clubs are suspended/killed and no active operational records depend on them.'
+      );
+    }
+
+    return {
+      success: true,
+      message: `Tenant "${tenant.name}" deleted permanently`,
+      tenantId,
+      deletedClubsCount: tenantClubs.length,
+      forceDeleteApplied: forceDeleteActiveClubs,
+    };
+  }
+
+  private async cleanupDependentRowsForTenant(
+    manager: DataSource['manager'],
+    tenantId: string,
+    clubIds: string[],
+  ) {
+    if (clubIds.length > 0) {
+      const clubScopedTables = await manager.query(
+        `SELECT DISTINCT table_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND column_name = 'club_id'`
+      );
+
+      const excludedClubTables = new Set(['clubs']);
+      for (const row of clubScopedTables) {
+        const tableName = String(row.table_name || '');
+        if (!tableName || excludedClubTables.has(tableName)) continue;
+        await manager.query(
+          `DELETE FROM "${tableName}" WHERE club_id = ANY($1::uuid[])`,
+          [clubIds]
+        );
+      }
+    }
+
+    const tenantScopedTables = await manager.query(
+      `SELECT DISTINCT table_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND column_name = 'tenant_id'`
+    );
+
+    const excludedTenantTables = new Set(['tenants', 'clubs', 'user_tenant_roles']);
+    for (const row of tenantScopedTables) {
+      const tableName = String(row.table_name || '');
+      if (!tableName || excludedTenantTables.has(tableName)) continue;
+      await manager.query(
+        `DELETE FROM "${tableName}" WHERE tenant_id = $1`,
+        [tenantId]
+      );
+    }
   }
 }
 
