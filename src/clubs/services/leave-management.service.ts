@@ -122,9 +122,17 @@ export class LeaveManagementService {
 
     // Calculate number of days (excluding weekends)
     const numberOfDays = this.calculateWorkingDays(startDate, endDate);
+    const offDaysCount = this.calculateOffDays(startDate, endDate);
 
     if (numberOfDays <= 0) {
-      throw new BadRequestException('Invalid date range');
+      if (startDate.toDateString() === endDate.toDateString()) {
+        throw new BadRequestException(
+          'Selected date is an off day (Saturday/Sunday). Please choose a working day'
+        );
+      }
+      throw new BadRequestException(
+        `Selected range contains only off days (${offDaysCount} day(s)). Please include at least one working day`
+      );
     }
 
     // Check if there's an overlapping leave application
@@ -539,6 +547,22 @@ export class LeaveManagementService {
       current.setDate(current.getDate() + 1);
     }
     
+    return count;
+  }
+
+  // Helper method to calculate off days (weekends) in selected range
+  private calculateOffDays(startDate: Date, endDate: Date): number {
+    let count = 0;
+    const current = new Date(startDate);
+
+    while (current <= endDate) {
+      const dayOfWeek = current.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        count++;
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
     return count;
   }
 }
