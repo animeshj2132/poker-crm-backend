@@ -44,17 +44,20 @@ ALTER TABLE tables
   ADD COLUMN IF NOT EXISTS entry_fee        DECIMAL(10,2),
   ADD COLUMN IF NOT EXISTS min_players      INTEGER;
 
--- Drop any trigger on tables that references game_type (does not exist on this table)
+-- Drop notify_fcm trigger from tables that don't have player_id (it crashes on INSERT)
 DO $$
 DECLARE
   trig RECORD;
+  tbl TEXT;
 BEGIN
-  FOR trig IN
-    SELECT trigger_name
-    FROM information_schema.triggers
-    WHERE event_object_table = 'tables'
-  LOOP
-    EXECUTE 'DROP TRIGGER IF EXISTS ' || quote_ident(trig.trigger_name) || ' ON tables CASCADE';
+  FOREACH tbl IN ARRAY ARRAY['tables', 'tournaments', 'menu_items', 'inventory_items', 'suppliers'] LOOP
+    FOR trig IN
+      SELECT trigger_name
+      FROM information_schema.triggers
+      WHERE event_object_table = tbl
+    LOOP
+      EXECUTE 'DROP TRIGGER IF EXISTS ' || quote_ident(trig.trigger_name) || ' ON ' || quote_ident(tbl);
+    END LOOP;
   END LOOP;
 END $$;
 

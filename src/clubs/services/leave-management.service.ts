@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Repository, Between } from 'typeorm';
 import { LeavePolicy } from '../entities/leave-policy.entity';
 import { LeaveApplication, LeaveStatus } from '../entities/leave-application.entity';
 import { Staff, StaffRole } from '../entities/staff.entity';
@@ -248,32 +248,23 @@ export class LeaveManagementService {
   }
 
   async getPendingLeaveApplications(clubId: string, approverRole: StaffRole, approverId: string) {
-    // Get all pending applications for this club
-    const applications = await this.leaveApplicationRepo.find({
-      where: {
-        clubId,
-        status: LeaveStatus.PENDING
-      },
-      relations: ['staff'],
-      order: { createdAt: 'ASC' }
-    });
+    const queryBuilder = this.leaveApplicationRepo.createQueryBuilder('application')
+      .leftJoinAndSelect('application.staff', 'staff')
+      .where('application.clubId = :clubId', { clubId })
+      .andWhere('application.status = :status', { status: LeaveStatus.PENDING });
 
-    // Filter based on approver role:
-    // - Super Admin, Admin, HR can approve regular staff (not Admin/HR)
-    // - Only Super Admin can approve Admin/HR leaves
-    return applications.filter(app => {
-      const staffRole = app.staff.role;
-      
-      // If staff is Admin or HR, only Super Admin can approve
-      if (staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) {
-        return approverRole === StaffRole.SUPER_ADMIN;
+    if (!this.isSuperAdminRole(approverRole)) {
+      if (!this.canRegularApproverApprove(approverRole)) {
+        return [];
       }
-      
-      // For other roles, Super Admin, Admin, or HR can approve
-      return approverRole === StaffRole.SUPER_ADMIN || 
-             approverRole === StaffRole.ADMIN || 
-             approverRole === StaffRole.HR;
-    });
+      queryBuilder.andWhere('staff.role NOT IN (:...restrictedRoles)', {
+        restrictedRoles: [StaffRole.ADMIN, StaffRole.HR],
+      });
+    }
+
+    return queryBuilder
+      .orderBy('application.createdAt', 'ASC')
+      .getMany();
   }
 
   async getLeaveApplicationsForApproval(
@@ -294,21 +285,6 @@ export class LeaveManagementService {
     const limit = filters?.limit || 10;
     const skip = (page - 1) * limit;
 
-    // Build query conditions
-    const whereConditions: any = { clubId };
-    
-    if (filters?.status) {
-      whereConditions.status = filters.status;
-    }
-
-    if (filters?.startDate || filters?.endDate) {
-      whereConditions.startDate = filters.startDate ? MoreThanOrEqual(new Date(filters.startDate)) : undefined;
-      if (filters.endDate) {
-        whereConditions.endDate = LessThanOrEqual(new Date(filters.endDate));
-      }
-    }
-
-    // Get all applications matching basic filters
     let queryBuilder = this.leaveApplicationRepo.createQueryBuilder('application')
       .leftJoinAndSelect('application.staff', 'staff')
       .where('application.clubId = :clubId', { clubId });
@@ -336,70 +312,27 @@ export class LeaveManagementService {
       );
     }
 
-    // Apply pagination and ordering
-    const applications = await queryBuilder
+    if (!this.isSuperAdminRole(approverRole)) {
+      if (!this.canRegularApproverApprove(approverRole)) {
+        return {
+          applications: [],
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+        };
+      }
+      queryBuilder = queryBuilder.andWhere('staff.role NOT IN (:...restrictedRoles)', {
+        restrictedRoles: [StaffRole.ADMIN, StaffRole.HR],
+      });
+    }
+
+    const totalFiltered = await queryBuilder.getCount();
+    const filteredApplications = await queryBuilder
       .orderBy('application.createdAt', 'DESC')
       .skip(skip)
       .take(limit)
       .getMany();
-
-    // Filter based on approver role (permission check):
-    // - Super Admin, Admin, HR can approve regular staff (not Admin/HR)
-    // - Only Super Admin can approve Admin/HR leaves
-    const filteredApplications = applications.filter(app => {
-      const staffRole = app.staff.role;
-      
-      // If staff is Admin or HR, only Super Admin can approve
-      if (staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) {
-        return approverRole === StaffRole.SUPER_ADMIN;
-      }
-      
-      // For other roles, Super Admin, Admin, or HR can approve
-      return approverRole === StaffRole.SUPER_ADMIN || 
-             approverRole === StaffRole.ADMIN || 
-             approverRole === StaffRole.HR;
-    });
-
-    // Get total count after permission filtering (need to count all matching records)
-    const countQueryBuilder = this.leaveApplicationRepo.createQueryBuilder('application')
-      .leftJoinAndSelect('application.staff', 'staff')
-      .where('application.clubId = :clubId', { clubId });
-
-    if (filters?.status) {
-      countQueryBuilder.andWhere('application.status = :status', { status: filters.status });
-    }
-
-    if (filters?.startDate) {
-      countQueryBuilder.andWhere('application.startDate >= :startDate', { startDate: filters.startDate });
-    }
-
-    if (filters?.endDate) {
-      countQueryBuilder.andWhere('application.endDate <= :endDate', { endDate: filters.endDate });
-    }
-
-    if (filters?.role) {
-      countQueryBuilder.andWhere('staff.role = :role', { role: filters.role });
-    }
-
-    if (filters?.search) {
-      countQueryBuilder.andWhere(
-        '(staff.name ILIKE :search OR staff.email ILIKE :search)',
-        { search: `%${filters.search}%` }
-      );
-    }
-
-    const allMatchingApplications = await countQueryBuilder.getMany();
-    
-    // Filter by permission
-    const totalFiltered = allMatchingApplications.filter(app => {
-      const staffRole = app.staff.role;
-      if (staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) {
-        return approverRole === StaffRole.SUPER_ADMIN;
-      }
-      return approverRole === StaffRole.SUPER_ADMIN || 
-             approverRole === StaffRole.ADMIN || 
-             approverRole === StaffRole.HR;
-    }).length;
 
     return {
       applications: filteredApplications,
@@ -431,17 +364,11 @@ export class LeaveManagementService {
 
     // Check if approver has permission
     const staffRole = application.staff.role;
-    if ((staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) && 
-        approverRole !== StaffRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only Super Admin can approve leaves for Admin and HR');
-    }
-
-    if (staffRole !== StaffRole.ADMIN && staffRole !== StaffRole.HR) {
-      if (approverRole !== StaffRole.SUPER_ADMIN && 
-          approverRole !== StaffRole.ADMIN && 
-          approverRole !== StaffRole.HR) {
-        throw new ForbiddenException('You do not have permission to approve leaves');
+    if (!this.canApproverHandleApplicant(approverRole, staffRole)) {
+      if (staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) {
+        throw new ForbiddenException('Only Super Admin can approve leaves for Admin and HR');
       }
+      throw new ForbiddenException('You do not have permission to approve leaves');
     }
 
     application.status = LeaveStatus.APPROVED;
@@ -477,17 +404,11 @@ export class LeaveManagementService {
 
     // Check if approver has permission (same as approve)
     const staffRole = application.staff.role;
-    if ((staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) && 
-        approverRole !== StaffRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only Super Admin can reject leaves for Admin and HR');
-    }
-
-    if (staffRole !== StaffRole.ADMIN && staffRole !== StaffRole.HR) {
-      if (approverRole !== StaffRole.SUPER_ADMIN && 
-          approverRole !== StaffRole.ADMIN && 
-          approverRole !== StaffRole.HR) {
-        throw new ForbiddenException('You do not have permission to reject leaves');
+    if (!this.canApproverHandleApplicant(approverRole, staffRole)) {
+      if (staffRole === StaffRole.ADMIN || staffRole === StaffRole.HR) {
+        throw new ForbiddenException('Only Super Admin can reject leaves for Admin and HR');
       }
+      throw new ForbiddenException('You do not have permission to reject leaves');
     }
 
     application.status = LeaveStatus.REJECTED;
@@ -560,18 +481,48 @@ export class LeaveManagementService {
       throw new ForbiddenException('You can only cancel your own leave applications');
     }
 
-    // Can cancel if status is PENDING, APPROVED, or REJECTED (not already CANCELLED)
-    if (application.status === LeaveStatus.CANCELLED) {
-      throw new BadRequestException('Leave application is already cancelled');
+    // Cancellation is only allowed while leave is still pending.
+    // This prevents lower roles from overriding an approved/rejected decision.
+    if (application.status !== LeaveStatus.PENDING) {
+      throw new BadRequestException('Only pending leave applications can be cancelled');
     }
 
     const previousStatus = application.status;
     application.status = LeaveStatus.CANCELLED;
 
     const savedApplication = await this.leaveApplicationRepo.save(application);
+    if (this.eventsService) {
+      this.eventsService.emitLeaveApplicationChanged(clubId);
+    }
     
     // Return both the application and previous status for audit logging
     return { application: savedApplication, previousStatus };
+  }
+
+  private normalizeRole(role: string | StaffRole | undefined | null): string {
+    return (role || '').toString().replace(/[\s_]+/g, '').toUpperCase();
+  }
+
+  private isSuperAdminRole(role: string | StaffRole): boolean {
+    return this.normalizeRole(role) === 'SUPERADMIN';
+  }
+
+  private canRegularApproverApprove(role: string | StaffRole): boolean {
+    const normalized = this.normalizeRole(role);
+    return normalized === 'ADMIN' || normalized === 'HR';
+  }
+
+  private canApproverHandleApplicant(approverRole: string | StaffRole, applicantRole: string | StaffRole): boolean {
+    if (this.isSuperAdminRole(approverRole)) {
+      return true;
+    }
+
+    const applicant = this.normalizeRole(applicantRole);
+    if (applicant === 'ADMIN' || applicant === 'HR') {
+      return false;
+    }
+
+    return this.canRegularApproverApprove(approverRole);
   }
 
   // Helper method to calculate working days (excluding weekends)
