@@ -135,17 +135,21 @@ export class LeaveManagementService {
       );
     }
 
-    // Check if there's an overlapping leave application
-    const overlapping = await this.leaveApplicationRepo.findOne({
-      where: {
-        staffId,
-        status: LeaveStatus.PENDING,
-        startDate: Between(startDate, endDate)
-      }
-    });
+    // Check overlapping pending applications only.
+    // Rejected / cancelled leaves are intentionally re-applicable.
+    const overlappingPending = await this.leaveApplicationRepo
+      .createQueryBuilder('application')
+      .where('application.clubId = :clubId', { clubId })
+      .andWhere('application.staffId = :staffId', { staffId })
+      .andWhere('application.status = :status', { status: LeaveStatus.PENDING })
+      .andWhere('application.startDate <= :endDate', { endDate })
+      .andWhere('application.endDate >= :startDate', { startDate })
+      .getOne();
 
-    if (overlapping) {
-      throw new BadRequestException('You already have a pending leave application for this period');
+    if (overlappingPending) {
+      throw new BadRequestException(
+        'You already have a pending leave application overlapping this date range'
+      );
     }
 
     // Get leave policy for this role
