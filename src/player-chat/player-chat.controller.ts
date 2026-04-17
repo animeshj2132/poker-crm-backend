@@ -45,6 +45,24 @@ export class PlayerChatController {
    * Send chat message
    * POST /api/player-chat/send
    */
+  /**
+   * Open a new chat session (after staff closed the previous one)
+   * POST /api/player-chat/start-session
+   */
+  @Post('start-session')
+  async startNewChatSession(
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    return this.chatService.startNewChatSession(playerId.trim(), clubId.trim());
+  }
+
   @Post('send')
   async sendMessage(
     @Headers('x-player-id') playerId?: string,

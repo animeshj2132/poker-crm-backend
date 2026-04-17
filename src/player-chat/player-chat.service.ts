@@ -7,7 +7,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
 import { ChatSession, ChatSessionType, ChatSessionStatus } from '../clubs/entities/chat-session.entity';
@@ -60,14 +60,27 @@ export class PlayerChatService {
         throw new NotFoundException('Player not found');
       }
 
-      // Find player's chat session
-      const session = await this.sessionRepo.findOne({
+      // Prefer an open / in-progress ticket for "Active chat"; otherwise latest session (e.g. closed).
+      let session = await this.sessionRepo.findOne({
         where: {
           club: { id: clubId },
           player: { id: playerId },
-          sessionType: ChatSessionType.PLAYER
-        }
+          sessionType: ChatSessionType.PLAYER,
+          status: In([ChatSessionStatus.OPEN, ChatSessionStatus.IN_PROGRESS]),
+        },
+        order: { lastMessageAt: 'DESC' },
       });
+
+      if (!session) {
+        session = await this.sessionRepo.findOne({
+          where: {
+            club: { id: clubId },
+            player: { id: playerId },
+            sessionType: ChatSessionType.PLAYER,
+          },
+          order: { lastMessageAt: 'DESC' },
+        });
+      }
 
       if (!session) {
         return {
@@ -79,7 +92,7 @@ export class PlayerChatService {
         };
       }
 
-      // Get messages for this session
+      // Get messages for this session (including closed — player app shows read-only transcript)
       const messages = await this.messageRepo.find({
         where: { session: { id: session.id } },
         relations: ['senderStaff', 'senderPlayer'],
@@ -158,16 +171,33 @@ export class PlayerChatService {
         throw new NotFoundException('Club not found');
       }
 
-      // Find or create chat session for this player
+      // Only open / in-progress sessions accept new player messages (resolved is read-only).
       let session = await this.sessionRepo.findOne({
         where: {
           club: { id: clubId },
           player: { id: playerId },
           sessionType: ChatSessionType.PLAYER,
-          status: Not(ChatSessionStatus.CLOSED)
+          status: In([ChatSessionStatus.OPEN, ChatSessionStatus.IN_PROGRESS]),
         },
-        relations: ['player', 'club']
+        relations: ['player', 'club'],
       });
+
+      if (!session) {
+        const resolvedOrClosed = await this.sessionRepo.findOne({
+          where: {
+            club: { id: clubId },
+            player: { id: playerId },
+            sessionType: ChatSessionType.PLAYER,
+            status: In([ChatSessionStatus.RESOLVED, ChatSessionStatus.CLOSED]),
+          },
+          order: { lastMessageAt: 'DESC' },
+        });
+        if (resolvedOrClosed) {
+          throw new BadRequestException(
+            'This chat was closed by staff. Please contact the club if you need further assistance.',
+          );
+        }
+      }
 
       // Create session if it doesn't exist
       if (!session) {
@@ -441,7 +471,7 @@ export class PlayerChatService {
           club: { id: clubId },
           player: { id: playerId },
           sessionType: ChatSessionType.PLAYER,
-          status: Not(ChatSessionStatus.CLOSED)
+          status: In([ChatSessionStatus.OPEN, ChatSessionStatus.IN_PROGRESS]),
         },
         relations: ['player', 'club', 'assignedStaff']
       });
@@ -483,6 +513,67 @@ export class PlayerChatService {
       }
       throw new BadRequestException('Failed to get session');
     }
+  }
+
+  /**
+   * Start a new player↔staff chat after the previous one was closed/resolved.
+   * No-op if an open or in-progress session already exists.
+   */
+  async startNewChatSession(playerId: string, clubId: string) {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(playerId)) {
+      throw new BadRequestException('Invalid player ID format');
+    }
+    if (!uuidRegex.test(clubId)) {
+      throw new BadRequestException('Invalid club ID format');
+    }
+
+    const player = await this.playersRepo.findOne({
+      where: { id: playerId, club: { id: clubId } },
+      relations: ['club'],
+    });
+    if (!player) {
+      throw new NotFoundException('Player not found');
+    }
+
+    const club = await this.clubRepo.findOne({ where: { id: clubId } });
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+
+    const existing = await this.sessionRepo.findOne({
+      where: {
+        club: { id: clubId },
+        player: { id: playerId },
+        sessionType: ChatSessionType.PLAYER,
+        status: In([ChatSessionStatus.OPEN, ChatSessionStatus.IN_PROGRESS]),
+      },
+    });
+    if (existing) {
+      return {
+        created: false,
+        session: { id: existing.id, status: existing.status },
+      };
+    }
+
+    const session = this.sessionRepo.create({
+      club,
+      player,
+      sessionType: ChatSessionType.PLAYER,
+      subject: 'Guest Relations',
+      status: ChatSessionStatus.OPEN,
+    });
+    const saved = await this.sessionRepo.save(session);
+    try {
+      this.eventsService.emitChatSessionUpdate(clubId, saved, playerId);
+    } catch (err) {
+      console.error('Failed to emit chat session update for new player session:', err);
+    }
+
+    return {
+      created: true,
+      session: { id: saved.id, status: saved.status },
+    };
   }
 }
 

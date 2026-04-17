@@ -7,11 +7,19 @@ import { UserClubRole } from '../users/user-club-role.entity';
 import { Player } from '../clubs/entities/player.entity';
 import { Staff } from '../clubs/entities/staff.entity';
 import { Club } from '../clubs/club.entity';
-import { FinancialTransaction, TransactionStatus } from '../clubs/entities/financial-transaction.entity';
+import {
+  FinancialTransaction,
+  TransactionStatus,
+  SESSION_TABLE_CHIPS_SUM_CASE_INNER,
+  TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER,
+  CREDIT_BALANCE_SQL,
+} from '../clubs/entities/financial-transaction.entity';
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table, TableStatus } from '../clubs/entities/table.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
+import { tableHasActiveStaffSession } from '../clubs/table-session.util';
+import { playerMeetsTableMinBuyIn } from '../clubs/waitlist-buyin.util';
 import { TenantRole, ClubRole } from '../common/rbac/roles';
 import * as bcrypt from 'bcrypt';
 import { FinancialTransactionsService } from '../clubs/services/financial-transactions.service';
@@ -21,6 +29,11 @@ import { AffiliatesService } from '../clubs/services/affiliates.service';
 import { FnbEnhancedService } from '../clubs/services/fnb-enhanced.service';
 import { EventsService } from '../events/events.service';
 import { generateTiltIdCandidate } from '../common/utils/tilt-id';
+import {
+  computeCreditFacilityBreakdown,
+  sumApprovedCreditLimitSince,
+} from '../clubs/credit-used.util';
+import { playerKycDocsMeetSubmitPanGate } from '../clubs/player-kyc-readiness.util';
 
 @Injectable()
 export class AuthService {
@@ -53,6 +66,12 @@ export class AuthService {
       if (!existing) return candidate;
     }
     throw new BadRequestException('Unable to generate unique Tilt ID. Please try again.');
+  }
+
+  private tableMatchesWaitlistGame(table: Table, game: 'POKER' | 'RUMMY'): boolean {
+    const tt = String(table.tableType || '').toUpperCase();
+    if (game === 'RUMMY') return tt === 'RUMMY';
+    return tt === 'CASH' || tt === 'HIGH_STAKES' || tt === 'PRIVATE' || tt === 'TOURNAMENT';
   }
 
   // Placeholder: integrate Supabase Auth/JWT verification later
@@ -970,25 +989,7 @@ export class AuthService {
       }
 
       // Require Aadhaar front + back (or legacy single government_id) and PAN document before PAN submission.
-      const kycDocs = Array.isArray((player as any).kycDocuments) ? (player as any).kycDocuments : [];
-      const hasPanCardDoc = kycDocs.some((d: any) => {
-        const t = String(d?.documentType || d?.type || '').toLowerCase();
-        return t === 'pan_card' && !!(d?.fileUrl || d?.url);
-      });
-      const hasAadhaarFront = kycDocs.some((d: any) => {
-        const t = String(d?.documentType || d?.type || '').toLowerCase();
-        return t === 'aadhaar_front' && !!(d?.fileUrl || d?.url);
-      });
-      const hasAadhaarBack = kycDocs.some((d: any) => {
-        const t = String(d?.documentType || d?.type || '').toLowerCase();
-        return t === 'aadhaar_back' && !!(d?.fileUrl || d?.url);
-      });
-      const hasLegacyGovId = kycDocs.some((d: any) => {
-        const t = String(d?.documentType || d?.type || '').toLowerCase();
-        return t === 'government_id' && !!(d?.fileUrl || d?.url);
-      });
-      const hasAadhaarRequirement = (hasAadhaarFront && hasAadhaarBack) || hasLegacyGovId;
-      if (!hasAadhaarRequirement || !hasPanCardDoc) {
+      if (!playerKycDocsMeetSubmitPanGate(player)) {
         throw new BadRequestException(
           'Please upload Aadhaar Front, Aadhaar Back, and PAN Card documents before submitting PAN number.'
         );
@@ -1243,21 +1244,18 @@ export class AuthService {
 
   /**
    * Get player balance
+   * @param clubIdHint Optional x-club-id from client; all balances use the player's assigned club from DB.
    */
-  async getPlayerBalance(playerId: string, clubId: string) {
+  async getPlayerBalance(playerId: string, clubIdHint?: string) {
     try {
-      console.log('💰 [BALANCE] Fetching balance for player:', playerId, 'club:', clubId);
-      
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
         throw new BadRequestException('Player ID is required');
       }
-      if (!clubId || typeof clubId !== 'string' || !clubId.trim()) {
-        throw new BadRequestException('Club ID is required');
-      }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId.trim(), club: { id: clubId.trim() } }
+        where: { id: playerId.trim() },
+        relations: ['club'],
       });
 
       if (!player) {
@@ -1265,6 +1263,19 @@ export class AuthService {
         throw new NotFoundException('Player not found');
       }
 
+      const resolvedClubId = String((player as any).club?.id || '').trim();
+      if (!resolvedClubId) {
+        throw new BadRequestException('Player has no assigned club');
+      }
+
+      const hint = typeof clubIdHint === 'string' ? clubIdHint.trim() : '';
+      if (hint && hint !== resolvedClubId) {
+        console.warn(
+          `💰 [BALANCE] x-club-id (${hint}) does not match player assigned club (${resolvedClubId}); using assigned club`,
+        );
+      }
+
+      console.log('💰 [BALANCE] Fetching balance for player:', playerId, 'club:', resolvedClubId);
       console.log('✅ [BALANCE] Player found:', player.email);
 
       // CRITICAL: KYC CHECK - Players with pending KYC can view balance but cannot perform actions
@@ -1282,7 +1293,8 @@ export class AuthService {
           seatNumber: null,
           kycStatus: kycStatus,
           kycRequired: true,
-          message: 'Please complete KYC verification to view your balance'
+          message: 'Please complete KYC verification to view your balance',
+          assignedClubId: resolvedClubId,
         };
       }
 
@@ -1291,7 +1303,7 @@ export class AuthService {
       try {
         transactions = await this.transactionsRepo.find({
           where: {
-            club: { id: clubId.trim() },
+            club: { id: resolvedClubId },
             playerId: player.id,
             status: TransactionStatus.COMPLETED
           },
@@ -1307,7 +1319,7 @@ export class AuthService {
       // Get table info (if seated) - use playerId for reliable lookup
       const waitlistEntry = await this.waitlistRepo.findOne({
         where: {
-          club: { id: clubId.trim() },
+          club: { id: resolvedClubId },
           playerId: player.id,
           status: WaitlistStatus.SEATED
         },
@@ -1321,7 +1333,7 @@ export class AuthService {
 
       if (isSeated && waitlistEntry.tableNumber) {
         const table = await this.tablesRepo.findOne({
-          where: { club: { id: clubId.trim() }, tableNumber: waitlistEntry.tableNumber }
+          where: { club: { id: resolvedClubId }, tableNumber: waitlistEntry.tableNumber }
         });
         if (table) {
           tableId = table.id;
@@ -1339,18 +1351,28 @@ export class AuthService {
           if (isNaN(amount)) continue;
           const upperType = (txn.type || '').toUpperCase();
           
-          // Table balance: only count transactions from current session (since ~seated_at; 30s buffer to include same-moment Table Buy In)
-          const sessionStart = seatedAt ? new Date(seatedAt.getTime() - 30000) : null;
-          const isCurrentSession = isSeated && sessionStart && new Date(txn.createdAt) >= sessionStart;
+          // Table balance: only count transactions from current session (since seated_at — exact boundary)
+          const sessionStart = seatedAt ? new Date(seatedAt.getTime()) : null;
+          const txnMs = new Date(txn.createdAt as Date | string).getTime();
+          const seatMs = sessionStart ? sessionStart.getTime() : 0;
+          const isCurrentSession = isSeated && sessionStart && Number.isFinite(txnMs) && txnMs >= seatMs;
           
           if (['DEPOSIT', 'CLUB BUY IN'].includes(upperType)) {
             cashBalance += amount;
           } else if (['CASHOUT', 'WITHDRAWAL', 'CLUB BUY OUT'].includes(upperType)) {
             cashBalance -= amount;
           } else if (['TABLE BUY IN', 'BUY IN'].includes(upperType)) {
-            cashBalance -= amount;
+            const walletOnlyCreditPair =
+              typeof txn.notes === 'string' &&
+              txn.notes.includes(TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER);
+            // Paired row mirrors credit-to-table; chips live on the Credit txn — do not debit wallet cash.
+            if (!walletOnlyCreditPair) {
+              cashBalance -= amount;
+            }
             if (isCurrentSession) {
-              tableBalance += amount;
+              if (!walletOnlyCreditPair) {
+                tableBalance += amount;
+              }
             }
           } else if (['TABLE BUY OUT'].includes(upperType)) {
             cashBalance += amount;
@@ -1383,31 +1405,67 @@ export class AuthService {
         creditUsedOnTable = 0;
       }
 
-      console.log(`💰 [BALANCE] Cash: ₹${cashBalance}, Table: ₹${tableBalance}, Credit Outstanding: ₹${creditUsedOnTable}, Seated: ${!!isSeated}`);
-
       // Wallet balance can go negative if using more credit than cash
       const availableBalance = cashBalance;
 
       // Get credit information
       const creditEnabled = (player as any).creditEnabled || false;
-      const creditLimit = (player as any).creditLimit || 0;
-      
-      // Calculate credit used from approved credit requests (use limit field, not amount)
-      let creditUsed = 0;
+
+      // When credit facility is locked, chips from past Credit ledger rows are still on the table but
+      // must not appear under "credit on table" — show them as cash-on-table so total matches chips.
+      let creditUsedOnTableDisplay = creditUsedOnTable;
+      let cashOnTableDisplay = Math.max(0, tableBalance - creditUsedOnTable);
+      if (!creditEnabled && isSeated && tableBalance > 0) {
+        creditUsedOnTableDisplay = 0;
+        cashOnTableDisplay = Math.max(0, tableBalance);
+      }
+
+      console.log(
+        `💰 [BALANCE] Cash: ₹${cashBalance}, Table: ₹${tableBalance}, Credit on table (ledger): ₹${creditUsedOnTable}, Seated: ${!!isSeated}, creditEnabled: ${creditEnabled}`,
+      );
+      const creditLimitNum = Number((player as any).creditLimit) || 0;
+
+      // Approved limits since this credit line was last enabled (lock → unlock = fresh line).
+      let creditUsedFromApprovals = 0;
       if (creditEnabled) {
         try {
-          const approvedRequests = await this.dataSource.query(
-            `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
-            [clubId.trim(), playerId, 'Approved']
+          creditUsedFromApprovals = await sumApprovedCreditLimitSince(
+            (sql, p) => this.dataSource.query(sql, p),
+            resolvedClubId,
+            player.id,
+            (player as any).creditEnabledAt,
           );
-          creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
         } catch (creditError) {
           console.warn('💰 [BALANCE] Failed to calculate credit used:', creditError);
-          creditUsed = 0;
+          creditUsedFromApprovals = 0;
         }
       }
-      
-      const availableCredit = creditEnabled ? Math.max(0, creditLimit - creditUsed) : 0;
+      creditUsedFromApprovals = Math.min(Math.max(0, creditUsedFromApprovals), creditLimitNum);
+
+      // Ledger: Credit − Debit (chips drawn on the line). Negative wallet is treated as cash paid
+      // toward that debt first, so "credit on line" drops (e.g. ₹199 owed, wallet −₹189 → ₹10 on line).
+      let creditLedgerNet = 0;
+      if (creditEnabled) {
+        try {
+          const crRows = await this.dataSource.query(
+            `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions
+             WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+            [resolvedClubId, player.id],
+          );
+          creditLedgerNet = Number(crRows?.[0]?.total ?? 0);
+        } catch (e) {
+          console.warn('💰 [BALANCE] Failed to read credit ledger:', e);
+          creditLedgerNet = 0;
+        }
+      }
+      const facility = computeCreditFacilityBreakdown({
+        creditLimit: creditLimitNum,
+        creditUsedFromApprovals: creditUsedFromApprovals,
+        creditLedgerNet,
+        availableBalance,
+        creditEnabled,
+      });
+      const { creditRepaidViaWallet, effectiveCreditOnLine, availableCredit } = facility;
 
       const result = {
         // Wallet balance (can be negative if using credit)
@@ -1416,8 +1474,8 @@ export class AuthService {
         
         // Table balance (money currently on table)
         tableBalance,
-        creditUsedOnTable,
-        cashOnTable: tableBalance - creditUsedOnTable,
+        creditUsedOnTable: creditUsedOnTableDisplay,
+        cashOnTable: cashOnTableDisplay,
         
         // Total balance (cash + table)
         totalBalance: availableBalance + tableBalance,
@@ -1427,11 +1485,19 @@ export class AuthService {
         seatNumber: waitlistEntry?.tableNumber || null,
         isSeated: !!isSeated,
         
-        // Credit info
+        // Credit info (player-facing names; numbers unchanged)
         creditEnabled,
-        creditLimit,
-        creditUsed, // Total credit used from credit requests
-        availableCredit
+        creditLimit: creditLimitNum,
+        /** Chips/facility still drawn on the line after wallet payback (e.g. ₹10). */
+        creditUsed: effectiveCreditOnLine,
+        /** Negative wallet applied toward line debt (show as "credit used" in red; e.g. ₹189). */
+        creditRepaidViaWallet,
+        availableCredit,
+        totalCredit: creditLimitNum,
+        creditInAccount: effectiveCreditOnLine,
+        creditRemaining: availableCredit,
+        /** Canonical club for this player — clients should align x-club-id with this. */
+        assignedClubId: resolvedClubId,
       };
       
       console.log('💰 [BALANCE] Returning balance:', JSON.stringify(result, null, 2));
@@ -1502,9 +1568,7 @@ export class AuthService {
       const balanceResult = await this.dataSource.query(
         `SELECT
            COALESCE(SUM(CASE
-             WHEN UPPER(type) IN ('TABLE BUY IN', 'BUY IN', 'CREDIT') THEN amount
-             WHEN UPPER(type) IN ('TABLE BUY OUT') THEN -amount
-             ELSE 0
+             ${SESSION_TABLE_CHIPS_SUM_CASE_INNER}
            END), 0) AS table_balance
          FROM financial_transactions
          WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'
@@ -1654,15 +1718,21 @@ export class AuthService {
       let total = 0;
       try {
         console.log(`📊 [PLAYER TRANSACTIONS] Fetching for player ${player.id} in club ${clubId.trim()}`);
-        [transactions, total] = await this.transactionsRepo.findAndCount({
-          where: {
-            club: { id: clubId.trim() },
-            playerId: player.id
-          },
-          order: { createdAt: 'DESC' },
-          take: limit,
-          skip: offset
-        });
+        // Hide paired "Table Buy In" rows that only mirror a Credit ledger row (same rupees, same moment).
+        // Players should see one line: the Credit / staff-approved draw — not the accounting mirror.
+        const wb = TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER;
+        const qb = this.transactionsRepo
+          .createQueryBuilder('t')
+          .where('t.club_id = :clubId', { clubId: clubId.trim() })
+          .andWhere('t.player_id = :playerId', { playerId: player.id })
+          .andWhere(
+            `(TRIM(UPPER(t.type)) <> :tbi OR POSITION(:wb IN COALESCE(t.notes, '')) = 0)`,
+            { tbi: 'TABLE BUY IN', wb },
+          )
+          .orderBy('t.created_at', 'DESC')
+          .take(limit)
+          .skip(offset);
+        [transactions, total] = await qb.getManyAndCount();
         console.log(`📊 [PLAYER TRANSACTIONS] Found ${total} transactions, returning ${transactions.length}`);
       } catch (dbError) {
         console.error('Database error fetching transactions:', dbError);
@@ -1707,7 +1777,15 @@ export class AuthService {
   /**
    * Join waitlist
    */
-  async joinWaitlist(playerId: string, clubId: string, tableType?: string, partySize: number = 1, requestedSeat?: number, gameType?: string) {
+  async joinWaitlist(
+    playerId: string,
+    clubId: string,
+    tableType?: string,
+    partySize: number = 1,
+    requestedSeat?: number,
+    gameType?: string,
+    targetTableId?: string,
+  ) {
     try {
       // Edge case: Validate inputs
       if (!playerId || typeof playerId !== 'string' || !playerId.trim()) {
@@ -1827,78 +1905,81 @@ export class AuthService {
         throw new BadRequestException('No tables are configured for this club. Please contact the club administrator.');
       }
 
-      // CRITICAL: Check player balance against minimum buy-in requirement
-      let minBuyInRequired = 0;
-      try {
-        // Get minimum buy-in from available tables
-        const whereClause: any = {
-          club: { id: clubId.trim() }
-        };
-        
-        if (tableType && tableType.trim()) {
-          whereClause.tableType = tableType.trim();
-        }
-
-        const tables = await this.tablesRepo.find({
-          where: whereClause
-        });
-
-        // Find the minimum buy-in from all tables
-        const buyIns = tables
-          .map(t => t.minBuyIn)
-          .filter(buyIn => buyIn !== null && buyIn !== undefined && buyIn > 0)
-          .map(buyIn => parseFloat(String(buyIn)) || 0);
-
-        if (buyIns.length > 0) {
-          minBuyInRequired = Math.min(...buyIns);
-        }
-      } catch (dbError) {
-        console.error('Database error checking minimum buy-in:', dbError);
-        // Continue - if we can't check, we'll allow joining waitlist
-      }
-
-      // If there's a minimum buy-in requirement, check player balance
-      if (minBuyInRequired > 0) {
-        const playerBalance = await this.getPlayerBalance(playerId.trim(), clubId.trim());
-        const totalAvailableBalance = playerBalance.totalBalance || playerBalance.availableBalance || 0;
-
-        if (totalAvailableBalance < minBuyInRequired) {
-          throw new BadRequestException(
-            `Insufficient balance. Minimum buy-in required: ₹${minBuyInRequired.toLocaleString()}, ` +
-            `Your current balance: ₹${totalAvailableBalance.toLocaleString()}. ` +
-            `Please add funds to your account before joining the waitlist.`
-          );
-        }
-      }
-
-      // Edge case: Check if any tables are available (if tableType specified)
-      if (tableType && tableType.trim()) {
-        let availableTables = [];
-        try {
-          availableTables = await this.tablesRepo.find({
-            where: {
-              club: { id: clubId.trim() },
-              tableType: tableType.trim() as any,
-              status: TableStatus.AVAILABLE
-            }
-          });
-        } catch (dbError) {
-          console.error('Database error checking available tables:', dbError);
-          // Continue - still allow joining waitlist
-        }
-
-        if (availableTables.length === 0) {
-          // Still allow joining waitlist, but inform player
-          // They'll be notified when tables become available
-        }
-      }
-
       // Poker vs Rummy: normalize requested game so assign-seat only allows matching table type
       const requestedGameType = ((): 'POKER' | 'RUMMY' => {
         const g = (gameType ?? tableType ?? '').toString().trim().toUpperCase();
         if (g === 'RUMMY') return 'RUMMY';
-        return 'POKER'; // default and any other value (Cash Game, CASH, etc.)
+        return 'POKER';
       })();
+
+      let gameLiveTables: Table[] = [];
+      try {
+        const rows = await this.tablesRepo.find({
+          where: {
+            club: { id: clubId.trim() },
+            status: In([TableStatus.AVAILABLE, TableStatus.OCCUPIED]),
+          },
+        });
+        gameLiveTables = rows.filter(
+          (t) =>
+            tableHasActiveStaffSession(t.notes) &&
+            this.tableMatchesWaitlistGame(t, requestedGameType),
+        );
+      } catch (dbError) {
+        console.error('Database error loading live tables for waitlist:', dbError);
+      }
+
+      let minBuyInRequired = 0;
+      const targetTid = targetTableId?.trim();
+      if (targetTid) {
+        if (!uuidRegex.test(targetTid)) {
+          throw new BadRequestException('Invalid table ID format');
+        }
+        const target = await this.tablesRepo.findOne({
+          where: { id: targetTid, club: { id: clubId.trim() } },
+        });
+        if (!target) {
+          throw new NotFoundException('Table not found');
+        }
+        if (!tableHasActiveStaffSession(target.notes)) {
+          throw new BadRequestException(
+            'This table does not have an active session. Ask staff to start the session, then try again.',
+          );
+        }
+        if (!this.tableMatchesWaitlistGame(target, requestedGameType)) {
+          throw new BadRequestException('This table does not match the game you selected.');
+        }
+        minBuyInRequired = Math.max(0, Number(target.minBuyIn) || 0);
+      } else if (gameLiveTables.length > 0) {
+        const mins = gameLiveTables.map((t) => Number(t.minBuyIn) || 0).filter((m) => m > 0);
+        if (mins.length > 0) {
+          minBuyInRequired = Math.max(...mins);
+        }
+      }
+
+      const playerBalance = await this.getPlayerBalance(playerId.trim(), clubId.trim());
+      const wallet = Number((playerBalance as any).availableBalance) || 0;
+      const credit = Math.max(0, Number((playerBalance as any).availableCredit) || 0);
+      const creditOnLine = Math.max(
+        0,
+        Number((playerBalance as any).creditUsed ?? (playerBalance as any).creditInAccount) || 0,
+      );
+
+      // Hard stop: players with negative wallet (credit debt) cannot join any table waitlist.
+      if (wallet < 0) {
+        throw new BadRequestException(
+          `You cannot join a table while your wallet is negative (₹${wallet.toLocaleString('en-IN')}). Please repay at the cashier first, then try again.`,
+        );
+      }
+
+      // On join, only approved credit already on-line can be auto-applied (not raw unlocked headroom).
+      const creditUsableOnJoin = creditOnLine;
+      if (minBuyInRequired > 0 && !playerMeetsTableMinBuyIn(wallet, creditUsableOnJoin, minBuyInRequired)) {
+        const reason = `Wallet: ₹${wallet.toLocaleString('en-IN')}, credit on line: ₹${creditUsableOnJoin.toLocaleString('en-IN')}, credit remaining: ₹${credit.toLocaleString('en-IN')}.`;
+        throw new BadRequestException(
+          `You do not meet this table's minimum buy-in (₹${minBuyInRequired.toLocaleString('en-IN')}). ${reason} Add money at the cashier or use your credit line.`,
+        );
+      }
 
       // Edge case: Create waitlist entry with error handling
       let entry;
@@ -1946,15 +2027,16 @@ export class AuthService {
 
       const position = allPending.findIndex(e => e.id === entry.id) + 1;
 
-      // Edge case: Check if there are any available tables
+      // Count tables with an active session (same rule as player "live tables" list)
       let availableTablesCount = 0;
       try {
-        availableTablesCount = await this.tablesRepo.count({
+        const rows = await this.tablesRepo.find({
           where: {
             club: { id: clubId.trim() },
-            status: TableStatus.AVAILABLE
-          }
+            status: In([TableStatus.AVAILABLE, TableStatus.OCCUPIED]),
+          },
         });
+        availableTablesCount = rows.filter((t) => tableHasActiveStaffSession(t.notes)).length;
       } catch (dbError) {
         console.error('Database error counting available tables:', dbError);
         // Continue with 0
@@ -2054,22 +2136,28 @@ export class AuthService {
           where: { club: { id: clubId.trim() } }
         });
 
-        const availableTables = await this.tablesRepo.count({
-          where: {
-            club: { id: clubId.trim() },
-            status: TableStatus.AVAILABLE
-          }
-        });
+        let sessionLiveCount = 0;
+        try {
+          const rows = await this.tablesRepo.find({
+            where: {
+              club: { id: clubId.trim() },
+              status: In([TableStatus.AVAILABLE, TableStatus.OCCUPIED]),
+            },
+          });
+          sessionLiveCount = rows.filter((t) => tableHasActiveStaffSession(t.notes)).length;
+        } catch {
+          sessionLiveCount = 0;
+        }
 
         return {
           onWaitlist: false,
           entry: null,
           position: null,
           totalInQueue: 0,
-          availableTables: tablesCount > 0 ? availableTables : null,
+          availableTables: tablesCount > 0 ? sessionLiveCount : null,
           message: tablesCount === 0
             ? 'No tables are configured for this club.'
-            : availableTables === 0
+            : sessionLiveCount === 0
             ? 'No tables are currently available.'
             : undefined
         };
@@ -2099,14 +2187,15 @@ export class AuthService {
         position = allPending.findIndex(e => e.id === entry.id) + 1;
         totalInQueue = allPending.length;
 
-        // Edge case: Check available tables
+        // Edge case: Check tables with an active session (player-visible live tables)
         try {
-          availableTables = await this.tablesRepo.count({
+          const rows = await this.tablesRepo.find({
             where: {
               club: { id: clubId.trim() },
-              status: TableStatus.AVAILABLE
-            }
+              status: In([TableStatus.AVAILABLE, TableStatus.OCCUPIED]),
+            },
           });
+          availableTables = rows.filter((t) => tableHasActiveStaffSession(t.notes)).length;
         } catch (dbError) {
           console.error('Database error counting available tables:', dbError);
           // Continue with 0
@@ -2293,17 +2382,19 @@ export class AuthService {
       // Note: Tables API does NOT require KYC - players can view available tables
       // but they cannot JOIN tables without KYC approval
 
-      // Edge case: Get tables with error handling
-      let tables = [];
+      // Only poker/rummy cash tables with an active staff session (started or paused) appear in the
+      // player app — not newly created tables before "Start session", and not after session end (CLOSED).
+      let tables: Table[] = [];
       try {
         tables = await this.tablesRepo.find({
           where: {
             club: { id: clubId.trim() },
-            status: TableStatus.AVAILABLE
+            status: In([TableStatus.AVAILABLE, TableStatus.OCCUPIED]),
           },
           relations: ['club'], // CRITICAL: Load club relation
-          order: { tableNumber: 'ASC' }
+          order: { tableNumber: 'ASC' },
         });
+        tables = tables.filter((t) => tableHasActiveStaffSession(t.notes));
       } catch (dbError) {
         console.error('Database error fetching tables:', dbError);
         console.error('Error details:', dbError);
@@ -2329,7 +2420,7 @@ export class AuthService {
           totalTables: allTablesCount,
           message: allTablesCount === 0
             ? 'No tables are configured for this club.'
-            : 'No tables are currently available. All tables may be occupied or reserved.'
+            : 'No live table sessions right now. Tables appear when staff starts a session.'
         };
       }
 
@@ -2503,6 +2594,16 @@ export class AuthService {
         throw new BadRequestException('Table data is incomplete. Please contact support.');
       }
 
+      if (
+        table.status === TableStatus.CLOSED ||
+        table.status === TableStatus.MAINTENANCE ||
+        !tableHasActiveStaffSession(table.notes)
+      ) {
+        throw new NotFoundException(
+          'This table is not open for play. The session may have ended — pull to refresh.',
+        );
+      }
+
       const maxSeats = Number(table.maxSeats) || 0;
       const currentSeats = Number(table.currentSeats) || 0;
       const availableSeats = Math.max(0, maxSeats - currentSeats);
@@ -2515,6 +2616,12 @@ export class AuthService {
           seatNumber: p.seatNumber,
           buyInAmount: Number(p.buyInAmount) || 0,
           walletBalance: Number(p.walletBalance) || 0,
+          creditLineLimit: Number(p.creditLineLimit) || 0,
+          creditLineUsed: Number(p.creditLineUsed) || 0,
+          creditLineRemaining: Number(p.creditLineRemaining) || 0,
+          creditFacilityEnabled: !!p.creditFacilityEnabled,
+          creditOnTableThisSession: Number(p.creditOnTableThisSession) || 0,
+          cashOnTableThisSession: Number(p.cashOnTableThisSession) || 0,
           playerName: p.playerName || 'Player',
           initials: p.playerName
             ? p.playerName.split(' ').map((n: string) => n[0] || '').join('').toUpperCase().substring(0, 2)
@@ -2646,6 +2753,18 @@ export class AuthService {
         throw new ForbiddenException('Account is inactive. Please contact support.');
       }
 
+      const pendingRow = await this.dataSource.query(
+        `SELECT id FROM credit_requests
+         WHERE club_id = $1 AND player_id = $2 AND status = 'Pending'
+         LIMIT 1`,
+        [clubId.trim(), playerId.trim()],
+      );
+      if (pendingRow?.length) {
+        throw new ConflictException(
+          'You already have a pending credit request. Wait until staff approves or rejects it before submitting another.',
+        );
+      }
+
       // Edge case: Create credit request with error handling
       let creditRequest;
       try {
@@ -2672,7 +2791,12 @@ export class AuthService {
           stack: createError instanceof Error ? createError.stack : undefined,
           name: createError instanceof Error ? createError.name : undefined
         });
-        if (createError instanceof BadRequestException || createError instanceof NotFoundException || createError instanceof ConflictException) {
+        if (
+          createError instanceof BadRequestException ||
+          createError instanceof NotFoundException ||
+          createError instanceof ConflictException ||
+          createError instanceof ForbiddenException
+        ) {
           throw createError;
         }
         throw new BadRequestException(`Failed to create credit request: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
@@ -2699,11 +2823,44 @@ export class AuthService {
         name: err instanceof Error ? err.name : undefined,
         constructor: err?.constructor?.name
       });
-      if (err instanceof BadRequestException || err instanceof NotFoundException || err instanceof ForbiddenException) {
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException ||
+        err instanceof ForbiddenException ||
+        err instanceof ConflictException
+      ) {
         throw err;
       }
       throw new BadRequestException(`Failed to request credit: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
+  }
+
+  /**
+   * Upsert native FCM device token for this player + club (device_tokens.player_uuid + club_id).
+   */
+  async registerPlayerDeviceToken(playerId: string, clubId: string, token: string, platform?: string) {
+    const t = token.trim();
+    if (t.length < 10 || t.length > 4096) {
+      throw new BadRequestException('Invalid device token');
+    }
+    const player = await this.playersRepo.findOne({
+      where: { id: playerId.trim(), club: { id: clubId.trim() } },
+    });
+    if (!player) {
+      throw new NotFoundException('Player not found');
+    }
+    const plat = (platform || 'unknown').trim().slice(0, 32) || 'unknown';
+    await this.dataSource.query(
+      `INSERT INTO device_tokens (token, platform, player_uuid, club_id, updated_at)
+       VALUES ($1, $2, $3, $4::uuid, NOW())
+       ON CONFLICT (token) DO UPDATE SET
+         player_uuid = EXCLUDED.player_uuid,
+         platform = EXCLUDED.platform,
+         club_id = EXCLUDED.club_id,
+         updated_at = NOW()`,
+      [t, plat, playerId.trim(), clubId.trim()],
+    );
+    return { success: true };
   }
 
   /**
@@ -3038,7 +3195,12 @@ export class AuthService {
   /**
    * Get FNB orders for a player in a club
    */
-  async getPlayerFnbOrders(playerId: string, clubId: string) {
+  async getPlayerFnbOrders(
+    playerId: string,
+    clubId: string,
+    historyPage = 1,
+    historyLimit = 10,
+  ) {
     try {
       // Validate UUID format
       const uuidRegex =
@@ -3060,31 +3222,50 @@ export class AuthService {
         throw new NotFoundException('Player not found');
       }
 
-      // Get all orders and filter by playerId
-      const allOrders = await this.fnbService.getOrders(clubId.trim(), 1, 1000);
-      const playerOrders = allOrders.orders.filter(order => order.playerId === playerId.trim());
+      const mapOrder = (order: any) => ({
+        id: order.id,
+        orderNumber: order.orderNumber,
+        tableNumber: order.tableNumber,
+        items: order.items,
+        totalAmount: order.totalAmount,
+        status: order.status,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        statusHistory: order.statusHistory,
+        cancellationReason: order.cancellationReason || order.cancellation_reason || null,
+        rejectionReason:
+          order.rejectionReason ||
+          order.rejection_reason ||
+          order.rejectedReason ||
+          order.rejected_reason ||
+          null,
+      });
+
+      const { activeOrders, history } = await this.fnbService.getPlayerOrderFeed(
+        clubId.trim(),
+        playerId.trim(),
+        historyPage,
+        historyLimit,
+      );
+
+      const historyMapped = history.orders.map(mapOrder);
+      const activeMapped = activeOrders.map(mapOrder);
 
       return {
         success: true,
-        orders: playerOrders.map((order: any) => ({
-          id: order.id,
-          orderNumber: order.orderNumber,
-          tableNumber: order.tableNumber,
-          items: order.items,
-          totalAmount: order.totalAmount,
-          status: order.status,
-          createdAt: order.createdAt,
-          updatedAt: order.updatedAt,
-          statusHistory: order.statusHistory,
-          cancellationReason: order.cancellationReason || order.cancellation_reason || null,
-          // Map all historical and current field names to a single rejectionReason
-          rejectionReason:
-            order.rejectionReason ||
-            order.rejection_reason ||
-            order.rejectedReason ||
-            order.rejected_reason ||
-            null,
-        })),
+        activeOrders: activeMapped,
+        history: {
+          orders: historyMapped,
+          total: history.total,
+          page: history.page,
+          limit: history.limit,
+          totalPages: history.totalPages,
+        },
+        /** @deprecated Flat list — use activeOrders + history; kept for older builds */
+        orders: [...activeMapped, ...historyMapped].sort(
+          (a, b) =>
+            new Date(String(b.createdAt)).getTime() - new Date(String(a.createdAt)).getTime(),
+        ),
       };
     } catch (err) {
       console.error('Get player FNB orders error:', err);
@@ -3241,13 +3422,35 @@ export class AuthService {
         throw new NotFoundException('Player not found');
       }
 
+      const fn = fieldName.trim();
+      const pendingConflict = await this.playersRepo.query(
+        `
+        SELECT id FROM player_profile_change_requests
+        WHERE player_id = $1 AND club_id = $2 AND status = 'pending'
+          AND (
+            field_name = $3
+            OR ($3 = 'aadhaar' AND field_name IN ('aadhaar', 'government_id', 'aadhaar_front', 'aadhaar_back'))
+            OR ($3 IN ('government_id', 'aadhaar_front', 'aadhaar_back') AND field_name IN ('aadhaar', 'government_id', 'aadhaar_front', 'aadhaar_back'))
+            OR ($3 = 'phone' AND field_name IN ('phone', 'phoneNumber'))
+            OR ($3 = 'phoneNumber' AND field_name IN ('phone', 'phoneNumber'))
+          )
+        LIMIT 1
+      `,
+        [playerId, clubId, fn],
+      );
+      if (Array.isArray(pendingConflict) && pendingConflict.length > 0) {
+        throw new BadRequestException(
+          'You already have a pending change request for this field. Please wait for staff to review it.',
+        );
+      }
+
       await this.playersRepo.query(
         `
         INSERT INTO player_profile_change_requests
           (player_id, club_id, field_name, current_value, requested_value, status, created_at)
         VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
       `,
-        [playerId, clubId, fieldName.trim(), currentValue, requestedValue],
+        [playerId, clubId, fn, currentValue, requestedValue],
       );
 
       return {

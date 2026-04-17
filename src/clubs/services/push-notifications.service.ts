@@ -31,6 +31,7 @@ export class PushNotificationsService {
     customStaffIds?: string[];
     notificationType?: NotificationType;
     scheduledAt?: Date;
+    expiresAt?: Date | null;
     createdBy?: string;
   }) {
     // Validate inputs
@@ -72,11 +73,22 @@ export class PushNotificationsService {
       customStaffIds: data.customStaffIds || null,
       notificationType: data.notificationType || NotificationType.PLAYER,
       scheduledAt: data.scheduledAt || null,
+      expiresAt: data.expiresAt ?? null,
       createdBy: data.createdBy || null,
       club
     });
 
-    return this.notificationsRepo.save(notification);
+    const saved = await this.notificationsRepo.save(notification);
+    this.emitPlayerPromosCatalogChanged(clubId);
+    return saved;
+  }
+
+  private emitPlayerPromosCatalogChanged(clubId: string) {
+    try {
+      this.eventsService?.emitOfferUpdated(clubId);
+    } catch {
+      // non-fatal
+    }
   }
 
   async findAll(clubId: string, notificationType?: NotificationType) {
@@ -107,6 +119,7 @@ export class PushNotificationsService {
     customPlayerIds: string[];
     isActive: boolean;
     scheduledAt: Date;
+    expiresAt: Date | null;
   }>) {
     const notification = await this.findOne(id, clubId);
 
@@ -149,12 +162,15 @@ export class PushNotificationsService {
     }
 
     Object.assign(notification, data);
-    return this.notificationsRepo.save(notification);
+    const saved = await this.notificationsRepo.save(notification);
+    this.emitPlayerPromosCatalogChanged(clubId);
+    return saved;
   }
 
   async remove(id: string, clubId: string) {
     const notification = await this.findOne(id, clubId);
     await this.notificationsRepo.remove(notification);
+    this.emitPlayerPromosCatalogChanged(clubId);
   }
 
   async markAsSent(id: string, clubId: string) {
@@ -182,10 +198,12 @@ export class PushNotificationsService {
       switch (notification.targetType) {
         case NotificationTargetType.ALL_PLAYERS:
           const allPlayers = await this.playersRepo.find({
-            where: { club: { id: clubId }, status: 'Active' },
-            select: ['id']
+            where: { club: { id: clubId } },
+            select: ['id', 'status'],
           });
-          recipientIds = allPlayers.map(p => p.id);
+          recipientIds = allPlayers
+            .filter((p) => String(p.status || '').toLowerCase() === 'active')
+            .map((p) => p.id);
           break;
 
         case NotificationTargetType.CUSTOM_GROUP:
@@ -325,6 +343,25 @@ export class PushNotificationsService {
         this.eventsService.emitNotificationCreated(clubId);
       }
     }
+    this.emitPlayerPromosCatalogChanged(clubId);
+
+    // Mobile FCM via Supabase Edge (club-scoped broadcast or per-player UUID)
+    if (this.eventsService && recipientType === 'player') {
+      const title = notification.title || 'Notification';
+      const body = notification.details || '';
+      const data = { clubId: clubId ?? '', type: 'staff_promo' };
+      try {
+        if (notification.targetType === NotificationTargetType.ALL_PLAYERS) {
+          await this.eventsService.sendFcmToClubDevices(clubId, title, body, data);
+        } else {
+          for (const pid of recipientIds) {
+            await this.eventsService.sendFcmPush(String(pid), title, body, data);
+          }
+        }
+      } catch {
+        // Non-fatal: in-app notification already delivered via Socket.IO
+      }
+    }
 
     return {
       success: true,
@@ -399,6 +436,40 @@ export class PushNotificationsService {
     if (!readStatus.isRead) {
       readStatus.isRead = true;
       readStatus.readAt = new Date();
+      await this.readStatusRepo.save(readStatus);
+      if (this.eventsService) {
+        this.eventsService.emitNotificationReadStatusChanged(clubId);
+      }
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Mark notification as unread (clear read state)
+   */
+  async markAsUnread(
+    clubId: string,
+    notificationId: string,
+    recipientId: string,
+    recipientType: 'player' | 'staff',
+  ) {
+    const readStatus = await this.readStatusRepo.findOne({
+      where: {
+        notification: { id: notificationId },
+        club: { id: clubId },
+        recipientId,
+        recipientType,
+      },
+    });
+
+    if (!readStatus) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    if (readStatus.isRead) {
+      readStatus.isRead = false;
+      readStatus.readAt = null;
       await this.readStatusRepo.save(readStatus);
       if (this.eventsService) {
         this.eventsService.emitNotificationReadStatusChanged(clubId);

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Req, Request, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, Inject, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Put, Query, Req, Request, Res, UnauthorizedException, UseGuards, UsePipes, ValidationPipe, forwardRef } from '@nestjs/common';
 import { CreateClubDto } from './dto/create-club.dto';
 import { AssignAdminDto } from './dto/assign-admin.dto';
 import { CreateClubUserDto } from './dto/create-club-user.dto';
@@ -11,6 +11,7 @@ import { ClubRole, GlobalRole, TenantRole } from '../common/rbac/roles';
 import { StorageService } from '../storage/storage.service';
 import { StaffService } from './services/staff.service';
 import { CreditRequestsService } from './services/credit-requests.service';
+import { CreditSessionHistoryService } from './services/credit-session-history.service';
 import { FinancialTransactionsService } from './services/financial-transactions.service';
 import { VipProductsService } from './services/vip-products.service';
 import { PushNotificationsService } from './services/push-notifications.service';
@@ -18,11 +19,18 @@ import { ClubSettingsService } from './services/club-settings.service';
 import { AuditLogsService } from './services/audit-logs.service';
 import { StaffRole, StaffStatus } from './entities/staff.entity';
 import { CreditRequestStatus } from './entities/credit-request.entity';
-import { TransactionType, TransactionStatus, WALLET_BALANCE_SQL } from './entities/financial-transaction.entity';
+import {
+  TransactionType,
+  TransactionStatus,
+  WALLET_BALANCE_SQL,
+  CREDIT_BALANCE_SQL,
+  TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER,
+} from './entities/financial-transaction.entity';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { CreateCreditRequestDto } from './dto/create-credit-request.dto';
 import { ApproveCreditDto } from './dto/approve-credit.dto';
+import { DenyCreditRequestDto } from './dto/deny-credit-request.dto';
 import { UpdateCreditVisibilityDto } from './dto/update-credit-visibility.dto';
 import { UpdateCreditLimitDto } from './dto/update-credit-limit.dto';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -40,6 +48,9 @@ import { AssignSeatDto } from './dto/assign-seat.dto';
 import { UpdateSessionParamsDto } from './dto/update-session-params.dto';
 import { getClubTiltPrefix, isValidTiltIdFormat, normalizeTiltId } from '../common/utils/tilt-id';
 import { WaitlistSeatingService } from './services/waitlist-seating.service';
+import { computePlayerPlaySeconds, parseTableSessionNotes } from '../utils/table-session-clock';
+import { computeCreditFacilityBreakdown, sumApprovedCreditLimitSince } from './credit-used.util';
+import { playerKycDocsMeetSubmitPanGate } from './player-kyc-readiness.util';
 import { AnalyticsService } from './services/analytics.service';
 import { WaitlistStatus } from './entities/waitlist-entry.entity';
 import { TableStatus, TableType } from './entities/table.entity';
@@ -115,6 +126,7 @@ import { QueryRakeCollectionsDto } from './dto/query-rake-collections.dto';
 import { BuyOutRequestService } from './services/buyout-request.service';
 import { ApproveBuyOutDto } from './dto/approve-buyout.dto';
 import { RejectBuyOutDto } from './dto/reject-buyout.dto';
+import { ManualTableBuyOutDto } from './dto/manual-table-buyout.dto';
 import { BuyInRequestService } from './services/buyin-request.service';
 import { ApproveBuyInDto } from './dto/approve-buyin.dto';
 import { RejectBuyInDto } from './dto/reject-buyin.dto';
@@ -129,6 +141,7 @@ import { UpdateLeavePolicyDto } from './dto/update-leave-policy.dto';
 import { CreateLeaveApplicationDto } from './dto/create-leave-application.dto';
 import { ApproveRejectLeaveDto } from './dto/approve-reject-leave.dto';
 import { EventsService } from '../events/events.service';
+import { AuthService } from '../auth/auth.service';
 
 function auditTableGameLabel(tableType: TableType | string | null | undefined): 'Poker' | 'Rummy' {
   return tableType === TableType.RUMMY ? 'Rummy' : 'Poker';
@@ -155,6 +168,7 @@ export class ClubsController {
     private readonly usersService: UsersService,
     private readonly staffService: StaffService,
     private readonly creditRequestsService: CreditRequestsService,
+    private readonly creditSessionHistoryService: CreditSessionHistoryService,
     private readonly financialTransactionsService: FinancialTransactionsService,
     private readonly vipProductsService: VipProductsService,
     private readonly pushNotificationsService: PushNotificationsService,
@@ -181,6 +195,7 @@ export class ClubsController {
     private readonly rosterManagementService: RosterManagementService,
     private readonly playerFieldUpdateService: PlayerFieldUpdateService,
     private readonly eventsService: EventsService,
+    @Inject(forwardRef(() => AuthService)) private readonly authService: AuthService,
     @InjectRepository(Player) private readonly playersRepo: Repository<Player>,
     @InjectRepository(FinancialTransaction) private readonly transactionsRepo: Repository<FinancialTransaction>,
     @InjectRepository(Affiliate) private readonly affiliatesRepo: Repository<Affiliate>,
@@ -2059,6 +2074,42 @@ export class ClubsController {
     }
   }
 
+  /** Credit / wallet events for audit: draws, repayments, club buy-in, table cash-outs, credit-line table buy-ins */
+  @Get(':id/credit-session-history')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  async creditSessionHistory(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const club = await this.clubsService.findById(clubId);
+    if (!club) {
+      throw new NotFoundException('Club not found');
+    }
+    if (tenantId && typeof tenantId === 'string' && tenantId.trim() && !headerClubId) {
+      await this.clubsService.validateClubBelongsToTenant(clubId, tenantId.trim());
+    }
+    if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+      if (headerClubId.trim() !== clubId) {
+        throw new ForbiddenException('You can only access data from your assigned club');
+      }
+    }
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    return this.creditSessionHistoryService.list(clubId, {
+      q: q?.trim(),
+      from: from?.trim(),
+      to: to?.trim(),
+      page: Number.isFinite(pageNum) ? pageNum : 1,
+      limit: Number.isFinite(limitNum) ? limitNum : 10,
+    });
+  }
+
   @Post(':id/credit-requests')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
   @HttpCode(HttpStatus.CREATED)
@@ -2155,8 +2206,13 @@ export class ClubsController {
       return creditRequest;
     } catch (e) {
       // Re-throw known exceptions
-      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
-      throw e;
+      if (
+        e instanceof BadRequestException ||
+        e instanceof NotFoundException ||
+        e instanceof ForbiddenException ||
+        e instanceof ConflictException
+      ) {
+        throw e;
       }
       throw new BadRequestException(`Failed to create credit request: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
@@ -2290,10 +2346,28 @@ export class ClubsController {
         }
       }
 
+      let approverDisplay = 'Staff';
+      if (userId && String(userId).trim()) {
+        try {
+          const user = await this.usersService.findById(String(userId).trim());
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find((s) => s.userId === userId || s.email === user?.email);
+          approverDisplay =
+            (staff?.name || user?.displayName || user?.email || 'Staff').trim().replace(/\|/g, ' ') || 'Staff';
+        } catch {
+          /* non-fatal */
+        }
+      }
+
       // Edge case: Error handling for approve operation
       let approvedRequest;
       try {
-        approvedRequest = await this.creditRequestsService.approve(requestId, clubId, creditLimit);
+        approvedRequest = await this.creditRequestsService.approve(
+          requestId,
+          clubId,
+          creditLimit,
+          approverDisplay,
+        );
       } catch (approveError) {
         console.error('Error approving credit request:', approveError);
         if (approveError instanceof BadRequestException || approveError instanceof ConflictException || approveError instanceof NotFoundException) {
@@ -2343,8 +2417,13 @@ export class ClubsController {
       return approvedRequest;
     } catch (e) {
       // Re-throw known exceptions
-      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
-      throw e;
+      if (
+        e instanceof BadRequestException ||
+        e instanceof NotFoundException ||
+        e instanceof ForbiddenException ||
+        e instanceof ConflictException
+      ) {
+        throw e;
       }
       throw new BadRequestException(`Failed to approve credit request: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
@@ -2751,29 +2830,43 @@ export class ClubsController {
         throw new BadRequestException('Credit limit cannot exceed ₹10,000,000');
       }
 
-      // Find player
-      const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } },
-        relations: ['club']
+      const player = await this.dataSource.transaction(async (manager) => {
+        const p = await manager.findOne(Player, {
+          where: { id: playerId, club: { id: clubId } },
+          relations: ['club'],
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!p) {
+          throw new NotFoundException('Player not found');
+        }
+
+        const kycStatus = (p as any).kycStatus || 'pending';
+        if (kycStatus !== 'approved' && kycStatus !== 'verified') {
+          throw new BadRequestException('Player must complete KYC verification before credit can be enabled');
+        }
+
+        (p as any).creditEnabled = true;
+        (p as any).creditLimit = dto.creditLimit;
+        (p as any).creditEnabledBy = userId || null;
+        (p as any).creditEnabledAt = new Date();
+
+        await manager.save(p);
+        return p;
       });
 
-      if (!player) {
-        throw new NotFoundException('Player not found');
-      }
-
-      // Check KYC status
       const kycStatus = (player as any).kycStatus || 'pending';
-      if (kycStatus !== 'approved' && kycStatus !== 'verified') {
-        throw new BadRequestException('Player must complete KYC verification before credit can be enabled');
+
+      try {
+        this.eventsService.emitBalanceUpdated(clubId, playerId);
+        this.eventsService.emitCreditFacilityChanged(clubId, playerId, {
+          creditEnabled: true,
+          creditLimit: dto.creditLimit,
+        });
+        this.eventsService.emitPlayerUpdated(clubId, playerId);
+      } catch (emitErr) {
+        console.warn('Realtime emit after enable-credit:', emitErr);
       }
-
-      // Enable credit
-      (player as any).creditEnabled = true;
-      (player as any).creditLimit = dto.creditLimit;
-      (player as any).creditEnabledBy = userId || null;
-      (player as any).creditEnabledAt = new Date();
-
-      await this.playersRepo.save(player);
 
       // Audit log: Enable credit for player
       try {
@@ -2859,25 +2952,37 @@ export class ClubsController {
         throw new BadRequestException('Credit limit cannot exceed ₹10,000,000');
       }
 
-      // Find player
-      const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } },
-        relations: ['club']
+      const { player, previousLimit } = await this.dataSource.transaction(async (manager) => {
+        const p = await manager.findOne(Player, {
+          where: { id: playerId, club: { id: clubId } },
+          relations: ['club'],
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!p) {
+          throw new NotFoundException('Player not found');
+        }
+
+        if (!(p as any).creditEnabled) {
+          throw new BadRequestException('Credit feature is not enabled for this player');
+        }
+
+        const previousLimit = (p as any).creditLimit || 0;
+        (p as any).creditLimit = dto.creditLimit;
+        await manager.save(p);
+        return { player: p, previousLimit };
       });
 
-      if (!player) {
-        throw new NotFoundException('Player not found');
+      try {
+        this.eventsService.emitBalanceUpdated(clubId, playerId);
+        this.eventsService.emitCreditFacilityChanged(clubId, playerId, {
+          creditEnabled: true,
+          creditLimit: dto.creditLimit,
+        });
+        this.eventsService.emitPlayerUpdated(clubId, playerId);
+      } catch (emitErr) {
+        console.warn('Realtime emit after credit-limit update:', emitErr);
       }
-
-      // Check if credit is enabled
-      if (!(player as any).creditEnabled) {
-        throw new BadRequestException('Credit feature is not enabled for this player');
-      }
-
-      // Update credit limit
-      const previousLimit = (player as any).creditLimit || 0;
-      (player as any).creditLimit = dto.creditLimit;
-      await this.playersRepo.save(player);
 
       // Audit log: Update player credit limit
       try {
@@ -2922,6 +3027,140 @@ export class ClubsController {
         throw e;
       }
       throw new BadRequestException(`Failed to update credit limit: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Lock (disable) credit for a player — same gate as player app “Credit used” (red):
+   * block only while `creditRepaidViaWallet` &gt; 0 (negative wallet still counting toward the line).
+   * Raw Credit−Debit ledger can stay positive after chip play; staff lock matches portal, not gross ledger.
+   * POST /api/clubs/:id/players/:playerId/disable-credit
+   */
+  @Post(':id/players/:playerId/disable-credit')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  async disableCreditForPlayer(
+    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('playerId', new ParseUUIDPipe()) playerId: string,
+    @Req() req?: Request,
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+
+      if (tenantId && !headerClubId) {
+        await this.clubsService.validateClubBelongsToTenant(clubId, tenantId);
+      }
+
+      const lockedPlayer = await this.dataSource.transaction(async (manager) => {
+        const player = await manager.findOne(Player, {
+          where: { id: playerId, club: { id: clubId } },
+          relations: ['club'],
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!player) {
+          throw new NotFoundException('Player not found');
+        }
+
+        if (!(player as any).creditEnabled) {
+          throw new BadRequestException('Credit is already locked for this player');
+        }
+
+        const seatedBlock = await manager.query(
+          `SELECT 1 FROM waitlist_entries
+           WHERE club_id = $1 AND player_id = $2 AND status = 'SEATED'
+           LIMIT 1`,
+          [clubId, playerId],
+        );
+        if (seatedBlock?.length) {
+          throw new BadRequestException(
+            'Cannot lock credit while the player is seated at a table. Unseat them or complete buy-out first.',
+          );
+        }
+
+        const pending = await manager.query(
+          `SELECT id FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = 'Pending' LIMIT 1`,
+          [clubId, playerId],
+        );
+        if (pending?.length) {
+          throw new BadRequestException(
+            'This player has a pending credit request. Approve or reject it before locking credit.',
+          );
+        }
+
+        const portalBal = await this.authService.getPlayerBalance(playerId, clubId);
+        const creditUsedRed = Number((portalBal as any).creditRepaidViaWallet ?? 0);
+        if (Number.isFinite(creditUsedRed) && creditUsedRed > 0.009) {
+          throw new BadRequestException(
+            `Credit cannot be locked while the player portal shows Credit used (wallet toward line) of ₹${creditUsedRed.toFixed(2)}. ` +
+              `When that reaches ₹0 after payback, lock credit again.`,
+          );
+        }
+
+        (player as any).creditEnabled = false;
+        (player as any).creditLimit = 0;
+        (player as any).creditEnabledBy = null;
+        (player as any).creditEnabledAt = null;
+        await manager.save(player);
+        return player;
+      });
+
+      try {
+        this.eventsService.emitBalanceUpdated(clubId, playerId);
+        this.eventsService.emitCreditFacilityChanged(clubId, playerId, {
+          creditEnabled: false,
+          creditLimit: 0,
+        });
+        this.eventsService.emitPlayerUpdated(clubId, playerId);
+      } catch (emitErr) {
+        console.warn('Realtime emit after disable-credit:', emitErr);
+      }
+
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find((s) => s.userId === userId || s.email === user?.email);
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'credit_locked',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Locked (disabled) credit for player ${lockedPlayer.name}`,
+            targetType: 'player',
+            targetId: lockedPlayer.id,
+            targetName: lockedPlayer.name,
+            metadata: { playerId: lockedPlayer.id },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined,
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for disable credit:', auditError);
+      }
+
+      return {
+        message: 'Credit locked successfully for this player',
+        player: {
+          id: lockedPlayer.id,
+          name: lockedPlayer.name,
+          creditEnabled: false,
+          creditLimit: 0,
+        },
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed to lock credit: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
   }
 
@@ -3718,9 +3957,11 @@ export class ClubsController {
         throw new ForbiddenException('You can only create notifications for your assigned club');
       }
 
+      const { scheduledAt, expiresAt, ...createRest } = dto;
       const notification = await this.pushNotificationsService.create(clubId, {
-        ...dto,
-        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        ...createRest,
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
         createdBy: userId || undefined,
       });
       
@@ -3790,10 +4031,19 @@ export class ClubsController {
       // Get existing notification for audit log
       const existingNotification = await this.pushNotificationsService.findOne(notificationId, clubId);
       
-      const notification = await this.pushNotificationsService.update(notificationId, clubId, {
-        ...dto,
-        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
-      });
+      const { scheduledAt, expiresAt, ...updateRest } = dto;
+      const patch: Record<string, unknown> = { ...updateRest };
+      if (scheduledAt !== undefined) {
+        patch.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+      }
+      if (expiresAt !== undefined) {
+        patch.expiresAt = expiresAt ? new Date(expiresAt) : null;
+      }
+      const notification = await this.pushNotificationsService.update(
+        notificationId,
+        clubId,
+        patch as any,
+      );
       
       // Audit log: Update push notification
       try {
@@ -5407,6 +5657,7 @@ export class ClubsController {
     @Headers('x-user-id') userId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Param('entryId', new ParseUUIDPipe()) entryId: string,
+    @Body() body: { requeue?: boolean } | undefined,
     @Req() req?: Request
   ) {
     try {
@@ -5503,7 +5754,8 @@ export class ClubsController {
       // Edge case: Error handling for unseat operation
       let unseatedEntry;
       try {
-        unseatedEntry = await this.waitlistSeatingService.unseatPlayer(clubId, entryId);
+        const requeue = body?.requeue !== false;
+        unseatedEntry = await this.waitlistSeatingService.unseatPlayer(clubId, entryId, { requeue });
       } catch (dbError) {
         console.error('Database error unseating player:', dbError);
         if (dbError instanceof NotFoundException || dbError instanceof BadRequestException || dbError instanceof ConflictException) {
@@ -6269,25 +6521,76 @@ export class ClubsController {
       
       // Calculate and store elapsed time when pausing
       const currentNotes = table.notes || '';
-      const sessionStartMatch = currentNotes.match(/Session Started: ([^|]+)/);
+      const sessionStartMatch = currentNotes.match(/Session Started:\s*([^|]+)/i);
       
       if (sessionStartMatch) {
-        const sessionStartTime = new Date(sessionStartMatch[1]);
+        const rawStart = String(sessionStartMatch[1] ?? '').trim();
+        let sessionStartTime = new Date(rawStart);
         const now = new Date();
-        const elapsedSeconds = Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000);
-        
+        // Corrupt / non-ISO "Session Started" values make Invalid Date; toISOString() then throws "Invalid time value".
+        if (Number.isNaN(sessionStartTime.getTime())) {
+          sessionStartTime = now;
+        }
+        // Segment = time since current Session Started. Running notes may already include
+        // Paused Elapsed (carry from prior pauses); staff + hologram frozen clock must be total, not segment-only.
+        const segmentElapsed = Math.max(0, Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000));
+        const priorCarryMatch = currentNotes.match(/Paused Elapsed:\s*(\d+)/i);
+        const priorCarry = priorCarryMatch ? Math.max(0, parseInt(priorCarryMatch[1], 10) || 0) : 0;
+        const elapsedSeconds = priorCarry + segmentElapsed;
+
         // Remove old session data and add paused elapsed time
         let updatedNotes = currentNotes
-          .replace(/Session Started: [^|]+\|?/g, '')
-          .replace(/Paused Elapsed: \d+\|?/g, '')
+          .replace(/Session Started: [^|]+\|?/gi, '')
+          .replace(/Paused Elapsed: \d+\|?/gi, '')
+          .replace(/Paused At:[^|]+\|?/gi, '')
+          .replace(/Segment Start:[^|]+\|?/gi, '')
+          .replace(/PausedPlayers:[^|]+\|?/gi, '')
+          .replace(/PlayerCarry:[^|]+\|?/gi, '')
           .trim();
         
         if (updatedNotes && !updatedNotes.endsWith('|')) {
           updatedNotes += ' | ';
         }
-        updatedNotes += `Paused Elapsed: ${elapsedSeconds}`;
+        const clock = parseTableSessionNotes(currentNotes);
+        let playerSnapSuffix = '';
+        try {
+          const seated = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
+          const parts: string[] = [];
+          for (const p of seated) {
+            if (!p?.playerId) continue;
+            const sa = p.seatedAt ? new Date(p.seatedAt) : new Date(0);
+            const sec = computePlayerPlaySeconds(sa, clock, now, String(p.playerId));
+            parts.push(`${p.playerId}=${sec}`);
+          }
+          if (parts.length) playerSnapSuffix = ` | PausedPlayers:${parts.join(',')}`;
+        } catch (snapErr) {
+          console.error('[pauseTableSession] Per-player snapshot failed:', snapErr);
+        }
+        // Paused At + Segment Start let legacy clients freeze; PausedPlayers = exact per-player seconds (tournament-style).
+        updatedNotes += `Paused Elapsed: ${elapsedSeconds} | Paused At: ${now.toISOString()} | Segment Start: ${sessionStartTime.toISOString()}${playerSnapSuffix}`;
         
         await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+      }
+
+      const tableAfterPause = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (tableAfterPause) {
+        this.eventsService.emitTableStatusChange(clubId, tableAfterPause);
+      }
+
+      try {
+        const seatedPause = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
+        for (const p of seatedPause) {
+          if (p?.playerId) {
+            void this.eventsService.sendFcmPush(
+              String(p.playerId),
+              'Table session paused',
+              `${auditTableGameLabel(table.tableType)} table ${table.tableNumber} is paused.`,
+              { clubId, type: 'table_session_pause', tableId: String(tableId) },
+            );
+          }
+        }
+      } catch {
+        /* non-fatal */
       }
 
       // Audit log: Pause session
@@ -6410,14 +6713,21 @@ export class ClubsController {
       const sessionStartTime = new Date().toISOString();
       const currentNotes = table.notes || '';
       
+      const pausedPlayersMatch = currentNotes.match(/PausedPlayers:([^|]+)/i);
+      const playerCarryBlob = (pausedPlayersMatch?.[1] ?? '').trim();
+      
       // Check if there's a paused elapsed time
-      const pausedElapsedMatch = currentNotes.match(/Paused Elapsed: (\d+)/);
+      const pausedElapsedMatch = currentNotes.match(/Paused Elapsed:\s*(\d+)/i);
       const pausedElapsedSeconds = pausedElapsedMatch ? parseInt(pausedElapsedMatch[1], 10) : 0;
       
-      // Remove old session data
+      // Remove old session data (including pause metadata from last segment)
       let updatedNotes = currentNotes
-        .replace(/Session Started: [^|]+\|?/g, '')
-        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .replace(/Session Started: [^|]+\|?/gi, '')
+        .replace(/Paused Elapsed: \d+\|?/gi, '')
+        .replace(/Paused At:[^|]+\|?/gi, '')
+        .replace(/Segment Start:[^|]+\|?/gi, '')
+        .replace(/PausedPlayers:[^|]+\|?/gi, '')
+        .replace(/PlayerCarry:[^|]+\|?/gi, '')
         .trim();
       
       if (updatedNotes && !updatedNotes.endsWith('|')) {
@@ -6429,8 +6739,32 @@ export class ClubsController {
       if (pausedElapsedSeconds > 0) {
         updatedNotes += ` | Paused Elapsed: ${pausedElapsedSeconds}`;
       }
+      if (playerCarryBlob) {
+        updatedNotes += ` | PlayerCarry:${playerCarryBlob}`;
+      }
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      const tableAfterResume = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (tableAfterResume) {
+        this.eventsService.emitTableStatusChange(clubId, tableAfterResume);
+      }
+
+      try {
+        const seatedResume = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
+        for (const p of seatedResume) {
+          if (p?.playerId) {
+            void this.eventsService.sendFcmPush(
+              String(p.playerId),
+              'Table session resumed',
+              `${auditTableGameLabel(table.tableType)} table ${table.tableNumber} is live again.`,
+              { clubId, type: 'table_session_resume', tableId: String(tableId) },
+            );
+          }
+        }
+      } catch {
+        /* non-fatal */
+      }
 
       // Audit log: Resume session
       try {
@@ -6549,6 +6883,16 @@ export class ClubsController {
         throw new NotFoundException(`Table with ID ${tableId} not found`);
       }
 
+      const seatedBeforeEnd = await this.waitlistSeatingService.getSeatedPlayersForTable(clubId, tableId);
+      const seatCount = Number(table.currentSeats) || 0;
+      if (seatCount > 0 || (seatedBeforeEnd && seatedBeforeEnd.length > 0)) {
+        const n = Math.max(seatCount, seatedBeforeEnd?.length ?? 0);
+        throw new BadRequestException(
+          `Cannot end session while ${n} seat(s) are still in use. ` +
+            'Use Settle & End after buy-outs, or unseat players first.',
+        );
+      }
+
       // Update table status to CLOSED and reset current seats (session ended)
       await this.waitlistSeatingService.updateTableStatus(clubId, tableId, TableStatus.CLOSED);
       await this.waitlistSeatingService.resetTableSeats(clubId, tableId);
@@ -6556,14 +6900,23 @@ export class ClubsController {
       // Clear all session data (reset timer to 0)
       const currentNotes = table.notes || '';
       let updatedNotes = currentNotes
-        .replace(/Session Started: [^|]+\|?/g, '')
-        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .replace(/Session Started: [^|]+\|?/gi, '')
+        .replace(/Paused Elapsed: \d+\|?/gi, '')
+        .replace(/Paused At:[^|]+\|?/gi, '')
+        .replace(/Segment Start:[^|]+\|?/gi, '')
+        .replace(/PausedPlayers:[^|]+\|?/gi, '')
+        .replace(/PlayerCarry:[^|]+\|?/gi, '')
         .trim();
       
       // Clean up any trailing pipes
       updatedNotes = updatedNotes.replace(/\|\s*\|/g, '|').replace(/^\|\s*|\s*\|$/g, '').trim();
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      const tableAfterEnd = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (tableAfterEnd) {
+        this.eventsService.emitTableStatusChange(clubId, tableAfterEnd);
+      }
 
       // Audit log: End session
       try {
@@ -6670,13 +7023,22 @@ export class ClubsController {
       return {
         tableId: table.id,
         tableNumber: table.tableNumber,
-        seatedPlayers: uniquePlayers.map(p => ({
+        seatedPlayers: uniquePlayers.map((p) => ({
           playerId: p.playerId,
           playerName: p.playerName,
           seatNumber: p.seatNumber,
           seatedAt: p.seatedAt,
           buyInAmount: p.buyInAmount || 0,
           sessionBuyInAmount: p.sessionBuyInAmount || 0,
+          walletBalance: p.walletBalance ?? 0,
+          totalCredits: p.totalCredits ?? 0,
+          creditFacilityEnabled: !!p.creditFacilityEnabled,
+          creditLineLimit: p.creditLineLimit ?? 0,
+          creditLineOnLine: p.creditLineOnLine ?? 0,      // on line (drawn) — matches player "Credit on line"
+          creditLineUsed: p.creditLineUsed ?? 0,          // used via negative wallet — matches player "Credit used"
+          creditLineRemaining: p.creditLineRemaining ?? 0, // free headroom — matches player "Credit remaining"
+          creditOnTableThisSession: p.creditOnTableThisSession ?? 0,
+          cashOnTableThisSession: p.cashOnTableThisSession ?? 0,
         })),
       };
     } catch (e) {
@@ -6726,14 +7088,23 @@ export class ClubsController {
       // Clear all session data (reset timer to 0)
       const currentNotes = table.notes || '';
       let updatedNotes = currentNotes
-        .replace(/Session Started: [^|]+\|?/g, '')
-        .replace(/Paused Elapsed: \d+\|?/g, '')
+        .replace(/Session Started: [^|]+\|?/gi, '')
+        .replace(/Paused Elapsed: \d+\|?/gi, '')
+        .replace(/Paused At:[^|]+\|?/gi, '')
+        .replace(/Segment Start:[^|]+\|?/gi, '')
+        .replace(/PausedPlayers:[^|]+\|?/gi, '')
+        .replace(/PlayerCarry:[^|]+\|?/gi, '')
         .trim();
       
       // Clean up any trailing pipes
       updatedNotes = updatedNotes.replace(/\|\s*\|/g, '|').replace(/^\|\s*|\s*\|$/g, '').trim();
       
       await this.waitlistSeatingService.updateTableNotes(clubId, tableId, updatedNotes);
+
+      const tableAfterSettle = await this.waitlistSeatingService.getTable(clubId, tableId);
+      if (tableAfterSettle) {
+        this.eventsService.emitTableStatusChange(clubId, tableAfterSettle);
+      }
 
       try {
         if (userId) {
@@ -9330,11 +9701,16 @@ export class ClubsController {
             let creditUsed = 0;
             let walletBalance = 0;
             try {
-              const approvedRequests = await this.dataSource.query(
-                `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
-                [clubId, p.id, 'Approved']
-              );
-              creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
+              if ((p as any).creditEnabled) {
+                creditUsed = await sumApprovedCreditLimitSince(
+                  (sql, params) => this.dataSource.query(sql, params),
+                  clubId,
+                  p.id,
+                  (p as any).creditEnabledAt,
+                );
+                const cap = Number((p as any).creditLimit) || 0;
+                creditUsed = Math.min(Math.max(0, creditUsed), cap);
+              }
             } catch (creditError) {
               console.warn(`Failed to calculate credit used for player ${p.id}:`, creditError);
               creditUsed = 0;
@@ -9351,6 +9727,28 @@ export class ClubsController {
               walletBalance = 0;
             }
 
+            let creditLedgerNet = 0;
+            if ((p as any).creditEnabled) {
+              try {
+                const crRows = await this.dataSource.query(
+                  `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions
+                   WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
+                  [clubId, p.id],
+                );
+                creditLedgerNet = Number(crRows?.[0]?.total ?? 0);
+              } catch {
+                creditLedgerNet = 0;
+              }
+            }
+            const cap = Number((p as any).creditLimit) || 0;
+            const facility = computeCreditFacilityBreakdown({
+              creditLimit: cap,
+              creditUsedFromApprovals: creditUsed,
+              creditLedgerNet,
+              availableBalance: walletBalance,
+              creditEnabled: !!(p as any).creditEnabled,
+            });
+
             return {
               id: p.id,
               name: p.name || 'Unknown',
@@ -9366,8 +9764,15 @@ export class ClubsController {
               affiliateCode: p.affiliate ? (p.affiliate as any).code : null,
               notes: p.notes || null,
               creditEnabled: (p as any).creditEnabled || false,
-              creditLimit: Number((p as any).creditLimit || 0),
-              creditUsed: creditUsed,
+              creditLimit: cap,
+              // Keep staff dashboard fields aligned with player app semantics:
+              // - creditUsed: wallet shortfall consuming line (red "used")
+              // - creditOnLine: chips/facility currently still on line
+              // - creditRemaining: free headroom
+              creditUsed: facility.creditRepaidViaWallet,
+              creditOnLine: facility.effectiveCreditOnLine,
+              creditConsumedAgainstLimit: facility.consumedAgainstLimit,
+              creditRemaining: facility.availableCredit,
               createdAt: p.createdAt,
               updatedAt: p.updatedAt
             };
@@ -9605,11 +10010,12 @@ export class ClubsController {
         order: { createdAt: 'DESC' }
       });
 
-      // Filter out any players that are already approved (shouldn't happen, but safety check)
-      // Super Admin-created players have kycStatus: 'approved', so exclude them
-      const pendingPlayers = players.filter(p => 
-        (p.kycStatus === 'pending' && p.status === 'Active') || 
-        (p.status === 'Pending')
+      // Do not surface players for staff KYC review until they have uploaded the full document
+      // package (same gate as PAN submit: Aadhaar front+back or legacy government_id, plus PAN image).
+      const pendingPlayers = players.filter(
+        (p) =>
+          ((p.kycStatus === 'pending' && p.status === 'Active') || p.status === 'Pending') &&
+          playerKycDocsMeetSubmitPanGate(p),
       );
 
       return pendingPlayers.map(p => ({
@@ -10834,118 +11240,15 @@ export class ClubsController {
         throw new ForbiddenException('Player does not belong to this club');
       }
 
-      // Edge case: Error handling for transaction query
-      let transactions: FinancialTransaction[] = [];
-      try {
-        transactions = await this.transactionsRepo.find({
-          where: {
-            club: { id: clubId },
-            playerId: player.id,
-            status: TransactionStatus.COMPLETED
-          },
-          order: { createdAt: 'DESC' }
-        });
-      } catch (dbError) {
-        console.error('Database error fetching transactions:', dbError);
-        // Continue with empty transactions array - balance will be 0
-        transactions = [];
-      }
-
-      // Calculate balance from transactions
-      let availableBalance = 0;
-      for (const txn of transactions) {
-        try {
-          const amount = Number(txn.amount);
-          if (isNaN(amount) || amount < 0) {
-            console.warn('Invalid transaction amount:', txn.id, txn.amount);
-            continue;
-          }
-          if (['Deposit', 'Credit', 'Bonus', 'Refund'].includes(txn.type)) {
-            availableBalance += amount;
-          } else if (['Cashout', 'Withdrawal', 'Buy In'].includes(txn.type)) {
-            availableBalance -= amount;
-          }
-        } catch (calcError) {
-          console.error('Error calculating balance from transaction:', txn.id, calcError);
-          // Skip this transaction
-        }
-      }
-
-      // Edge case: Ensure wallet balance is not negative (legacy safety check)
-      availableBalance = Math.max(0, availableBalance);
-
-      // Edge case: Validate balance is a valid number
-      if (isNaN(availableBalance) || !isFinite(availableBalance)) {
-        console.error('Invalid balance calculated for player:', playerId);
-        availableBalance = 0;
-      }
-
-      // Calculate current session table balance (cash + credit) and credit-on-table.
-      let tableBalance = 0;
-      let creditUsedOnTable = 0;
-      try {
-        const seatedEntry = await this.dataSource.query(
-          `SELECT seated_at
-           FROM waitlist_entries
-           WHERE club_id = $1 AND player_id = $2 AND status = 'SEATED'
-           ORDER BY seated_at DESC
-           LIMIT 1`,
-          [clubId, playerId]
-        );
-
-        const seatedAt = seatedEntry?.[0]?.seated_at ? new Date(seatedEntry[0].seated_at) : null;
-        if (seatedAt) {
-          // Keep 30s buffer to include transactions created at seating boundary.
-          const sessionStart = new Date(seatedAt.getTime() - 30000);
-          const sessionTxns = await this.dataSource.query(
-            `SELECT type, amount
-             FROM financial_transactions
-             WHERE club_id = $1
-               AND player_id = $2
-               AND UPPER(status) = 'COMPLETED'
-               AND created_at >= $3
-             ORDER BY created_at ASC`,
-            [clubId, playerId, sessionStart.toISOString()]
-          );
-
-          for (const txn of sessionTxns) {
-            const amount = Number(txn?.amount || 0);
-            if (!Number.isFinite(amount) || amount <= 0) continue;
-            const upperType = String(txn?.type || '').toUpperCase();
-
-            if (['TABLE BUY IN', 'BUY IN', 'CREDIT'].includes(upperType)) {
-              tableBalance += amount;
-            } else if (['TABLE BUY OUT'].includes(upperType)) {
-              tableBalance -= amount;
-            }
-
-            if (upperType === 'CREDIT') {
-              creditUsedOnTable += amount;
-            } else if (upperType === 'DEBIT') {
-              creditUsedOnTable -= amount;
-            }
-          }
-        }
-      } catch (tableBalanceError) {
-        console.error('Failed to compute live table balance:', tableBalanceError);
-        tableBalance = 0;
-        creditUsedOnTable = 0;
-      }
-
-      creditUsedOnTable = Math.max(0, creditUsedOnTable);
-      tableBalance = Math.max(0, tableBalance);
-      const cashOnTable = Math.max(0, tableBalance - creditUsedOnTable);
-
+      // Same canonical balance as player portal (wallet SQL, credit line, table session, negatives allowed).
+      const portal = await this.authService.getPlayerBalance(playerId, clubId);
       return {
         playerId: player.id,
         playerName: player.name,
-        availableBalance: availableBalance,
-        tableBalance,
-        currentTableBalance: tableBalance,
-        creditUsedOnTable,
-        cashOnTable,
-        totalBalance: availableBalance + tableBalance,
-        clubId: clubId
+        clubId,
+        ...portal,
+        // Alias used by older staff UIs
+        currentTableBalance: portal.tableBalance,
       };
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
@@ -11855,7 +12158,18 @@ export class ClubsController {
     } catch (auditError) {
       console.error('Failed to create audit log for menu item creation:', auditError);
     }
-    
+
+    try {
+      void this.eventsService.sendFcmToClubDevices(
+        clubId,
+        'New menu item',
+        `${dto.name} was added to the club menu.`,
+        { type: 'fnb_menu' },
+      );
+    } catch {
+      /* non-fatal */
+    }
+
     return menuItem;
   }
 
@@ -16804,6 +17118,77 @@ export class ClubsController {
   // ============================================================================
   // BUY-OUT REQUEST ENDPOINTS (Manager Only)
   // ============================================================================
+
+  /**
+   * Staff "Process Buy-Out" from Table Management (no pending buyout_requests row).
+   * Posts Table Buy Out + credit settlement (Debit) like call-time approval — not a raw Deposit.
+   */
+  @Post(':id/manual-table-buy-out')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER)
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, skipMissingProperties: true }))
+  async manualTableBuyOut(
+    @Headers('x-club-id') headerClubId: string | undefined,
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Body() dto: ManualTableBuyOutDto,
+    @Req() req?: Request,
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) {
+        throw new NotFoundException('Club not found');
+      }
+      if (headerClubId && typeof headerClubId === 'string' && headerClubId.trim()) {
+        if (headerClubId.trim() !== clubId) {
+          throw new ForbiddenException('You can only process buy-outs for your assigned club');
+        }
+      }
+
+      const result = await this.buyOutRequestService.settleStaffManualTableBuyOut(clubId, {
+        playerId: dto.playerId,
+        tableNumber: dto.tableNumber,
+        amount: dto.amount,
+        reason: dto.reason,
+      });
+
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find((s) => s.userId === userId || s.email === user?.email);
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Admin',
+            actionType: 'manual_table_buyout',
+            actionCategory: ActionCategory.FINANCIAL,
+            description: `Manual table buy-out Table ${dto.tableNumber}: ₹${result.amount} chips; credit settled ₹${result.creditSettled || 0}`,
+            targetType: 'player',
+            targetId: dto.playerId,
+            targetName: dto.playerId,
+            metadata: {
+              tableNumber: dto.tableNumber,
+              amount: result.amount,
+              creditSettled: result.creditSettled,
+            },
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined,
+          });
+        }
+      } catch (auditError) {
+        console.error('Failed to create audit log for manual buy-out:', auditError);
+      }
+
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {
+        throw e;
+      }
+      throw new BadRequestException(`Failed manual table buy-out: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
 
   @Get(':id/buyout-requests')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)

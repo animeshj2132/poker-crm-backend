@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual, Not, IsNull, LessThan } from 'typeorm';
+import { Repository, MoreThanOrEqual, Not, IsNull, LessThan, In } from 'typeorm';
 import { FnbOrder, OrderStatus } from '../entities/fnb-order.entity';
 import { MenuItem, MenuItemAvailability } from '../entities/menu-item.entity';
 import { KitchenStation } from '../entities/kitchen-station.entity';
@@ -45,8 +45,11 @@ export class FnbEnhancedService {
     @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
 
-  private notifyFnbOrderUpdated(clubId: string) {
-    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId);
+  private notifyFnbOrderUpdated(
+    clubId: string,
+    detail?: { playerId?: string | null; orderNumber?: string | null; status?: string; stationName?: string | null },
+  ) {
+    if (this.eventsService) this.eventsService.emitFnbOrderUpdated(clubId, detail);
   }
 
   // ==================== MENU ITEMS ====================
@@ -219,7 +222,11 @@ export class FnbEnhancedService {
     });
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+    });
     return saved;
   }
 
@@ -250,6 +257,61 @@ export class FnbEnhancedService {
       total,
       page,
       totalPages: Math.ceil(total / limit)
+    };
+  }
+
+  /**
+   * Player app: orders for one player only — live pipeline + paginated history.
+   * (Avoids loading all club orders then filtering, which can drop rows past page limits.)
+   */
+  async getPlayerOrderFeed(
+    clubId: string,
+    playerId: string,
+    historyPage = 1,
+    historyLimit = 10,
+  ): Promise<{
+    activeOrders: FnbOrder[];
+    history: { orders: FnbOrder[]; total: number; page: number; limit: number; totalPages: number };
+  }> {
+    const pid = playerId.trim();
+    const liveStatuses = [OrderStatus.PENDING, OrderStatus.PROCESSING, OrderStatus.READY];
+
+    const activeOrders = await this.orderRepo.find({
+      where: {
+        club: { id: clubId },
+        playerId: pid,
+        status: In(liveStatuses),
+      },
+      relations: ['station', 'club'],
+      order: { createdAt: 'DESC' },
+    });
+
+    const qb = this.orderRepo
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.station', 'station')
+      .leftJoin('order.club', 'club')
+      .where('club.id = :clubId', { clubId })
+      .andWhere('order.playerId = :pid', { pid })
+      .andWhere('order.status NOT IN (:...live)', { live: liveStatuses });
+
+    const total = await qb.getCount();
+    const page = Math.max(1, historyPage);
+    const limit = Math.min(50, Math.max(1, historyLimit));
+    const historyOrders = await qb
+      .orderBy('order.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getMany();
+
+    return {
+      activeOrders,
+      history: {
+        orders: historyOrders,
+        total,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit) || 1),
+      },
     };
   }
 
@@ -303,7 +365,12 @@ export class FnbEnhancedService {
     }
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+      stationName: saved.stationName,
+    });
     return saved;
   }
 
@@ -342,7 +409,11 @@ export class FnbEnhancedService {
     }
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+    });
     return saved;
   }
 
@@ -357,7 +428,11 @@ export class FnbEnhancedService {
       order.invoiceNumber = await this.generateInvoiceNumber(clubId);
       order.invoiceGeneratedAt = new Date();
       await this.orderRepo.save(order);
-      this.notifyFnbOrderUpdated(clubId);
+      this.notifyFnbOrderUpdated(clubId, {
+        playerId: order.playerId,
+        orderNumber: order.orderNumber,
+        status: order.status,
+      });
     }
 
     return {
@@ -642,7 +717,12 @@ export class FnbEnhancedService {
     await this.stationRepo.save(station);
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+      stationName: saved.stationName,
+    });
     return saved;
   }
 
@@ -695,7 +775,11 @@ export class FnbEnhancedService {
 
     // No order number for rejected orders
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+    });
     return saved;
   }
 
@@ -726,7 +810,11 @@ export class FnbEnhancedService {
     ];
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+    });
     return saved;
   }
 
@@ -770,7 +858,11 @@ export class FnbEnhancedService {
     }
 
     const saved = await this.orderRepo.save(order);
-    this.notifyFnbOrderUpdated(clubId);
+    this.notifyFnbOrderUpdated(clubId, {
+      playerId: saved.playerId,
+      orderNumber: saved.orderNumber,
+      status: saved.status,
+    });
     return saved;
   }
 

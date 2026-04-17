@@ -181,19 +181,36 @@ export class PlayerDocumentsService {
         mimeType: file?.mimetype || 'application/octet-stream',
       };
 
-      documents.push(newDocument);
+      const forChangeRequest =
+        data?.forChangeRequest === true ||
+        data?.forChangeRequest === 'true' ||
+        String(data?.forChangeRequest || '').toLowerCase() === 'true';
+
+      if (forChangeRequest) {
+        return {
+          success: true,
+          message: 'Document uploaded for review (not applied to profile yet)',
+          document: newDocument,
+          totalDocuments: documents.length,
+        };
+      }
+
+      const withoutSameSlot = documents.filter(
+        (d: any) => (d.type || d.documentType) !== documentType,
+      );
+      withoutSameSlot.push(newDocument);
 
       // Update player's kyc_documents
       await this.playersRepo.update(
         { id: playerId },
-        { kycDocuments: documents as any },
+        { kycDocuments: withoutSameSlot as any },
       );
 
       return {
         success: true,
         message: 'Document uploaded successfully',
         document: newDocument,
-        totalDocuments: documents.length,
+        totalDocuments: withoutSameSlot.length,
       };
     } catch (err) {
       console.error('Upload document error:', err);
@@ -275,13 +292,14 @@ export class PlayerDocumentsService {
       size: fileSize ?? 0,
       mimeType: mimeType ?? 'application/octet-stream',
     };
-    documents.push(newDocument);
-    await this.playersRepo.update({ id: playerId }, { kycDocuments: documents as any });
+    const withoutSameSlot = documents.filter((d: any) => (d.type || d.documentType) !== documentType);
+    withoutSameSlot.push(newDocument);
+    await this.playersRepo.update({ id: playerId }, { kycDocuments: withoutSameSlot as any });
     return {
       success: true,
       message: 'Document recorded successfully',
       document: newDocument,
-      totalDocuments: documents.length,
+      totalDocuments: withoutSameSlot.length,
     };
   }
 

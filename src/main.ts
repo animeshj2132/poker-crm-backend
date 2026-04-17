@@ -96,16 +96,20 @@ async function bootstrap() {
     const isHttps = url.startsWith('https://');
     const httpModule = isHttps ? https : http;
     
-    httpModule.get(url, (res) => {
-      const statusCode = res.statusCode || 0;
-      if (statusCode >= 200 && statusCode < 300) {
-        if (logResult) {
-          console.log(`✅ Self-ping successful (${pingCount} pings): ${new Date().toISOString()}`);
+    httpModule
+      .get(url, (res) => {
+        // Must drain the response body or Node keeps the socket busy / can ECONNRESET on reuse.
+        res.resume();
+        const statusCode = res.statusCode || 0;
+        if (statusCode >= 200 && statusCode < 300) {
+          if (logResult) {
+            console.log(`✅ Self-ping successful (${pingCount} pings): ${new Date().toISOString()}`);
+          }
+        } else {
+          console.warn(`⚠️ Self-ping returned status ${statusCode}`);
         }
-      } else {
-        console.warn(`⚠️ Self-ping returned status ${statusCode}`);
-      }
-    }).on('error', (err) => {
+      })
+      .on('error', (err) => {
       // Only log errors if it's not a connection refused (server not ready yet)
       if (!err.message.includes('ECONNREFUSED')) {
         console.warn(`⚠️ Self-ping error: ${err.message}`);

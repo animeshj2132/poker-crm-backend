@@ -1,7 +1,12 @@
 import { BadRequestException, ConflictException, Injectable, Inject, Optional, NotFoundException, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
+import {
+  FinancialTransaction,
+  TransactionType,
+  TransactionStatus,
+  WALLET_BALANCE_SQL,
+} from '../entities/financial-transaction.entity';
 import { Club } from '../club.entity';
 import { Player } from '../entities/player.entity';
 import { EditTransactionDto } from '../dto/edit-transaction.dto';
@@ -89,9 +94,80 @@ export class FinancialTransactionsService {
     console.log(`💰 [TRANSACTION] Creating ${data.type} transaction with status: ${shouldAutoComplete ? 'COMPLETED' : 'PENDING'}`);
 
     const saved = await this.transactionsRepo.save(transaction);
+
+    // Club cash paid in: use part of it to repay negative wallet (credit debt). Post a DEBIT so the
+    // signed credit ledger reflects freed headroom — "credit on line" stays stable; "remaining" rises.
+    if (data.type === TransactionType.CLUB_BUY_IN) {
+      const pid = data.playerId.trim();
+      const player = await this.playerRepo.findOne({
+        where: { id: pid, club: { id: clubId } },
+      });
+      if (player && (player as any).creditEnabled) {
+        const wr = await this.transactionsRepo.manager.query(
+          `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions
+           WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+          [clubId, pid],
+        );
+        const walletAfter = Number(wr[0]?.total ?? 0);
+        const walletBefore = walletAfter - data.amount;
+        const repay = Math.min(data.amount, Math.max(0, -walletBefore));
+        if (repay > 0.004) {
+          const rounded = Math.round(repay * 100) / 100;
+          const debit = this.transactionsRepo.create({
+            type: TransactionType.DEBIT,
+            playerId: pid,
+            playerName: data.playerName.trim(),
+            amount: rounded,
+            notes: `Club buy-in — credit line repayment (₹${rounded.toFixed(2)} toward facility)`,
+            status: TransactionStatus.COMPLETED,
+            club,
+            gameType: data.gameType || null,
+          });
+          await this.transactionsRepo.save(debit);
+        }
+      }
+    }
+
     if (this.eventsService) {
-      this.eventsService.emitTransactionCreated(clubId, data.playerId.trim());
-      this.eventsService.emitBalanceUpdated(clubId, data.playerId.trim());
+      const pid = data.playerId.trim();
+      this.eventsService.emitTransactionCreated(clubId, pid);
+      this.eventsService.emitBalanceUpdated(clubId, pid);
+
+      if (saved.status === TransactionStatus.COMPLETED) {
+        const walletAlertTypes = new Set<TransactionType>([
+          TransactionType.CLUB_BUY_IN,
+          TransactionType.CLUB_BUY_OUT,
+          TransactionType.TABLE_BUY_IN,
+          TransactionType.TABLE_BUY_OUT,
+        ]);
+        if (walletAlertTypes.has(data.type)) {
+          void this.eventsService.sendFcmPush(
+            pid,
+            'Wallet update',
+            `${data.type}: ₹${Number(data.amount).toFixed(2)}.`,
+            { clubId, type: 'wallet_activity' },
+          );
+        }
+      }
+
+      void Promise.resolve()
+        .then(async () => {
+          const wr = await this.transactionsRepo.manager.query(
+            `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions
+             WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+            [clubId, pid],
+          );
+          const w = Number(wr[0]?.total ?? 0);
+          if (w < 0) {
+            await this.eventsService!.sendFcmPush(
+              pid,
+              'Negative wallet balance',
+              `Your available cash is ₹${w.toFixed(2)}. Please top up or settle with the club.`,
+              { clubId, type: 'wallet_negative' },
+            );
+          }
+        })
+        .catch(() => undefined);
     }
     return saved;
   }

@@ -336,26 +336,32 @@ export class PlayerTournamentsService {
 
       let availableBalance = 0;
       let availableCredit = 0;
+      try {
+        const playerBalance = await this.authService.getPlayerBalance(playerId, clubId) as { availableBalance?: number; availableCredit?: number };
+        availableBalance = Number(playerBalance.availableBalance) || 0;
+        availableCredit = Number(playerBalance.availableCredit) || 0;
+      } catch (balanceError) {
+        if (balanceError instanceof BadRequestException) {
+          throw balanceError;
+        }
+        console.error('Error checking player balance for tournament registration:', balanceError);
+      }
+
+      // Hard stop: negative wallet means unpaid dues; block all tournament joins.
+      if (availableBalance < 0) {
+        throw new BadRequestException(
+          `You cannot join tournaments while your wallet is negative (₹${availableBalance.toLocaleString('en-IN')}). Please repay at the cashier first.`,
+        );
+      }
 
       if (totalRequired > 0) {
-        try {
-          const playerBalance = await this.authService.getPlayerBalance(playerId, clubId) as { availableBalance?: number; availableCredit?: number };
-          availableBalance = Number(playerBalance.availableBalance) || 0;
-          availableCredit = Number(playerBalance.availableCredit) || 0;
-          const totalAvailable = availableBalance + availableCredit;
-
-          if (totalAvailable < totalRequired) {
-            throw new BadRequestException(
-              `Insufficient balance. Registration fee: ₹${entryFee.toLocaleString()}, Buy-in: ₹${buyInRequired.toLocaleString()}, Total: ₹${totalRequired.toLocaleString()}. ` +
-              `Your balance: Wallet ₹${availableBalance.toLocaleString()} + Credit ₹${availableCredit.toLocaleString()} = ₹${totalAvailable.toLocaleString()}. ` +
-              `Please add funds before registering.`
-            );
-          }
-        } catch (balanceError) {
-          if (balanceError instanceof BadRequestException) {
-            throw balanceError;
-          }
-          console.error('Error checking player balance for tournament registration:', balanceError);
+        const totalAvailable = availableBalance + availableCredit;
+        if (totalAvailable < totalRequired) {
+          throw new BadRequestException(
+            `Insufficient balance. Registration fee: ₹${entryFee.toLocaleString()}, Buy-in: ₹${buyInRequired.toLocaleString()}, Total: ₹${totalRequired.toLocaleString()}. ` +
+            `Your balance: Wallet ₹${availableBalance.toLocaleString()} + Credit ₹${availableCredit.toLocaleString()} = ₹${totalAvailable.toLocaleString()}. ` +
+            `Please add funds before registering.`
+          );
         }
       }
 

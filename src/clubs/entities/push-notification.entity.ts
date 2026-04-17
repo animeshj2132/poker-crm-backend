@@ -70,6 +70,10 @@ export class PushNotification {
   @Column({ type: 'timestamp', nullable: true, name: 'sent_at' })
   sentAt!: Date | null; // When notification was actually sent
 
+  /** When set and in the past, hidden from player offers/promotions list */
+  @Column({ type: 'timestamp', nullable: true, name: 'expires_at' })
+  expiresAt!: Date | null;
+
   @ManyToOne(() => Club, { nullable: false })
   @JoinColumn({ name: 'club_id' })
   club!: Club;

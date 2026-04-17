@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
-import { PlayerFieldUpdateRequest, UpdateRequestStatus } from '../entities/player-field-update-request.entity';
+import { PlayerFieldUpdateRequest } from '../entities/player-field-update-request.entity';
 import { Player } from '../entities/player.entity';
 import { Club } from '../club.entity';
 import { EventsService } from '../../events/events.service';
@@ -153,13 +153,26 @@ export class PlayerFieldUpdateService {
         throw new NotFoundException('Player not found');
       }
 
-      // Apply the update based on field name
-      if (request.fieldName === 'name') {
-        player.name = request.requestedValue;
-      } else if (request.fieldName === 'phoneNumber') {
-        player.phoneNumber = request.requestedValue;
-      } else if (request.fieldName === 'email') {
-        player.email = request.requestedValue;
+      const fn = request.fieldName;
+      const rv = (request.requestedValue || '').trim();
+
+      if (fn === 'name') {
+        player.name = rv;
+      } else if (fn === 'phoneNumber' || fn === 'phone') {
+        player.phoneNumber = rv;
+      } else if (fn === 'email') {
+        player.email = rv;
+      } else if (
+        fn === 'aadhaar' ||
+        fn === 'government_id' ||
+        fn === 'aadhaar_front' ||
+        fn === 'aadhaar_back' ||
+        fn === 'pan_card' ||
+        fn === 'profile_photo'
+      ) {
+        this.applyDocumentApproval(player, request);
+      } else {
+        throw new BadRequestException(`Unsupported field for approval: ${fn}`);
       }
 
       await queryRunner.manager.save(Player, player);
@@ -221,12 +234,102 @@ export class PlayerFieldUpdateService {
     await this.updateRequestsRepo.save(request);
 
     if (this.eventsService) {
-      this.eventsService.emitProfileChangeRequestUpdated(request.clubId, request.playerId, { status: 'rejected' });
+      this.eventsService.emitProfileChangeRequestUpdated(request.clubId, request.playerId, {
+        status: 'rejected',
+        fieldName: request.fieldName,
+        reviewNotes: rejectionReason,
+      });
     }
 
     return {
       success: true,
       message: 'Update request rejected'
     };
+  }
+
+  private buildKycDocEntry(documentType: string, url: string): Record<string, unknown> {
+    const now = new Date().toISOString();
+    return {
+      id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+      type: documentType,
+      documentType,
+      name: documentType,
+      fileName: documentType,
+      url,
+      fileUrl: url,
+      uploadedAt: now,
+      createdAt: now,
+      status: 'pending',
+      size: 0,
+      mimeType: 'application/octet-stream',
+    };
+  }
+
+  private replaceKycDocumentSlots(
+    existing: unknown,
+    slotUpdates: { type: string; url: string }[],
+    alsoRemoveTypes: string[] = [],
+  ): Record<string, unknown>[] {
+    const documents = Array.isArray(existing) ? [...(existing as Record<string, unknown>[])] : [];
+    const remove = new Set([
+      ...slotUpdates.map((s) => s.type),
+      ...alsoRemoveTypes,
+    ]);
+    const filtered = documents.filter((d: Record<string, unknown>) => !remove.has((d.type || d.documentType) as string));
+    for (const s of slotUpdates) {
+      filtered.push(this.buildKycDocEntry(s.type, s.url));
+    }
+    return filtered;
+  }
+
+  private applyDocumentApproval(player: Player, request: PlayerFieldUpdateRequest): void {
+    const fn = request.fieldName;
+    const rv = (request.requestedValue || '').trim();
+
+    if (fn === 'aadhaar') {
+      let parsed: { mode?: string; government_id?: string; aadhaar_front?: string; aadhaar_back?: string };
+      try {
+        parsed = JSON.parse(rv) as typeof parsed;
+      } catch {
+        throw new BadRequestException('Invalid Aadhaar change payload');
+      }
+      if (parsed.mode === 'pdf' && parsed.government_id?.startsWith('http')) {
+        player.kycDocuments = this.replaceKycDocumentSlots(
+          player.kycDocuments,
+          [{ type: 'government_id', url: parsed.government_id }],
+          ['aadhaar_front', 'aadhaar_back'],
+        ) as any;
+        return;
+      }
+      if (
+        parsed.mode === 'image' &&
+        parsed.aadhaar_front?.startsWith('http') &&
+        parsed.aadhaar_back?.startsWith('http')
+      ) {
+        player.kycDocuments = this.replaceKycDocumentSlots(
+          player.kycDocuments,
+          [
+            { type: 'aadhaar_front', url: parsed.aadhaar_front },
+            { type: 'aadhaar_back', url: parsed.aadhaar_back },
+          ],
+          ['government_id'],
+        ) as any;
+        return;
+      }
+      throw new BadRequestException(
+        'Aadhaar request must be PDF (government_id URL) or images (aadhaar_front and aadhaar_back URLs)',
+      );
+    }
+
+    const singleDocFields = ['government_id', 'aadhaar_front', 'aadhaar_back', 'pan_card', 'profile_photo'];
+    if (singleDocFields.includes(fn)) {
+      if (!rv.startsWith('http')) {
+        throw new BadRequestException('Invalid document URL in request');
+      }
+      player.kycDocuments = this.replaceKycDocumentSlots(player.kycDocuments, [{ type: fn, url: rv }], []) as any;
+      return;
+    }
+
+    throw new BadRequestException(`Unsupported document field: ${fn}`);
   }
 }

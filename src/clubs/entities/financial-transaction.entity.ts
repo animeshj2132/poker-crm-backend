@@ -31,11 +31,15 @@ export enum TransactionType {
 /**
  * Standard wallet balance SQL fragment.
  * Wallet = real money not on a table. Credit is NOT included (it's table-only money repaid via Debit).
+ * Table Buy In rows paired with a Credit line (notes contain WBPAIRCL2T) are activity-only — do not subtract from wallet.
  */
 export const WALLET_BALANCE_SQL = `
   COALESCE(SUM(
     CASE
       WHEN UPPER(type) IN ('DEPOSIT', 'CLUB BUY IN', 'TABLE BUY OUT', 'BONUS', 'REFUND', 'TOURNAMENT WIN') THEN amount
+      WHEN UPPER(type) IN ('TABLE BUY IN', 'BUY IN') AND strpos(COALESCE(notes, ''), 'WBPAIRCL2T') > 0 THEN 0
+      /* Club buy-in repayment debits free credit headroom; they must not reduce wallet cash. */
+      WHEN UPPER(type) = 'DEBIT' AND strpos(lower(COALESCE(notes, '')), 'credit line repayment') > 0 THEN 0
       WHEN UPPER(type) IN ('WITHDRAWAL', 'CLUB BUY OUT', 'TABLE BUY IN', 'CASHOUT', 'DEBIT', 'BUY IN', 'REGISTER') THEN -amount
       ELSE 0
     END
@@ -54,6 +58,19 @@ export const CREDIT_BALANCE_SQL = `
     END
   ), 0)
 `;
+
+/**
+ * Table Buy In rows whose notes contain this substring are paired with a `Credit` row for the same draw:
+ * they must not change wallet cash (chips are on the Credit txn). Used in WALLET_BALANCE_SQL and session chip math.
+ */
+export const TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER = 'WBPAIRCL2T';
+
+/** Inner CASE arms for session table chip totals (use inside SUM(CASE ... END)). */
+export const SESSION_TABLE_CHIPS_SUM_CASE_INNER = `WHEN UPPER(TRIM(type)) = 'CREDIT' THEN amount
+      WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN')
+        AND strpos(COALESCE(notes, ''), '${TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER}') = 0 THEN amount
+      WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
+      ELSE 0`;
 
 export enum TransactionStatus {
   PENDING = 'Pending',

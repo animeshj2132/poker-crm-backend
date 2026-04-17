@@ -57,12 +57,15 @@ export class PlayerOffersService {
           is_active,
           scheduled_at,
           sent_at,
+          expires_at,
           created_at,
           updated_at
         FROM push_notifications
         WHERE club_id = $1
           AND is_active = true
+          AND sent_at IS NOT NULL
           AND (target_type = 'all_players' OR notification_type = 'player')
+          AND (expires_at IS NULL OR expires_at > NOW())
         ORDER BY created_at DESC
       `;
 
@@ -82,6 +85,7 @@ export class PlayerOffersService {
           target_audience: offer.target_audience,
           is_active: offer.is_active,
           created_at: offer.created_at,
+          expires_at: offer.expires_at ?? null,
         })) || [],
         total: offers?.length || 0,
       };

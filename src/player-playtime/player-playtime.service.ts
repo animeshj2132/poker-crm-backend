@@ -14,7 +14,9 @@ import { Player } from '../clubs/entities/player.entity';
 import { ClubsService } from '../clubs/clubs.service';
 import { WaitlistEntry, WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { Table } from '../clubs/entities/table.entity';
+import { SESSION_TABLE_CHIPS_SUM_CASE_INNER } from '../clubs/entities/financial-transaction.entity';
 import { EventsService } from '../events/events.service';
+import { computePlayerPlaySeconds, parseTableSessionNotes } from '../utils/table-session-clock';
 
 @Injectable()
 export class PlayerPlaytimeService {
@@ -101,10 +103,12 @@ export class PlayerPlaytimeService {
         };
       }
 
-      // Calculate session duration
-      const sessionStartTime = seatedEntry.seatedAt || seatedEntry.createdAt;
+      const clock = parseTableSessionNotes(table.notes);
+      const seatedAt = new Date(seatedEntry.seatedAt || seatedEntry.createdAt);
       const now = new Date();
-      const sessionDuration = Math.floor((now.getTime() - new Date(sessionStartTime).getTime()) / 1000); // in seconds
+
+      const sessionDuration = computePlayerPlaySeconds(seatedAt, clock, now, player.id);
+      const sessionStartTime = new Date(now.getTime() - sessionDuration * 1000);
 
       const isRummyTable = table.tableType === 'RUMMY';
 
@@ -158,7 +162,7 @@ export class PlayerPlaytimeService {
 
       // Also fetch latest processed/request status so player can see rejected updates in-session.
       const seatedAtForSession = seatedEntry.seatedAt || seatedEntry.createdAt || new Date(0);
-      const fromTimeForSession = new Date(new Date(seatedAtForSession).getTime() - 30000);
+      const fromTimeForSession = new Date(seatedAtForSession);
       const latestBuyOutRequestRows = await this.dataSource.query(
         `SELECT id, status, rejection_reason, processed_at, updated_at, created_at
          FROM buyout_requests
@@ -202,8 +206,8 @@ export class PlayerPlaytimeService {
       }
 
       let sessionPhase = callTimeActive 
-        ? 'CALL_TIME_ACTIVE' 
-        : (minPlayTimeCompleted ? 'CALL_TIME_AVAILABLE' : 'MINIMUM_PLAY');
+        ? 'CALL TIME ACTIVE' 
+        : (minPlayTimeCompleted ? 'CALL TIME AVAILABLE' : 'MINIMUM PLAY');
 
       const canCashOut = false; // TODO: Implement cashout logic
 
@@ -211,20 +215,57 @@ export class PlayerPlaytimeService {
       const callTimeStartedUtc = this.parseNaiveUtcDate(activeBuyOutRequest?.call_time_started_at);
       const buyOutProcessedUtc = this.parseNaiveUtcDate(latestBuyOutRequest?.processed_at || latestBuyOutRequest?.updated_at || null);
 
+      // Net chips on table this session (same ledger as seated-players / hologram).
+      const seatedAtForBalance = seatedEntry.seatedAt || seatedEntry.createdAt || new Date(0);
+      const fromTimeForBalance =
+        seatedAtForBalance instanceof Date ? seatedAtForBalance : new Date(seatedAtForBalance);
+      const tableBalRows = await this.dataSource.query(
+        `SELECT COALESCE(SUM(
+           CASE
+             ${SESSION_TABLE_CHIPS_SUM_CASE_INNER}
+           END
+         ), 0) as table_balance
+         FROM financial_transactions
+         WHERE club_id = $1
+         AND player_id = $2
+         AND UPPER(status) = 'COMPLETED'
+         AND created_at >= $3`,
+        [clubId, player.id, fromTimeForBalance],
+      );
+      const sessionTableChips =
+        tableBalRows?.[0]?.table_balance != null
+          ? Math.max(0, Number(tableBalRows[0].table_balance))
+          : 0;
+
+      const tblMin = Number((table as any).minBuyIn);
+      const tblMax = Number((table as any).maxBuyIn);
+      const minBuyInNum = Number.isFinite(tblMin) ? tblMin : 0;
+      const maxBuyInNum = Number.isFinite(tblMax) ? tblMax : 0;
+      const entryFeeNum = Number((table as any).entryFee);
+      const stakesLabel =
+        minBuyInNum > 0 || maxBuyInNum > 0
+          ? `₹${minBuyInNum.toLocaleString('en-IN')}/₹${maxBuyInNum.toLocaleString('en-IN')}`
+          : isRummyTable && Number.isFinite(entryFeeNum) && entryFeeNum > 0
+            ? `Entry ₹${entryFeeNum.toLocaleString('en-IN')}`
+            : '—';
+
       const session = {
         id: seatedEntry.id,
         playerId: player.id,
         tableId: table.id,
         tableName: `Table ${table.tableNumber}`,
         gameType: table.tableType || 'CASH',
-        stakes: `₹${table.minBuyIn || 1000}.00/${table.maxBuyIn || 10000}.00`,
-        buyInAmount: table.minBuyIn || 1000,
-        currentChips: 0, // Placeholder - would need chip tracking
+        stakes: stakesLabel,
+        minBuyIn: minBuyInNum,
+        maxBuyIn: maxBuyInNum,
+        buyInAmount: sessionTableChips,
+        currentChips: sessionTableChips,
         sessionDuration,
-        startedAt: sessionStartTime,
+        startedAt: sessionStartTime.toISOString(),
         status: 'active',
-        isLive: true,
-        sessionStartTime,
+        isLive: !clock.staffPaused,
+        sessionStartTime: sessionStartTime.toISOString(),
+        staffSessionPaused: clock.staffPaused,
         
         // State machine properties
         sessionPhase,
@@ -375,6 +416,7 @@ export class PlayerPlaytimeService {
       let minPlayTimeRequired = 0;
       let isRummyTable = false;
       
+      let minutesPlayed = 0;
       if (seatedEntry.tableNumber) {
         const table = await this.tablesRepo.findOne({
           where: { club: { id: clubId }, tableNumber: seatedEntry.tableNumber },
@@ -392,11 +434,13 @@ export class PlayerPlaytimeService {
               }
             }
           }
+
+          const clock = parseTableSessionNotes(table.notes);
+          const seatedAt = new Date(seatedEntry.seatedAt || seatedEntry.createdAt);
+          const sessionDurationSec = computePlayerPlaySeconds(seatedAt, clock, new Date(), playerId);
+          minutesPlayed = Math.floor(sessionDurationSec / 60);
         }
       }
-      
-      const sessionStartTime = seatedEntry.seatedAt || seatedEntry.createdAt;
-      const minutesPlayed = Math.floor((Date.now() - new Date(sessionStartTime).getTime()) / (1000 * 60));
       
       console.log(`⏱️ [CALL TIME REQUEST] Player: ${player.name}, Table: ${isRummyTable ? 'RUMMY' : 'POKER'}, Minutes Played: ${minutesPlayed}, Min Required: ${isRummyTable ? 0 : minPlayTimeRequired}`);
       
@@ -418,13 +462,11 @@ export class PlayerPlaytimeService {
 
       // Snapshot current session table balance so buy-out review modal has accurate value.
       const seatedAt = seatedEntry.seatedAt || seatedEntry.createdAt || new Date(0);
-      const fromTime = new Date(new Date(seatedAt).getTime() - 30000);
+      const fromTime = new Date(seatedAt);
       const tableBalanceResult = await this.dataSource.query(
         `SELECT COALESCE(SUM(
           CASE
-            WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
-            WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
-            ELSE 0
+            ${SESSION_TABLE_CHIPS_SUM_CASE_INNER}
           END
         ), 0) as table_balance
         FROM financial_transactions

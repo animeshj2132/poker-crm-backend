@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsBoolean, IsIn } from 'class-validator';
 
 export class CreateTournamentDto {
   @IsString()
@@ -138,6 +138,12 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsNumber()
   prize_pool?: number;
+
+  /** manual = fixed prize_pool; accumulated = grows with entries (stored as prize_pool 0). */
+  @IsOptional()
+  @IsString()
+  @IsIn(['manual', 'accumulated'])
+  prize_pool_mode?: 'manual' | 'accumulated';
 
   @IsOptional()
   @IsNumber()

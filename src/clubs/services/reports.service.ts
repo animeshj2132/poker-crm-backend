@@ -91,6 +91,8 @@ export class ReportsService {
           CASE
             WHEN UPPER(TRIM(t.type)) IN ('DEPOSIT', 'CLUB BUY IN', 'TABLE BUY OUT', 'BONUS', 'REFUND', 'TOURNAMENT WIN')
               AND t.status = :completed THEN t.amount
+            WHEN UPPER(TRIM(t.type)) IN ('TABLE BUY IN', 'BUY IN')
+              AND strpos(COALESCE(t.notes, ''), 'WBPAIRCL2T') > 0 AND t.status = :completed THEN 0
             WHEN UPPER(TRIM(t.type)) IN ('WITHDRAWAL', 'CLUB BUY OUT', 'TABLE BUY IN', 'CASHOUT', 'DEBIT', 'BUY IN', 'REGISTER')
               AND t.status = :completed THEN -t.amount
             ELSE 0
@@ -164,6 +166,8 @@ export class ReportsService {
           CASE
             WHEN UPPER(TRIM(t.type)) IN ('DEPOSIT', 'CLUB BUY IN', 'TABLE BUY OUT', 'BONUS', 'REFUND', 'TOURNAMENT WIN')
               AND t.status = :completed THEN t.amount
+            WHEN UPPER(TRIM(t.type)) IN ('TABLE BUY IN', 'BUY IN')
+              AND strpos(COALESCE(t.notes, ''), 'WBPAIRCL2T') > 0 AND t.status = :completed THEN 0
             WHEN UPPER(TRIM(t.type)) IN ('WITHDRAWAL', 'CLUB BUY OUT', 'TABLE BUY IN', 'CASHOUT', 'DEBIT', 'BUY IN', 'REGISTER')
               AND t.status = :completed THEN -t.amount
             ELSE 0
@@ -1247,7 +1251,7 @@ export class ReportsService {
     });
     const tiltMap = await this.tiltIdByPlayerUuid(clubId, creditRequests.map((c) => c.playerId));
     const requestsSheet: ReportSheet = {
-      reportName: 'Credit — Requests (audit)',
+      reportName: 'Credit Requests (audit)',
       headers: [
         'Created (IST)',
         'Updated (IST)',

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { WaitlistStatus } from '../clubs/entities/waitlist-entry.entity';
 import { playerFacingStaffSenderLabel } from '../player-chat/player-chat-display.util';
 import {
   chatCreatedAtToIsoUtc,
@@ -259,7 +260,8 @@ export class EventsService {
           availableSeats: table.maxSeats - table.currentSeats,
           status: table.status,
           minBuyIn: Number(table.minBuyIn) || 0,
-          maxBuyIn: Number(table.maxBuyIn) || 0
+          maxBuyIn: Number(table.maxBuyIn) || 0,
+          notes: table.notes ?? null,
         }
       });
       this.logger.log(`Emitted table status change for club ${clubId} to ${clients.size} clients`);
@@ -315,6 +317,31 @@ export class EventsService {
     // Also notify staff/club dashboards to refresh in real-time.
     this.emitToClub(clubId, 'credit:status-changed', payload);
     this.emitToClub(clubId, 'credit:request-updated', payload);
+
+    const st = String(request?.status || '');
+    void this.sendFcmPush(playerId, 'Credit request update', `Your credit request is ${st}.`, {
+      clubId,
+      type: 'credit_request',
+      requestId: String(request?.id || ''),
+    });
+  }
+
+  /** Credit line toggled or limit cleared at player level (e.g. super admin lock). */
+  emitCreditFacilityChanged(
+    clubId: string,
+    playerId: string,
+    detail: { creditEnabled: boolean; creditLimit?: number },
+  ) {
+    const payload = { clubId, playerId, ...detail };
+    this.emitToRecipientWithGuarantee('player', playerId, 'credit:facility-changed', payload);
+    this.emitToClub(clubId, 'credit:facility-changed', payload);
+    this.logger.log(`Emitted credit:facility-changed for player ${playerId} in club ${clubId}`);
+
+    const lim = detail.creditLimit != null ? ` Limit ₹${detail.creditLimit}.` : '';
+    void this.sendFcmPush(playerId, 'Credit line updated', `Credit line is now ${detail.creditEnabled ? 'on' : 'off'}.${lim}`, {
+      clubId,
+      type: 'credit_facility',
+    });
   }
 
   // Emit waitlist position update to specific player
@@ -370,6 +397,23 @@ export class EventsService {
 
     // Always notify club subscribers (staff dashboards).
     this.emitToClub(clubId, 'waitlist:status-changed', payload);
+
+    if (playerId) {
+      const st = String(entry?.status || '').toUpperCase();
+      if (st === WaitlistStatus.SEATED) {
+        void this.sendFcmPush(playerId, 'Table seat confirmed', `You are seated at table ${entry.tableNumber ?? ''} (${entry.tableType || 'game'}).`, {
+          clubId,
+          type: 'waitlist_seated',
+          entryId: String(entry?.id || ''),
+        });
+      } else if (st === WaitlistStatus.CANCELLED || st === WaitlistStatus.NO_SHOW) {
+        void this.sendFcmPush(playerId, 'Waitlist update', `Your waitlist status is now ${st}.`, {
+          clubId,
+          type: 'waitlist_status',
+          entryId: String(entry?.id || ''),
+        });
+      }
+    }
   }
 
   // Emit table available notification to all players on waitlist for that club
@@ -455,6 +499,14 @@ export class EventsService {
           isRead: message.isRead
         }
       });
+      if (isStaff) {
+        const preview = String(message.message || '').slice(0, 140);
+        void this.sendFcmPush(playerId, 'Club message', preview || 'New reply in chat', {
+          clubId,
+          type: 'chat_reply',
+          sessionId: String(sessionId),
+        });
+      }
     }
   }
 
@@ -487,6 +539,11 @@ export class EventsService {
           subject: session.subject,
           lastMessageAt: session.lastMessageAt
         }
+      });
+      void this.sendFcmPush(playerId, 'Chat updated', `Chat status: ${session.status}`, {
+        clubId,
+        type: 'chat_session',
+        sessionId: String(session.id),
       });
     }
 
@@ -561,12 +618,26 @@ export class EventsService {
       type,
       request,
     });
+    const label = type === 'buyin' ? 'Buy-in' : 'Buy-out';
+    const st = String(request?.status ?? '');
+    void this.sendFcmPush(playerId, `${label} update`, `${label} request is now ${st || 'updated'}.`, {
+      clubId,
+      type,
+      requestId: String(request?.id ?? ''),
+    });
   }
 
   emitTournamentBlindsUpdated(clubId: string, payload: { id: string; name: string; currentRound: number; currentSb: number; currentBb: number; structure: any }) {
     // Broadcast to all subscribers of this club (both admin and player clients)
     this.emitToClub(clubId, 'tournament:blinds-updated', { clubId, tournament: payload });
     this.logger.log(`Emitted tournament:blinds-updated for club ${clubId}, tournament ${payload.id} (Level ${payload.currentRound}: ${payload.currentSb}/${payload.currentBb})`);
+    void this.notifyTournamentActivePlayersFcm(
+      clubId,
+      payload.id,
+      'Blinds increased',
+      `${payload.name}: Level ${payload.currentRound} — ${payload.currentSb}/${payload.currentBb}`,
+      { type: 'tournament_blinds' },
+    );
   }
 
   emitNewChatMessageDirect(clubId: string, sessionId: string, message: any, recipientStaffUserId: string) {
@@ -619,6 +690,10 @@ export class EventsService {
   emitKycStatusChanged(clubId: string, playerId: string, kycStatus: string) {
     this.emitToRecipientWithGuarantee('player', playerId, 'kyc:status-changed', { clubId, playerId, kycStatus });
     this.emitToClub(clubId, 'player:updated', { clubId, playerId });
+    void this.sendFcmPush(playerId, 'KYC status updated', `Your verification status is now ${kycStatus}.`, {
+      clubId,
+      type: 'kyc',
+    });
   }
 
   emitPlayerUpdated(clubId: string, playerId?: string) {
@@ -629,6 +704,7 @@ export class EventsService {
 
   emitOfferUpdated(clubId: string) {
     this.emitToClub(clubId, 'offers:updated', { clubId });
+    void this.sendFcmToClubDevices(clubId, 'New offers', 'Promotions were updated. Open the app to view.', { type: 'offers' });
   }
 
   // ==================== NOTIFICATION EVENTS ====================
@@ -649,10 +725,15 @@ export class EventsService {
   emitProfileChangeRequestUpdated(
     clubId: string,
     playerId: string,
-    data?: { status?: string; fieldName?: string; newValue?: string }
+    data?: { status?: string; fieldName?: string; newValue?: string; reviewNotes?: string }
   ) {
     this.emitToRecipientWithGuarantee('player', playerId, 'profile-request:updated', { clubId, playerId, ...data });
     this.emitToClub(clubId, 'profile-request:updated', { clubId, playerId, ...data });
+    const extra = data?.fieldName ? ` — ${data.fieldName}` : '';
+    void this.sendFcmPush(playerId, 'Profile / document request', `Status: ${data?.status || 'updated'}${extra}`, {
+      clubId,
+      type: 'profile_request',
+    });
   }
 
   // ==================== LEAVE APPLICATION EVENTS ====================
@@ -676,8 +757,33 @@ export class EventsService {
 
   // ==================== FNB EVENTS ====================
 
-  emitFnbOrderUpdated(clubId: string) {
-    this.emitToClub(clubId, 'fnb:order-updated', { clubId });
+  emitFnbOrderUpdated(
+    clubId: string,
+    detail?: { playerId?: string | null; orderNumber?: string | null; status?: string; stationName?: string | null },
+  ) {
+    const payload = {
+      clubId,
+      playerId: detail?.playerId ?? undefined,
+      order: detail?.status
+        ? {
+            orderNumber: detail.orderNumber ?? undefined,
+            status: detail.status,
+            stationName: detail.stationName ?? undefined,
+          }
+        : undefined,
+    };
+    this.emitToClub(clubId, 'fnb:order-updated', payload);
+    if (detail?.playerId) {
+      this.emitToRecipientWithGuarantee('player', String(detail.playerId), 'fnb:order-updated', payload);
+      const ord = detail.orderNumber || '';
+      const st = detail.status || 'updated';
+      const station = detail.stationName ? ` (${detail.stationName})` : '';
+      void this.sendFcmPush(String(detail.playerId), 'F&B order', `Order ${ord}: ${st}${station}`, {
+        clubId,
+        type: 'fnb_order',
+        status: String(st),
+      });
+    }
   }
 
   /** VIP product purchase or stock change — refresh player VIP UI and staff VIP Store. */
@@ -685,6 +791,11 @@ export class EventsService {
     this.emitToClub(clubId, 'vip:store-updated', { clubId, playerId });
     if (playerId) {
       this.emitToRecipientWithGuarantee('player', playerId, 'vip:store-updated', { clubId, playerId });
+      void this.sendFcmPush(playerId, 'VIP rewards', 'Your VIP points or rewards were updated.', { clubId, type: 'vip' });
+    } else {
+      void this.sendFcmToClubDevices(clubId, 'VIP store', 'VIP catalog was updated. Check the app for new items or points.', {
+        type: 'vip_catalog',
+      });
     }
   }
 
@@ -708,6 +819,81 @@ export class EventsService {
 
   emitCreditRequestCreated(clubId: string, playerId: string) {
     this.emitToClub(clubId, 'credit:new-request', { clubId, playerId });
+  }
+
+  // ==================== MOBILE FCM PUSH NOTIFICATIONS ====================
+
+  /** FCM to every device token registered for this club (see device_tokens.club_id). */
+  async sendFcmToClubDevices(clubId: string, title: string, body: string, data?: Record<string, string>): Promise<void> {
+    return this.sendFcmPush(null, title, body, data, clubId);
+  }
+
+  /** Notify all players still active in a tournament (seated / not exited). */
+  notifyTournamentActivePlayersFcm(
+    clubId: string,
+    tournamentId: string,
+    title: string,
+    body: string,
+    data: Record<string, string>,
+  ): void {
+    void this.pushFcmToActiveTournamentPlayers(clubId, tournamentId, title, body, data);
+  }
+
+  private async pushFcmToActiveTournamentPlayers(
+    clubId: string,
+    tournamentId: string,
+    title: string,
+    body: string,
+    data: Record<string, string>,
+  ): Promise<void> {
+    try {
+      const rows: { pid: string }[] = await this.dataSource.query(
+        `SELECT DISTINCT player_id::text AS pid FROM tournament_players
+         WHERE tournament_id = $1
+           AND COALESCE(is_active, false) = true
+           AND COALESCE(is_exited, false) = false`,
+        [tournamentId],
+      );
+      for (const r of rows) {
+        if (!r?.pid) continue;
+        await this.sendFcmPush(r.pid, title, body, { clubId, tournamentId, ...data });
+      }
+    } catch (err) {
+      this.logger.error(`pushFcmToActiveTournamentPlayers failed: ${err}`);
+    }
+  }
+
+  /**
+   * Send an FCM push via Supabase Edge: one player (playerUuid), legacy integer playerId, all devices in a club (clubScopeId), or all devices globally.
+   * Non-fatal on failure.
+   */
+  async sendFcmPush(
+    playerUuid: string | null,
+    title: string,
+    body: string,
+    data?: Record<string, string>,
+    clubScopeId?: string | null,
+  ): Promise<void> {
+    const fcmUrl = process.env.FCM_SEND_FUNCTION_URL?.trim();
+    const fcmKey = process.env.FCM_SEND_SERVICE_ROLE_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    if (!fcmUrl || !fcmKey) return;
+
+    try {
+      const payload: Record<string, unknown> = { title, body: body ?? '', data: data ?? {} };
+      if (playerUuid) {
+        payload.playerUuid = playerUuid;
+      } else if (clubScopeId) {
+        payload.clubId = clubScopeId;
+      }
+
+      await fetch(fcmUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fcmKey}` },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      this.logger.error(`sendFcmPush failed: ${err}`);
+    }
   }
 }
 

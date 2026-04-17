@@ -323,6 +323,7 @@ export class TournamentsService implements OnModuleInit {
       allow_addon: dto.allow_addon || false,
       allow_reentry: dto.allow_reentry || false,
       bounty_amount: dto.bounty_amount || 0,
+      prize_pool_mode: dto.prize_pool_mode || ((dto.prize_pool || 0) > 0 ? 'manual' : 'accumulated'),
     };
 
     const query = `
@@ -341,7 +342,7 @@ export class TournamentsService implements OnModuleInit {
       clubId,
       dto.name,
       dto.buy_in,
-      dto.prize_pool || 0,
+      dto.prize_pool_mode === 'accumulated' ? 0 : (dto.prize_pool || 0),
       dto.max_players || 100,
       startTime,
       'scheduled',
@@ -402,7 +403,10 @@ export class TournamentsService implements OnModuleInit {
       updates.push(`buy_in = $${paramIndex++}`);
       values.push(dto.buy_in);
     }
-    if (dto.prize_pool !== undefined) {
+    if (dto.prize_pool_mode === 'accumulated') {
+      updates.push(`prize_pool = $${paramIndex++}`);
+      values.push(0);
+    } else if (dto.prize_pool !== undefined) {
       updates.push(`prize_pool = $${paramIndex++}`);
       values.push(dto.prize_pool);
     }
@@ -455,7 +459,8 @@ export class TournamentsService implements OnModuleInit {
                           breakStructure || dto.break_duration !== undefined || dto.late_registration !== undefined ||
                           payoutStructure || seatDrawMethod || clockPauseRules ||
                           dto.allow_rebuys !== undefined || dto.allow_addon !== undefined || 
-                          dto.allow_reentry !== undefined || dto.bounty_amount !== undefined;
+                          dto.allow_reentry !== undefined || dto.bounty_amount !== undefined ||
+                          dto.prize_pool_mode !== undefined;
 
     if (hasPokerFields && !dto.rummy_variant) {
       // Get existing tournament to merge with existing structure
@@ -482,6 +487,8 @@ export class TournamentsService implements OnModuleInit {
         allow_addon: dto.allow_addon !== undefined ? dto.allow_addon : existingStructure.allow_addon,
         allow_reentry: dto.allow_reentry !== undefined ? dto.allow_reentry : existingStructure.allow_reentry,
         bounty_amount: dto.bounty_amount !== undefined ? dto.bounty_amount : existingStructure.bounty_amount,
+        prize_pool_mode:
+          dto.prize_pool_mode !== undefined ? dto.prize_pool_mode : existingStructure.prize_pool_mode,
       };
 
       updates.push(`structure = $${paramIndex++}`);
@@ -680,7 +687,16 @@ export class TournamentsService implements OnModuleInit {
       const started = this.mergeTournamentRow(result[0], tournament);
       // Schedule precise blind increases from the first level boundary
       this.scheduleNextBlindIncrease({ ...started, structure: JSON.parse(JSON.stringify(structure)) });
-      if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
+      if (this.eventsService) {
+        this.eventsService.emitTournamentUpdated(clubId);
+        this.eventsService.notifyTournamentActivePlayersFcm(
+          clubId,
+          tournamentId,
+          'Tournament started',
+          `${tournament.name} has started. Good luck!`,
+          { type: 'tournament_start' },
+        );
+      }
       return started;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -718,7 +734,16 @@ export class TournamentsService implements OnModuleInit {
     if (existing) { clearTimeout(existing); this.blindTimers.delete(tournamentId); }
 
     console.log(`⏸️ [TOURNAMENT PAUSE] Tournament ${tournament.name} paused (blind timer cancelled)`);
-    if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
+    if (this.eventsService) {
+      this.eventsService.emitTournamentUpdated(clubId);
+      this.eventsService.notifyTournamentActivePlayersFcm(
+        clubId,
+        tournamentId,
+        'Tournament paused',
+        `${tournament.name} is paused.`,
+        { type: 'tournament_pause' },
+      );
+    }
     return this.mergeTournamentRow(result[0], tournament);
   }
 
@@ -754,7 +779,16 @@ export class TournamentsService implements OnModuleInit {
     this.scheduleNextBlindIncrease(resumed);
 
     console.log(`▶️ [TOURNAMENT RESUME] Tournament ${tournament.name} resumed (was paused ${pausedSeconds}s, total paused: ${newTotalPaused}s) — blind timer rescheduled`);
-    if (this.eventsService) this.eventsService.emitTournamentUpdated(clubId);
+    if (this.eventsService) {
+      this.eventsService.emitTournamentUpdated(clubId);
+      this.eventsService.notifyTournamentActivePlayersFcm(
+        clubId,
+        tournamentId,
+        'Tournament resumed',
+        `${tournament.name} is live again.`,
+        { type: 'tournament_resume' },
+      );
+    }
     return this.mergeTournamentRow(resumed, tournament);
   }
 
@@ -774,6 +808,16 @@ export class TournamentsService implements OnModuleInit {
        RETURNING *`,
       [clubId, tournamentId]
     );
+
+    if (this.eventsService) {
+      this.eventsService.notifyTournamentActivePlayersFcm(
+        clubId,
+        tournamentId,
+        'Tournament stopped',
+        `${tournament.name} was ended by staff.`,
+        { type: 'tournament_stop' },
+      );
+    }
 
     // Mark all active players as inactive
     await this.dataSource.query(
@@ -855,6 +899,23 @@ export class TournamentsService implements OnModuleInit {
       }
 
       await queryRunner.commitTransaction();
+
+      if (this.eventsService) {
+        this.eventsService.emitTournamentUpdated(clubId);
+        const pRows = await this.dataSource.query(
+          `SELECT DISTINCT player_id::text AS pid FROM tournament_players WHERE tournament_id = $1`,
+          [tournamentId],
+        );
+        for (const pr of pRows) {
+          if (!pr?.pid) continue;
+          void this.eventsService.sendFcmPush(
+            pr.pid,
+            'Tournament finished',
+            `${tournament.name} has ended. See your results in the app.`,
+            { clubId, tournamentId, type: 'tournament_end' },
+          );
+        }
+      }
 
       // Return updated tournament
       return await this.getTournamentById(clubId, tournamentId);
@@ -1130,6 +1191,20 @@ export class TournamentsService implements OnModuleInit {
 
       await queryRunner.commitTransaction();
 
+      if (this.eventsService) {
+        this.eventsService.emitTournamentUpdated(clubId);
+        this.eventsService.emitTournamentPlayerUpdated(clubId, String(resolvedPlayerId));
+        // Exit may post refund / credit settlement — refresh wallets everywhere
+        this.eventsService.emitTransactionCreated(clubId, String(resolvedPlayerId));
+        this.eventsService.emitBalanceUpdated(clubId, String(resolvedPlayerId));
+        void this.eventsService.sendFcmPush(
+          String(resolvedPlayerId),
+          'Tournament exit',
+          `You left "${tournament.name}". Check your wallet for any refund.`,
+          { clubId, tournamentId, type: 'tournament_exit' },
+        );
+      }
+
       return {
         success: true,
         message: `Player ${playerEntry.player_name} exited tournament${exitBalance > 0 ? ` with ₹${exitBalance}` : ' (bust)'}`,
@@ -1303,6 +1378,15 @@ export class TournamentsService implements OnModuleInit {
 
       const actionLabel = type === 'rebuy' ? 'Rebuy' : type === 'reentry' ? 'Re-entry' : 'Add-on';
       console.log(`🔄 [TOURNAMENT ${actionLabel.toUpperCase()}] Player ${playerEntry.player_name} - ₹${buyInAmount}`);
+
+      if (this.eventsService) {
+        this.eventsService.emitTournamentUpdated(clubId);
+        this.eventsService.emitTournamentPlayerUpdated(clubId, String(playerId));
+        if (buyInAmount > 0) {
+          this.eventsService.emitTransactionCreated(clubId, String(playerId));
+          this.eventsService.emitBalanceUpdated(clubId, String(playerId));
+        }
+      }
 
       return {
         success: true,

@@ -1,4 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, Optional, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Inject,
+  Optional,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { BuyOutRequest, BuyOutRequestStatus } from '../entities/buyout-request.entity';
@@ -43,6 +50,31 @@ export class BuyOutRequestService {
     private dataSource: DataSource,
     @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
+
+  /** Notify player + staff that the waitlist row ended (buy-out / settlement), not re-queued. */
+  private async emitPostBuyoutWaitlist(clubId: string, playerId: string) {
+    if (!this.eventsService) return;
+    const rows = await this.dataSource.query(
+      `SELECT id, player_id, status, table_number, table_type, created_at
+       FROM waitlist_entries
+       WHERE player_id = $1 AND club_id = $2
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [playerId, clubId],
+    );
+    const r = rows?.[0];
+    if (!r) return;
+    this.eventsService.emitWaitlistStatusChange(playerId, clubId, {
+      id: r.id,
+      status: r.status,
+      tableNumber: r.table_number,
+      tableType: r.table_type,
+      createdAt: r.created_at,
+      playerId: r.player_id,
+    });
+    this.eventsService.emitBalanceUpdated(clubId, playerId);
+    this.eventsService.emitPlayerUpdated(clubId, playerId);
+  }
 
   async getPendingBuyOutRequests(clubId: string) {
     const requests = await this.buyOutRequestRepo.find({
@@ -181,12 +213,12 @@ export class BuyOutRequestService {
         console.log(`   No credit to settle, full amount goes to wallet`);
       }
 
-      // Unseat the player
       await queryRunner.query(
-        `UPDATE waitlist_entries 
-         SET status = 'completed', updated_at = NOW()
+        `UPDATE waitlist_entries
+         SET status = 'CANCELLED', cancelled_at = NOW(), table_number = NULL, seated_at = NULL, seated_by = NULL,
+             assigned_seat = NULL, updated_at = NOW()
          WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
-        [playerId, clubId]
+        [playerId, clubId],
       );
 
       if (requestData.table_number) {
@@ -209,8 +241,9 @@ export class BuyOutRequestService {
         });
         this.eventsService.emitBuyOutRequestChanged(clubId);
         this.eventsService.emitTransactionCreated(clubId, playerId);
-        this.eventsService.emitBalanceUpdated(clubId, playerId);
       }
+
+      await this.emitPostBuyoutWaitlist(clubId, playerId);
 
       return {
         success: true,
@@ -340,12 +373,12 @@ export class BuyOutRequestService {
           console.log(`💰 [SETTLEMENT] Player ${playerName}: ₹${amount} table buy-out, no credit to settle`);
         }
 
-        // Unseat the player
         await queryRunner.query(
-          `UPDATE waitlist_entries 
-           SET status = 'completed', updated_at = NOW()
+          `UPDATE waitlist_entries
+           SET status = 'CANCELLED', cancelled_at = NOW(), table_number = NULL, seated_at = NULL, seated_by = NULL,
+               assigned_seat = NULL, updated_at = NOW()
            WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED'`,
-          [playerId, clubId]
+          [playerId, clubId],
         );
 
         results.push({ playerId, playerName, amount, creditSettled: creditOwed, settled: true });
@@ -394,10 +427,170 @@ export class BuyOutRequestService {
       );
 
       await queryRunner.commitTransaction();
+
+      for (const { playerId } of settlements) {
+        await this.emitPostBuyoutWaitlist(clubId, playerId);
+      }
+
       return { success: true, settlements: results, rake: rakeRecord };
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Staff "Process Buy-Out" (no buyout_requests row).
+   * Same ledger as player call-time approval: Table Buy Out moves chips to wallet, then Debit
+   * settles outstanding credit (Credit − Debit in ledger). Net wallet can go negative when
+   * the player lost more than their remaining chips — that is the "loss hits cash then credit" effect.
+   */
+  async settleStaffManualTableBuyOut(
+    clubId: string,
+    dto: { playerId: string; tableNumber: number; amount: number; reason?: string | null },
+  ) {
+    const playerId = String(dto.playerId || '').trim();
+    const tableNumber = Number(dto.tableNumber);
+    const finalAmount = Math.max(0, Number(dto.amount) || 0);
+    if (!playerId) {
+      throw new BadRequestException('playerId is required');
+    }
+    if (!Number.isFinite(tableNumber) || tableNumber < 1) {
+      throw new BadRequestException('Invalid table number');
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const wl = await queryRunner.query(
+        `SELECT id FROM waitlist_entries 
+         WHERE club_id = $1 AND player_id = $2 AND status = 'SEATED' AND table_number = $3
+         LIMIT 1`,
+        [clubId, playerId, tableNumber],
+      );
+      if (!wl?.length) {
+        throw new BadRequestException(`Player is not seated at Table ${tableNumber}`);
+      }
+
+      const playerData = await queryRunner.query(
+        `SELECT name FROM players WHERE id = $1 AND club_id = $2 LIMIT 1`,
+        [playerId, clubId],
+      );
+      const playerName = playerData?.[0]?.name || 'Unknown Player';
+
+      const tableData = await queryRunner.query(
+        `SELECT id, table_type FROM tables WHERE table_number = $1 AND club_id = $2 LIMIT 1`,
+        [tableNumber, clubId],
+      );
+      const gameType = String(tableData?.[0]?.table_type || '').toUpperCase() === 'RUMMY' ? 'rummy' : 'poker';
+      const tableId = tableData?.[0]?.id || null;
+
+      const noteSuffix = dto.reason?.trim()
+        ? ` — ${dto.reason.trim().replace(/\|/g, ' ').substring(0, 200)}`
+        : '';
+
+      await queryRunner.query(
+        `INSERT INTO financial_transactions 
+         (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'Table Buy Out', 'Completed', $5, $6, NOW(), NOW())`,
+        [
+          clubId,
+          playerId,
+          playerName,
+          finalAmount,
+          gameType,
+          `Buy-out from Table ${tableNumber}${noteSuffix} — ₹${finalAmount} returned from table to wallet`,
+        ],
+      );
+
+      const creditResult = await queryRunner.query(
+        `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions 
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+        [clubId, playerId],
+      );
+      const creditOwed = Math.max(0, creditResult[0]?.total ? Number(creditResult[0].total) : 0);
+
+      if (creditOwed > 0) {
+        await queryRunner.query(
+          `INSERT INTO financial_transactions 
+           (club_id, player_id, player_name, amount, type, status, game_type, notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $5, $6, NOW(), NOW())`,
+          [
+            clubId,
+            playerId,
+            playerName,
+            creditOwed,
+            gameType,
+            `Credit settlement on staff buy-out — ₹${creditOwed} (Table ${tableNumber})`,
+          ],
+        );
+      }
+
+      await queryRunner.query(
+        `UPDATE waitlist_entries
+         SET status = 'CANCELLED', cancelled_at = NOW(), table_number = NULL, seated_at = NULL, seated_by = NULL,
+             assigned_seat = NULL, updated_at = NOW()
+         WHERE player_id = $1 AND club_id = $2 AND status = 'SEATED' AND table_number = $3`,
+        [playerId, clubId, tableNumber],
+      );
+
+      await queryRunner.query(
+        `UPDATE tables 
+         SET current_seats = GREATEST(0, current_seats - 1), updated_at = NOW()
+         WHERE club_id = $1 AND table_number = $2`,
+        [clubId, tableNumber],
+      );
+
+      await queryRunner.commitTransaction();
+
+      if (this.eventsService) {
+        this.eventsService.emitTransactionCreated(clubId, playerId);
+        this.eventsService.emitBuyInRequestChanged(clubId);
+        if (tableId) {
+          const trows = await this.dataSource.query(
+            `SELECT * FROM tables WHERE id = $1 AND club_id = $2 LIMIT 1`,
+            [tableId, clubId],
+          );
+          const r = trows?.[0];
+          if (r) {
+            const maxSeats = Number(r.max_seats) || 0;
+            const currentSeats = Number(r.current_seats) || 0;
+            this.eventsService.emitTableStatusChange(clubId, {
+              id: r.id,
+              tableNumber: r.table_number,
+              tableType: r.table_type,
+              maxSeats,
+              currentSeats,
+              minBuyIn: r.min_buy_in,
+              maxBuyIn: r.max_buy_in,
+              status: r.status,
+              notes: r.notes,
+            });
+          }
+        }
+      }
+      await this.emitPostBuyoutWaitlist(clubId, playerId);
+
+      return {
+        success: true,
+        amount: finalAmount,
+        creditSettled: creditOwed,
+        message:
+          creditOwed > 0
+            ? `Buy-out complete. ₹${finalAmount} chips to wallet; ₹${creditOwed} credit settled (wallet may show negative until repaid).`
+            : 'Buy-out complete. Chips returned to wallet.',
+      };
+    } catch (e) {
+      await queryRunner.rollbackTransaction();
+      if (e instanceof BadRequestException || e instanceof NotFoundException) {
+        throw e;
+      }
+      console.error('[manual-table-buyout]', e);
+      throw new BadRequestException(e instanceof Error ? e.message : 'Manual buy-out failed');
     } finally {
       await queryRunner.release();
     }

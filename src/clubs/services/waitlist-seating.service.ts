@@ -5,8 +5,19 @@ import { WaitlistEntry, WaitlistStatus } from '../entities/waitlist-entry.entity
 import { Table, TableStatus, TableType } from '../entities/table.entity';
 import { Club } from '../club.entity';
 import { Player } from '../entities/player.entity';
-import { FinancialTransaction, TransactionType, TransactionStatus, WALLET_BALANCE_SQL, CREDIT_BALANCE_SQL } from '../entities/financial-transaction.entity';
+import {
+  FinancialTransaction,
+  TransactionType,
+  TransactionStatus,
+  WALLET_BALANCE_SQL,
+  CREDIT_BALANCE_SQL,
+  SESSION_TABLE_CHIPS_SUM_CASE_INNER,
+  TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER,
+} from '../entities/financial-transaction.entity';
 import { EventsService } from '../../events/events.service';
+import { computeCreditFacilityBreakdown, sumApprovedCreditLimitSince } from '../credit-used.util';
+import { tableHasActiveStaffSession } from '../table-session.util';
+import { playerMeetsTableMinBuyIn } from '../waitlist-buyin.util';
 
 @Injectable()
 export class WaitlistSeatingService {
@@ -249,70 +260,8 @@ export class WaitlistSeatingService {
       throw new BadRequestException('This waitlist request is for a Poker table. Please assign to a Poker table only. You selected a Rummy table.');
     }
 
-    // CRITICAL: Get player and take ALL their money for table
     if (!entry.playerId) {
       throw new BadRequestException('Cannot assign seat: Player ID is required');
-    }
-
-    const player = await this.playerRepo.findOne({
-      where: { id: entry.playerId, club: { id: clubId } },
-      relations: ['club']
-    });
-
-    if (!player) {
-      throw new NotFoundException('Player not found');
-    }
-
-    // Calculate player's wallet balance (real money, not on a table)
-    const completedTransactions = await this.dataSource.query(
-      `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions 
-      WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
-      [clubId, entry.playerId]
-    );
-
-    const availableBalance = completedTransactions[0]?.total ? Number(completedTransactions[0].total) : 0;
-    
-    console.log(`🔍 [ASSIGN SEAT] Player ${entry.playerName} wallet balance: ₹${availableBalance}`);
-    
-    // CRITICAL: Check if player has credit available (for credit-only players)
-    const creditEnabled = (player as any).creditEnabled || false;
-    const creditLimit = Number((player as any).creditLimit || 0);
-    
-    // Calculate credit already used from approved credit requests
-    let creditUsed = 0;
-    if (creditEnabled) {
-      const approvedRequests = await this.dataSource.query(
-        `SELECT SUM(credit_limit) as total FROM credit_requests WHERE club_id = $1 AND player_id = $2 AND status = $3`,
-        [clubId, entry.playerId, 'Approved']
-      );
-      creditUsed = approvedRequests[0]?.total ? Number(approvedRequests[0].total) : 0;
-    }
-    const availableCredit = creditEnabled ? Math.max(0, creditLimit - creditUsed) : 0;
-    
-    console.log(`🎯 [ASSIGN SEAT] Player ${entry.playerName} (${entry.playerId}) balance check:`);
-    console.log(`   Available Cash Balance: ₹${availableBalance}`);
-    console.log(`   Credit Enabled: ${creditEnabled}`);
-    console.log(`   Credit Limit: ₹${creditLimit}`);
-    console.log(`   Credit Used: ₹${creditUsed}`);
-    console.log(`   Available Credit: ₹${availableCredit}`);
-    console.log(`   Min Buy-in: ₹${table.minBuyIn || 0}`);
-
-    // UPDATED LOGIC: Allow joining with either cash OR credit
-    const minBuyIn = table.minBuyIn ? Number(table.minBuyIn) : 0;
-    
-    // Case 1: Has enough cash to meet minimum buy-in
-    if (availableBalance >= minBuyIn) {
-      console.log(`✅ [ASSIGN SEAT] Player has sufficient cash balance`);
-    }
-    // Case 2: Has credit available (can join with 0 cash and request credit after)
-    else if (availableCredit > 0) {
-      console.log(`✅ [ASSIGN SEAT] Player has no cash but has credit available - allowing to join with ₹0`);
-    }
-    // Case 3: Has neither cash nor credit - reject
-    else {
-      throw new BadRequestException(
-        `Cannot join table. You need either ₹${minBuyIn.toFixed(2)} cash or approved credit. Your balance: ₹${availableBalance.toFixed(2)}, Available credit: ₹${availableCredit.toFixed(2)}`
-      );
     }
 
     // Use database transaction to ensure atomicity
@@ -350,6 +299,11 @@ export class WaitlistSeatingService {
       if (lockedTable.currentSeats + lockedEntry.partySize > lockedTable.maxSeats) {
         throw new BadRequestException(`Table only has ${lockedTable.maxSeats - lockedTable.currentSeats} available seats. Party size is ${lockedEntry.partySize}.`);
       }
+      if (!tableHasActiveStaffSession(lockedTable.notes)) {
+        throw new BadRequestException(
+          'This table has no active session (it may have just ended). Refresh the waitlist and try again.',
+        );
+      }
 
       const effectiveSeat =
         assignedSeat != null && Number.isFinite(Number(assignedSeat))
@@ -373,6 +327,108 @@ export class WaitlistSeatingService {
         }
       }
 
+      const lockedPlayer = await queryRunner.manager.findOne(Player, {
+        where: { id: lockedEntry.playerId!, club: { id: clubId } },
+        relations: ['club'],
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lockedPlayer) {
+        throw new NotFoundException('Player not found');
+      }
+
+      const walletRows = await queryRunner.manager.query(
+        `SELECT ${WALLET_BALANCE_SQL} as total FROM financial_transactions 
+         WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+        [clubId, lockedEntry.playerId],
+      );
+      const availableBalance = walletRows[0]?.total ? Number(walletRows[0].total) : 0;
+
+      const creditEnabled = (lockedPlayer as any).creditEnabled || false;
+      const creditLimit = Number((lockedPlayer as any).creditLimit || 0);
+      let creditUsed = 0;
+      if (creditEnabled) {
+        creditUsed = await sumApprovedCreditLimitSince(
+          (sql, p) => queryRunner.manager.query(sql, p),
+          clubId,
+          lockedEntry.playerId!,
+          (lockedPlayer as any).creditEnabledAt,
+        );
+        creditUsed = Math.min(Math.max(0, creditUsed), creditLimit);
+      }
+      let creditLedgerNet = 0;
+      if (creditEnabled) {
+        try {
+          const crRows = await queryRunner.manager.query(
+            `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions
+             WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+            [clubId, lockedEntry.playerId],
+          );
+          creditLedgerNet = Number(crRows?.[0]?.total ?? 0);
+        } catch {
+          creditLedgerNet = 0;
+        }
+      }
+      const { availableCredit, effectiveCreditOnLine } = computeCreditFacilityBreakdown({
+        creditLimit,
+        creditUsedFromApprovals: creditUsed,
+        creditLedgerNet,
+        availableBalance,
+        creditEnabled,
+      });
+      const ledgerHeadroomForNewCredit = Math.max(0, creditLimit - Math.max(0, creditLedgerNet));
+
+      const minBuyIn = Math.max(0, Number(lockedTable.minBuyIn) || 0);
+      const maxBuyInRaw = Number(lockedTable.maxBuyIn);
+      const maxBuyInCap = Number.isFinite(maxBuyInRaw) && maxBuyInRaw > 0 ? maxBuyInRaw : null;
+
+      // Hard stop: negative wallet means player still owes cashier/club.
+      if (availableBalance < 0) {
+        throw new BadRequestException(
+          `Cannot join table while wallet is negative (₹${availableBalance.toLocaleString('en-IN')}). Please repay at the cashier first.`,
+        );
+      }
+
+      // For min-buy-in check: wallet + on-line credit counts (on-line = already approved & drawn).
+      // Credit remaining is NOT counted — it only gets drawn when player explicitly requests it.
+      const creditOnLineForCheck = Math.max(0, Number(effectiveCreditOnLine) || 0);
+      if (!playerMeetsTableMinBuyIn(availableBalance, creditOnLineForCheck, minBuyIn)) {
+        const w = availableBalance;
+        const reason =
+          w < 0
+            ? `Your wallet is negative (₹${w.toLocaleString('en-IN')}). Please repay at the cashier first.`
+            : `Wallet: ₹${w.toLocaleString('en-IN')}, credit on line: ₹${creditOnLineForCheck.toLocaleString('en-IN')}.`;
+        throw new BadRequestException(
+          `Cannot join table. Minimum buy-in is ₹${minBuyIn.toLocaleString('en-IN')}. ${reason}`,
+        );
+      }
+
+      // Move all positive wallet cash to the table first.
+      const cashToTablePreview = Math.max(0, availableBalance);
+      // Auto-apply ONLY credit already on-line (approved & drawn by player request).
+      // Credit remaining stays as remaining until player explicitly requests it — never auto-applied.
+      const roomUnderMaxBuy =
+        maxBuyInCap != null ? Math.max(0, maxBuyInCap - cashToTablePreview) : Number.POSITIVE_INFINITY;
+      const creditToApplyOnJoin = Math.min(
+        roomUnderMaxBuy,
+        creditOnLineForCheck,
+        ledgerHeadroomForNewCredit,
+      );
+
+      const totalOpeningChips = cashToTablePreview + creditToApplyOnJoin;
+      if (minBuyIn > 0 && totalOpeningChips + 0.0001 < minBuyIn) {
+        throw new BadRequestException(
+          `Cannot join table. Minimum buy-in is ₹${minBuyIn.toLocaleString('en-IN')}, but only ₹${totalOpeningChips.toLocaleString('en-IN')} can be placed from your wallet and drawable credit line headroom. Ask staff to adjust your line or add cash.`,
+        );
+      }
+
+      console.log(`🎯 [ASSIGN SEAT] Player ${lockedEntry.playerName} (${lockedEntry.playerId}) balance check (locked):`);
+      console.log(`   Available Cash Balance: ₹${availableBalance}`);
+      console.log(`   Credit Enabled: ${creditEnabled}`);
+      console.log(
+        `   Credit on line (will apply to table): ₹${creditOnLineForCheck}; credit remaining (not auto-applied): ₹${availableCredit}; ledger headroom: ₹${ledgerHeadroomForNewCredit}; applying on join: ₹${creditToApplyOnJoin}`,
+      );
+      console.log(`   Min Buy-in: ₹${minBuyIn}`);
+
       // Update table
       lockedTable.currentSeats += lockedEntry.partySize;
       if (lockedTable.currentSeats >= lockedTable.maxSeats) {
@@ -381,11 +437,13 @@ export class WaitlistSeatingService {
         lockedTable.status = TableStatus.AVAILABLE; // Still has available seats
       }
 
-      // Update entry
+      // Update entry — one anchor instant for seated_at and opening ledger rows so
+      // session math (created_at >= seated_at) never misses same-moment buy-in/credit.
+      const sessionAnchor = new Date();
       lockedEntry.status = WaitlistStatus.SEATED;
       lockedEntry.tableNumber = lockedTable.tableNumber;
       lockedEntry.assignedSeat = effectiveSeat;
-      lockedEntry.seatedAt = new Date();
+      lockedEntry.seatedAt = sessionAnchor;
       lockedEntry.seatedBy = seatedBy;
 
       const savedTable = await queryRunner.manager.save(lockedTable);
@@ -398,37 +456,57 @@ export class WaitlistSeatingService {
       if (cashToTable > 0) {
         const tableBuyIn = queryRunner.manager.create(FinancialTransaction, {
           club: { id: clubId } as any,
-          playerId: player.id,
-          playerName: player.name,
+          playerId: lockedPlayer.id,
+          playerName: lockedPlayer.name,
           amount: cashToTable,
           type: TransactionType.TABLE_BUY_IN,
           status: TransactionStatus.COMPLETED,
           gameType,
           notes: `Table buy-in - Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (Cash: ₹${cashToTable.toFixed(2)})`
         });
+        (tableBuyIn as any).createdAt = sessionAnchor;
+        (tableBuyIn as any).updatedAt = sessionAnchor;
 
         await queryRunner.manager.save(tableBuyIn);
-        console.log(`✅ [TABLE SEATING] Moved ₹${cashToTable} from wallet to table for player ${player.name} (${gameType})`);
+        console.log(`✅ [TABLE SEATING] Moved ₹${cashToTable} from wallet to table for player ${lockedPlayer.name} (${gameType})`);
       }
 
       // Auto-apply approved credit as table balance
-      if (availableCredit > 0) {
+      if (creditToApplyOnJoin > 0) {
         const creditTransaction = queryRunner.manager.create(FinancialTransaction, {
           club: { id: clubId } as any,
-          playerId: player.id,
-          playerName: player.name,
-          amount: availableCredit,
+          playerId: lockedPlayer.id,
+          playerName: lockedPlayer.name,
+          amount: creditToApplyOnJoin,
           type: TransactionType.CREDIT,
           status: TransactionStatus.COMPLETED,
           gameType,
-          notes: `Credit applied on table join - Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (Credit: ₹${availableCredit.toFixed(2)})`
+          notes: `Credit applied on table join - Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (Credit: ₹${creditToApplyOnJoin.toFixed(2)})`
         });
+        (creditTransaction as any).createdAt = sessionAnchor;
+        (creditTransaction as any).updatedAt = sessionAnchor;
 
         await queryRunner.manager.save(creditTransaction);
-        console.log(`✅ [TABLE SEATING] Applied credit ₹${availableCredit} for player ${player.name}`);
+        const walletPairNote = `Table buy-in — credit line to table — Table ${lockedTable.tableNumber}${effectiveSeat ? `, Seat ${effectiveSeat}` : ''} (${TABLE_BUY_IN_CREDIT_LINE_WALLET_PAIR_MARKER}) — pairs with credit applied on join ₹${creditToApplyOnJoin.toFixed(2)}`;
+        const walletPairTbi = queryRunner.manager.create(FinancialTransaction, {
+          club: { id: clubId } as any,
+          playerId: lockedPlayer.id,
+          playerName: lockedPlayer.name,
+          amount: creditToApplyOnJoin,
+          type: TransactionType.TABLE_BUY_IN,
+          status: TransactionStatus.COMPLETED,
+          gameType,
+          notes: walletPairNote,
+        });
+        (walletPairTbi as any).createdAt = sessionAnchor;
+        (walletPairTbi as any).updatedAt = sessionAnchor;
+        await queryRunner.manager.save(walletPairTbi);
+        console.log(`✅ [TABLE SEATING] Applied credit ₹${creditToApplyOnJoin} for player ${lockedPlayer.name}`);
       }
 
-      console.log(`   Table Balance: ₹${cashToTable} cash + ₹${availableCredit} credit = ₹${cashToTable + availableCredit} total`);
+      console.log(
+        `   Table Balance: ₹${cashToTable} cash + ₹${creditToApplyOnJoin} credit = ₹${cashToTable + creditToApplyOnJoin} total`,
+      );
 
       await queryRunner.commitTransaction();
     
@@ -452,7 +530,12 @@ export class WaitlistSeatingService {
     }
   }
 
-  async unseatPlayer(clubId: string, entryId: string) {
+  /**
+   * @param options.requeue When true (default), player returns to the waitlist queue (PENDING).
+   *   When false — e.g. cashier buy-out — entry is closed (CANCELLED) so they are not shown as waiting.
+   */
+  async unseatPlayer(clubId: string, entryId: string, options?: { requeue?: boolean }) {
+    const requeue = options?.requeue !== false;
     const entry = await this.getWaitlistEntry(clubId, entryId);
 
     if (entry.status !== WaitlistStatus.SEATED) {
@@ -480,8 +563,14 @@ export class WaitlistSeatingService {
       }
     }
 
-    // Update entry
-    entry.status = WaitlistStatus.PENDING;
+    // Update entry — PENDING re-queues; CANCELLED ends the visit (buy-out / leave floor)
+    if (requeue) {
+      entry.status = WaitlistStatus.PENDING;
+      entry.cancelledAt = null;
+    } else {
+      entry.status = WaitlistStatus.CANCELLED;
+      entry.cancelledAt = new Date();
+    }
     entry.tableNumber = null;
     entry.seatedAt = null;
     entry.seatedBy = null;
@@ -491,6 +580,8 @@ export class WaitlistSeatingService {
     // Emit real-time event for waitlist status change
     if (this.eventsService && entry.playerId) {
       this.eventsService.emitWaitlistStatusChange(entry.playerId, clubId, savedEntry);
+      this.eventsService.emitBalanceUpdated(clubId, entry.playerId);
+      this.eventsService.emitPlayerUpdated(clubId, entry.playerId);
     }
     
     return savedEntry;
@@ -721,19 +812,16 @@ export class WaitlistSeatingService {
     // For each seated player, get their buy-in amount from financial transactions (current session only)
     const seatedPlayersWithBuyIn = await Promise.all(
       seatedEntries.map(async (entry) => {
+        const seatedAt = entry.seatedAt || new Date(0);
+        const fromTime = seatedAt instanceof Date ? seatedAt : new Date(seatedAt);
         let buyInAmount = 0;
-        
+
         if (entry.playerId) {
-          // Calculate NET table balance for current session (since seated_at), for this club only.
-          // Use a 30s buffer before seated_at so we include Table Buy In created in same moment as seat assignment.
-          const seatedAt = entry.seatedAt || new Date(0);
-          const fromTime = new Date(seatedAt.getTime() - 30000);
+          // Calculate NET table balance for current session (since seated_at), for this club only — exact boundary.
           const result = await this.waitlistRepo.manager.query(
             `SELECT COALESCE(SUM(
                CASE
-                 WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
-                 WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
-                 ELSE 0
+                 ${SESSION_TABLE_CHIPS_SUM_CASE_INNER}
                END
              ), 0) as table_balance
              FROM financial_transactions
@@ -771,6 +859,66 @@ export class WaitlistSeatingService {
           totalCredits = creditsResult && creditsResult.length > 0 ? parseFloat(creditsResult[0].total) || 0 : 0;
         }
 
+        let creditFacilityEnabled = false;
+        let creditLineLimit = 0;
+        let creditLineUsed = 0;
+        let creditLineRemaining = 0;
+        let creditLineOnLine = 0;
+        let creditOnTableThisSession = 0;
+        let cashOnTableThisSession = 0;
+        if (entry.playerId) {
+          const player = await this.playerRepo.findOne({
+            where: { id: entry.playerId, club: { id: clubId } },
+          });
+          if (player) {
+            creditFacilityEnabled = !!(player as any).creditEnabled;
+            creditLineLimit = Number((player as any).creditLimit) || 0;
+            if (creditFacilityEnabled) {
+              let approvedSum = 0;
+              let creditLedgerNet = 0;
+              try {
+                approvedSum = await sumApprovedCreditLimitSince(
+                  (sql, p) => this.waitlistRepo.manager.query(sql, p),
+                  clubId,
+                  entry.playerId,
+                  (player as any).creditEnabledAt,
+                );
+                const crLedger = await this.waitlistRepo.manager.query(
+                  `SELECT ${CREDIT_BALANCE_SQL} as total FROM financial_transactions
+                   WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'`,
+                  [clubId, entry.playerId],
+                );
+                creditLedgerNet = Number(crLedger?.[0]?.total ?? 0);
+              } catch {
+                approvedSum = 0;
+                creditLedgerNet = 0;
+              }
+              // Use same breakdown as player app so values match exactly.
+              const breakdown = computeCreditFacilityBreakdown({
+                creditLimit: creditLineLimit,
+                creditUsedFromApprovals: Math.min(Math.max(0, approvedSum), creditLineLimit),
+                creditLedgerNet,
+                availableBalance: walletBalance,
+                creditEnabled: true,
+              });
+              creditLineOnLine = breakdown.effectiveCreditOnLine;   // on line (drawn)
+              creditLineUsed = breakdown.creditRepaidViaWallet;      // used via negative wallet
+              creditLineRemaining = breakdown.availableCredit;       // free headroom
+            }
+          }
+          const crRows = await this.waitlistRepo.manager.query(
+            `SELECT COALESCE(SUM(amount), 0)::numeric AS total
+             FROM financial_transactions
+             WHERE club_id = $1 AND player_id = $2 AND UPPER(status) = 'COMPLETED'
+               AND UPPER(TRIM(type)) = 'CREDIT'
+               AND created_at >= $3`,
+            [clubId, entry.playerId, fromTime],
+          );
+          creditOnTableThisSession =
+            crRows?.[0]?.total != null ? Math.max(0, parseFloat(String(crRows[0].total))) : 0;
+          cashOnTableThisSession = Math.max(0, buyInAmount - creditOnTableThisSession);
+        }
+
         return {
           playerId: entry.playerId,
           playerName: entry.playerName || 'Unknown',
@@ -781,6 +929,13 @@ export class WaitlistSeatingService {
           sessionBuyInAmount: buyInAmount,
           walletBalance: walletBalance,
           totalCredits: totalCredits,
+          creditFacilityEnabled,
+          creditLineLimit,
+          creditLineOnLine,   // on line = drawn (matches player "Credit on line")
+          creditLineUsed,     // used = negative wallet consuming line (matches player "Credit used")
+          creditLineRemaining, // free headroom (matches player "Credit remaining")
+          creditOnTableThisSession,
+          cashOnTableThisSession,
         };
       })
     );

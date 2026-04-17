@@ -351,11 +351,10 @@ export class AuthController {
       throw new BadRequestException('x-player-id header is required');
     }
     if (!clubId || !clubId.trim()) {
-      console.log('❌ [BALANCE CONTROLLER] Missing x-club-id header');
-      throw new BadRequestException('x-club-id header is required');
+      console.log('💰 [BALANCE CONTROLLER] No x-club-id — resolving club from player record');
     }
-    
-    const result = await this.authService.getPlayerBalance(playerId.trim(), clubId.trim());
+
+    const result = await this.authService.getPlayerBalance(playerId.trim(), clubId?.trim() || '');
     console.log('💰 [BALANCE CONTROLLER] Returning balance:', JSON.stringify(result, null, 2));
     return result;
   }
@@ -390,7 +389,15 @@ export class AuthController {
   async joinWaitlist(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
-    @Body() body?: { tableType?: string; gameType?: string; partySize?: number; requestedSeat?: number }
+    @Body()
+    body?: {
+      tableType?: string;
+      gameType?: string;
+      partySize?: number;
+      requestedSeat?: number;
+      /** When set, min buy-in is validated against this table only */
+      targetTableId?: string;
+    },
   ) {
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
@@ -404,7 +411,8 @@ export class AuthController {
       body?.tableType,
       body?.partySize || 1,
       body?.requestedSeat,
-      body?.gameType
+      body?.gameType,
+      body?.targetTableId,
     );
     try {
       const pName = await this.getPlayerName(playerId.trim(), clubId.trim());
@@ -612,10 +620,14 @@ export class AuthController {
       details: n.details ?? '',
       imageUrl: n.imageUrl ?? null,
       image_url: n.imageUrl ?? null,
+      /** Legacy player UI key */
+      mediaUrl: n.imageUrl ?? null,
+      media_url: n.imageUrl ?? null,
       videoUrl: n.videoUrl ?? null,
       video_url: n.videoUrl ?? null,
       isRead: !!n.isRead,
       delivery_status: n.isRead ? 'read' : 'unread',
+      deliveryStatus: n.isRead ? 'read' : 'unread',
       readAt: n.readAt ?? null,
       read_at: n.readAt ?? null,
       sentAt: n.sentAt ?? null,
@@ -649,6 +661,61 @@ export class AuthController {
       notificationId.trim(),
       playerId.trim(),
       'player'
+    );
+  }
+
+  /**
+   * Mark one player notification as unread
+   * PUT /api/auth/player/push-notifications/:notificationId/unread
+   */
+  @Put('player/push-notifications/:notificationId/unread')
+  async markPlayerPushNotificationUnread(
+    @Param('notificationId') notificationId: string,
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    if (!notificationId || !notificationId.trim()) {
+      throw new BadRequestException('notificationId is required');
+    }
+    return this.pushNotificationsService.markAsUnread(
+      clubId.trim(),
+      notificationId.trim(),
+      playerId.trim(),
+      'player',
+    );
+  }
+
+  /**
+   * Register or refresh this device's FCM token (Capacitor / native). Upserts device_tokens with player UUID + club.
+   * POST /api/auth/player/device-token
+   * Body: { token: string, platform?: string }
+   */
+  @Post('player/device-token')
+  async registerPlayerDeviceToken(
+    @Body() body: { token?: string; platform?: string },
+    @Headers('x-player-id') playerId?: string,
+    @Headers('x-club-id') clubId?: string,
+  ) {
+    if (!body?.token || !String(body.token).trim()) {
+      throw new BadRequestException('token is required');
+    }
+    if (!playerId || !playerId.trim()) {
+      throw new BadRequestException('x-player-id header is required');
+    }
+    if (!clubId || !clubId.trim()) {
+      throw new BadRequestException('x-club-id header is required');
+    }
+    return this.authService.registerPlayerDeviceToken(
+      playerId.trim(),
+      clubId.trim(),
+      String(body.token).trim(),
+      body.platform ? String(body.platform).trim() : undefined,
     );
   }
 
@@ -728,6 +795,8 @@ export class AuthController {
   async getPlayerFnbOrders(
     @Headers('x-player-id') playerId?: string,
     @Headers('x-club-id') clubId?: string,
+    @Query('historyPage') historyPage?: string,
+    @Query('historyLimit') historyLimit?: string,
   ) {
     if (!playerId || !playerId.trim()) {
       throw new BadRequestException('x-player-id header is required');
@@ -736,9 +805,14 @@ export class AuthController {
       throw new BadRequestException('x-club-id header is required');
     }
 
+    const p = Math.max(1, parseInt(String(historyPage || '1'), 10) || 1);
+    const l = Math.min(50, Math.max(1, parseInt(String(historyLimit || '10'), 10) || 10));
+
     return this.authService.getPlayerFnbOrders(
       playerId.trim(),
       clubId.trim(),
+      p,
+      l,
     );
   }
 

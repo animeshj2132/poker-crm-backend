@@ -3,7 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { BuyInRequest, BuyInRequestStatus } from '../entities/buyin-request.entity';
 import { Player } from '../entities/player.entity';
-import { FinancialTransaction, TransactionType, TransactionStatus } from '../entities/financial-transaction.entity';
+import {
+  FinancialTransaction,
+  TransactionType,
+  TransactionStatus,
+  SESSION_TABLE_CHIPS_SUM_CASE_INNER,
+} from '../entities/financial-transaction.entity';
 import { ApproveBuyInDto } from '../dto/approve-buyin.dto';
 import { RejectBuyInDto } from '../dto/reject-buyin.dto';
 import { EventsService } from '../../events/events.service';
@@ -52,14 +57,12 @@ export class BuyInRequestService {
             seatedEntry?.[0]?.seated_at ||
             req.requestedAt ||
             new Date(0);
-          const fromTime = new Date(new Date(baseTime).getTime() - 30000);
+          const fromTime = new Date(baseTime);
 
           const balanceResult = await this.dataSource.query(
             `SELECT COALESCE(SUM(
                CASE
-                 WHEN UPPER(TRIM(type)) IN ('BUY IN', 'TABLE BUY IN', 'CREDIT') THEN amount
-                 WHEN UPPER(TRIM(type)) IN ('TABLE BUY OUT') THEN -amount
-                 ELSE 0
+                 ${SESSION_TABLE_CHIPS_SUM_CASE_INNER}
                END
              ), 0) AS table_balance
              FROM financial_transactions

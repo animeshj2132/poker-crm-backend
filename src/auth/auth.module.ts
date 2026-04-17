@@ -19,7 +19,7 @@ import { ApiKeyAuthGuard } from './api-key.guard';
 @Module({
   imports: [
     UsersModule,
-    ClubsModule,
+    forwardRef(() => ClubsModule),
     forwardRef(() => EventsModule),
     TypeOrmModule.forFeature([
       UserTenantRole,

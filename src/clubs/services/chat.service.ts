@@ -896,7 +896,25 @@ export class ChatService {
       session.assignedStaff = staff;
     }
 
-    return await this.sessionRepo.save(session);
+    const saved = await this.sessionRepo.save(session);
+
+    try {
+      const fresh = await this.sessionRepo.findOne({
+        where: { id: saved.id },
+        relations: ['player', 'staffInitiator', 'staffRecipient', 'assignedStaff', 'club'],
+      });
+      if (fresh) {
+        const playerId =
+          fresh.sessionType === ChatSessionType.PLAYER && fresh.player?.id
+            ? fresh.player.id
+            : undefined;
+        this.eventsService.emitChatSessionUpdate(clubId, fresh, playerId);
+      }
+    } catch (err) {
+      console.error('Failed to emit chat session update after PATCH:', err);
+    }
+
+    return saved;
   }
 
   async archiveChatSession(

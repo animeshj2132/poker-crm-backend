@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Club } from './club.entity';
 import { ClubsService } from './clubs.service';
@@ -37,6 +37,7 @@ import { MenuItem } from './entities/menu-item.entity';
 import { InventoryItem } from './entities/inventory-item.entity';
 import { Supplier } from './entities/supplier.entity';
 import { EventsModule } from '../events/events.module';
+import { AuthModule } from '../auth/auth.module';
 import { TournamentsService } from './services/tournaments.service';
 import { StaffManagementService } from './services/staff-management.service';
 import { ShiftManagementService } from './services/shift-management.service';
@@ -74,6 +75,7 @@ import { RosterTemplate } from './entities/roster-template.entity';
 import { RosterManagementService } from './services/roster-management.service';
 import { PlayerFieldUpdateRequest } from './entities/player-field-update-request.entity';
 import { PlayerFieldUpdateService } from './services/player-field-update.service';
+import { CreditSessionHistoryService } from './services/credit-session-history.service';
 
 @Module({
   imports: [
@@ -123,7 +125,8 @@ import { PlayerFieldUpdateService } from './services/player-field-update.service
     ]),
     UsersModule,
     StorageModule,
-    EventsModule
+    EventsModule,
+    forwardRef(() => AuthModule),
   ],
   providers: [
     ClubsService,
@@ -153,7 +156,8 @@ import { PlayerFieldUpdateService } from './services/player-field-update.service
     AttendanceTrackingService,
     LeaveManagementService,
     RosterManagementService,
-    PlayerFieldUpdateService
+    PlayerFieldUpdateService,
+    CreditSessionHistoryService
   ],
   controllers: [ClubsController],
   exports: [

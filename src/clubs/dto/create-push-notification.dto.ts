@@ -44,6 +44,11 @@ export class CreatePushNotificationDto {
   @IsDateString()
   scheduledAt?: string;
 
+  /** When set, promotion is removed from player lists after this time (server-side). */
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
+
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
