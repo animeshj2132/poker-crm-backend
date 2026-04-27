@@ -1,14 +1,18 @@
-import { IsArray, ValidateNested, IsString, IsNumber } from 'class-validator';
+import { IsArray, ValidateNested, IsUUID, IsNumber, IsInt, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class WinnerDto {
-  @IsString()
+  @IsUUID()
   player_id!: string;
 
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
   finishing_position!: number;
 
+  @Type(() => Number)
   @IsNumber()
+  @Min(0)
   prize_amount!: number;
 }
 

@@ -838,6 +838,54 @@ export class TournamentsService implements OnModuleInit {
   // End tournament with winners
   async endTournament(clubId: string, tournamentId: string, dto: EndTournamentDto) {
     const tournament = await this.getTournamentById(clubId, tournamentId);
+    const rawWinners = Array.isArray(dto?.winners) ? dto.winners : [];
+
+    if (rawWinners.length === 0) {
+      throw new BadRequestException('At least one winner is required');
+    }
+
+    const winners = rawWinners.map((winner) => ({
+      player_id: String(winner.player_id || '').trim(),
+      finishing_position: Number(winner.finishing_position),
+      prize_amount: Number(winner.prize_amount),
+    }));
+
+    for (const winner of winners) {
+      if (!winner.player_id) {
+        throw new BadRequestException('Winner player_id is required');
+      }
+      if (!Number.isInteger(winner.finishing_position) || winner.finishing_position <= 0) {
+        throw new BadRequestException(`Invalid finishing position for player ${winner.player_id}`);
+      }
+      if (!Number.isFinite(winner.prize_amount) || winner.prize_amount < 0) {
+        throw new BadRequestException(`Invalid prize amount for player ${winner.player_id}`);
+      }
+    }
+
+    const uniquePlayers = new Set(winners.map((w) => w.player_id));
+    if (uniquePlayers.size !== winners.length) {
+      throw new BadRequestException('Same player cannot be assigned multiple finishing positions');
+    }
+
+    const uniquePositions = new Set(winners.map((w) => w.finishing_position));
+    if (uniquePositions.size !== winners.length) {
+      throw new BadRequestException('Each finishing position must be unique');
+    }
+
+    const participantRows = await this.dataSource.query(
+      `SELECT DISTINCT tp.player_id::text AS player_id
+       FROM tournament_players tp
+       WHERE tp.tournament_id = $1
+         AND tp.player_id = ANY($2::uuid[])`,
+      [tournamentId, winners.map((w) => w.player_id)]
+    );
+    const participantSet = new Set((participantRows || []).map((r: any) => String(r.player_id)));
+    const missingParticipants = winners
+      .map((w) => w.player_id)
+      .filter((playerId) => !participantSet.has(playerId));
+    if (missingParticipants.length > 0) {
+      throw new BadRequestException('All winners must be registered in this tournament');
+    }
 
     if (tournament.status !== 'active') {
       throw new BadRequestException('Only active tournaments can be ended');
@@ -860,7 +908,7 @@ export class TournamentsService implements OnModuleInit {
       const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
 
       // Update winners in tournament_players table and player balances
-      for (const winner of dto.winners) {
+      for (const winner of winners) {
         // Get player name for the transaction
         const playerResult = await queryRunner.query(
           `SELECT name FROM players WHERE id = $1 AND club_id = $2`,
