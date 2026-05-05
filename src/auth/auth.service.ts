@@ -816,7 +816,7 @@ export class AuthService {
           name: playerWithRelations.name ? playerWithRelations.name.trim() : fullName,
           email: playerWithRelations.email ? playerWithRelations.email.trim().toLowerCase() : lowerEmail,
           phoneNumber: playerWithRelations.phoneNumber ? playerWithRelations.phoneNumber.trim() : trimmedPhone,
-          nickname: playerWithRelations.playerId ? playerWithRelations.playerId.trim() : trimmedNickname,
+          nickname: playerWithRelations.nickname ? playerWithRelations.nickname.trim() : trimmedNickname,
           status: playerWithRelations.status || 'Active',
           kycStatus: playerWithRelations.kycStatus || (playerWithRelations as any).kycStatus || 'pending',
           kycRequired: true // New players must complete KYC

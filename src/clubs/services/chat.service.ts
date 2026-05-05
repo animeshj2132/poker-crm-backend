@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, Not, DataSource } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
 import { ChatSession, ChatSessionType, ChatSessionStatus } from '../entities/chat-session.entity';
 import { ChatMessage, MessageSenderType } from '../entities/chat-message.entity';
 import { Staff } from '../entities/staff.entity';
@@ -38,6 +39,8 @@ export class ChatService {
     private readonly userClubRoleRepo: Repository<UserClubRole>,
     @Inject(forwardRef(() => EventsService))
     private readonly eventsService: EventsService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   // ==================== STAFF CHAT ====================
@@ -90,7 +93,7 @@ export class ChatService {
       name: user.displayName || user.email.split('@')[0],
       email: user.email,
       role: isSuperAdmin ? StaffRole.SUPER_ADMIN : StaffRole.ADMIN,
-      phone: '',
+      phone: null,
       club: club as any,
       status: StaffStatus.ACTIVE,
       employeeId: `USER-${userId.substring(0, 8)}`,
@@ -636,22 +639,18 @@ export class ChatService {
         throw new ForbiddenException('You are not part of this chat session');
       }
       
-      // Staff chat - create staff message
-      const message = this.messageRepo.create({
-        session,
-        senderType: MessageSenderType.STAFF,
-        senderStaff: sender,
-        senderName: sender.name,
-        message: dto.message,
-        isRead: false
-      });
-
-      const savedMessage = await this.messageRepo.save(message);
+      // Staff chat - create staff message using raw SQL to avoid TypeORM metadata issues
+      const [staffRawRow] = await this.dataSource.query(
+        `INSERT INTO chat_messages (session_id, sender_type, sender_staff_id, sender_name, message, is_read)
+         VALUES ($1, 'staff', $2, $3, $4, false)
+         RETURNING id`,
+        [session.id, sender.id, sender.name || 'Staff', dto.message]
+      );
       const hydratedMessage = await this.messageRepo.findOne({
-        where: { id: savedMessage.id },
+        where: { id: staffRawRow.id },
         relations: ['session', 'senderStaff', 'senderPlayer'],
       });
-      const emittedMessage = hydratedMessage || savedMessage;
+      const emittedMessage = hydratedMessage || ({ id: staffRawRow.id, session, senderStaff: sender, senderName: sender.name || 'Staff', message: dto.message, isRead: false } as any);
 
       // Update session last message time
       session.lastMessageAt = new Date();
@@ -704,14 +703,6 @@ export class ChatService {
     } else if (session.sessionType === ChatSessionType.PLAYER) {
       // Player chat - staff is replying to player
       // Verify staff has access (any staff with player chat access can reply)
-      const message = this.messageRepo.create({
-        session,
-        senderType: MessageSenderType.STAFF,
-        senderStaff: sender,
-        senderName: sender.name,
-        message: dto.message,
-        isRead: false // Player messages are unread by default
-      });
 
       if (session.status === ChatSessionStatus.OPEN) {
         session.status = ChatSessionStatus.IN_PROGRESS;
@@ -722,12 +713,18 @@ export class ChatService {
       session.lastMessageAt = new Date();
       await this.sessionRepo.save(session);
 
-      const savedMessage = await this.messageRepo.save(message);
+      // Use raw SQL for reliable INSERT — bypasses TypeORM metadata issues for staff→player replies
+      const [rawRow] = await this.dataSource.query(
+        `INSERT INTO chat_messages (session_id, sender_type, sender_staff_id, sender_name, message, is_read)
+         VALUES ($1, 'staff', $2, $3, $4, false)
+         RETURNING id`,
+        [session.id, sender.id, sender.name || 'Staff', dto.message]
+      );
       const hydratedMessage = await this.messageRepo.findOne({
-        where: { id: savedMessage.id },
+        where: { id: rawRow.id },
         relations: ['session', 'senderStaff', 'senderPlayer'],
       });
-      const emittedMessage = hydratedMessage || savedMessage;
+      const emittedMessage = hydratedMessage || ({ id: rawRow.id, session, senderStaff: sender, senderName: sender.name || 'Staff', message: dto.message, isRead: false } as any);
 
       // Emit real-time event for player-staff chat
       try {
