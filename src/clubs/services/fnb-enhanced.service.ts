@@ -454,7 +454,7 @@ export class FnbEnhancedService {
       this.orderRepo.count({ where: { club: { id: clubId }, createdAt: MoreThanOrEqual(today) } }),
       this.orderRepo.createQueryBuilder('order')
         .select('SUM(order.totalAmount)', 'total')
-        .where('order.clubId = :clubId', { clubId })
+        .where('order.club = :clubId', { clubId })
         .andWhere('order.status = :status', { status: OrderStatus.DELIVERED })
         .andWhere('order.createdAt >= :today', { today })
         .getRawOne()
@@ -474,7 +474,7 @@ export class FnbEnhancedService {
   async getPopularItems(clubId: string, limit = 10): Promise<any[]> {
     const result = await this.orderRepo.createQueryBuilder('order')
       .select('order.items', 'items')
-      .where('order.clubId = :clubId', { clubId })
+      .where('order.club = :clubId', { clubId })
       .andWhere('order.status = :status', { status: OrderStatus.DELIVERED })
       .getMany();
 

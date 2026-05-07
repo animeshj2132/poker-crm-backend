@@ -86,6 +86,11 @@ export class RakeCollectionService {
       queryBuilder.andWhere('rake.table.id = :tableId', { tableId: query.tableId });
     }
 
+    // Filter by table type (e.g. RUMMY vs POKER)
+    if (query.tableType) {
+      queryBuilder.andWhere('table.tableType = :tableType', { tableType: query.tableType });
+    }
+
     // Get total count
     const total = await queryBuilder.getCount();
 
@@ -108,8 +113,9 @@ export class RakeCollectionService {
     };
   }
 
-  async getRakeCollectionStats(clubId: string, startDate?: string, endDate?: string) {
+  async getRakeCollectionStats(clubId: string, startDate?: string, endDate?: string, tableType?: string) {
     const queryBuilder = this.rakeCollectionRepo.createQueryBuilder('rake')
+      .leftJoinAndSelect('rake.table', 'table')
       .where('rake.club.id = :clubId', { clubId });
 
     if (startDate && endDate) {
@@ -123,6 +129,10 @@ export class RakeCollectionService {
       queryBuilder.andWhere('rake.sessionDate <= :endDate', { endDate });
     }
 
+    if (tableType) {
+      queryBuilder.andWhere('table.tableType = :tableType', { tableType });
+    }
+
     const collections = await queryBuilder.getMany();
 
     const totalEntries = collections.length;
@@ -133,11 +143,19 @@ export class RakeCollectionService {
     const uniqueTables = new Set(collections.map(c => c.tableNumber));
     const avgPerTable = uniqueTables.size > 0 ? totalCollected / uniqueTables.size : 0;
 
+    // Breakdown by table type
+    const byTableType: Record<string, number> = {};
+    for (const c of collections) {
+      const tType = (c.table as any)?.tableType || 'UNKNOWN';
+      byTableType[tType] = (byTableType[tType] || 0) + Number(c.totalRakeAmount || 0);
+    }
+
     return {
       totalEntries,
       totalCollected: Number(totalCollected.toFixed(2)),
       avgPerEntry: Number(avgPerEntry.toFixed(2)),
       avgPerTable: Number(avgPerTable.toFixed(2)),
+      byTableType,
     };
   }
 

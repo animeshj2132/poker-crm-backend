@@ -253,21 +253,29 @@ export class CreditRequestsService {
   }
 
   async deny(id: string, clubId: string, reason?: string) {
-    const request = await this.findOne(id, clubId);
+    // Use dataSource.transaction with pessimistic_write to prevent concurrent deny/approve race.
+    const savedRequest = await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(CreditRequest);
+      const request = await repo.findOne({
+        where: { id, club: { id: clubId } },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-    // Check if already processed
-    if (request.status === CreditRequestStatus.DENIED) {
-      throw new ConflictException('Credit request has already been denied');
-    }
-    if (request.status === CreditRequestStatus.APPROVED) {
-      throw new ConflictException('Cannot deny an approved credit request');
-    }
+      if (!request) throw new NotFoundException('Credit request not found');
 
-    request.status = CreditRequestStatus.DENIED;
-    request.visibleToPlayer = true;
-    request.limit = 0;
-    request.rejectionReason = reason?.trim() || null;
-    const savedRequest = await this.creditRequestsRepo.save(request);
+      if (request.status === CreditRequestStatus.DENIED) {
+        throw new ConflictException('Credit request has already been denied');
+      }
+      if (request.status === CreditRequestStatus.APPROVED) {
+        throw new ConflictException('Cannot deny an approved credit request');
+      }
+
+      request.status = CreditRequestStatus.DENIED;
+      request.visibleToPlayer = true;
+      request.limit = 0;
+      request.rejectionReason = reason?.trim() || null;
+      return repo.save(request);
+    });
     
     // Emit real-time event
     if (this.eventsService) {

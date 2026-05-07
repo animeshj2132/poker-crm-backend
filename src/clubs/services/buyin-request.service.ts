@@ -110,44 +110,53 @@ export class BuyInRequestService {
     dto: ApproveBuyInDto,
     userId: string
   ) {
-    const request = await this.buyInRequestRepo.findOne({
-      where: { id: requestId, club: { id: clubId } },
-      relations: ['player', 'table', 'club'],
-    });
-
-    if (!request) {
-      throw new NotFoundException('Buy-in request not found');
-    }
-
-    if (request.status !== BuyInRequestStatus.PENDING) {
-      throw new BadRequestException('This request has already been processed');
-    }
-
-    const amount = dto.amount || request.requestedAmount;
-
-    if (amount <= 0) {
-      throw new BadRequestException('Invalid buy-in amount');
-    }
-
-    // Use transaction to ensure data consistency
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
+      // Raw SELECT FOR UPDATE on just the buyin_requests row — avoids join-related FOR UPDATE restrictions.
+      // Two concurrent approvals serialize here; second sees status=APPROVED after lock is released.
+      const locked = await queryRunner.query(
+        `SELECT br.id, br.status, br.requested_amount, br.table_number, br.seat_number,
+                br.player_id, br.table_id,
+                p.name as player_name, p.email as player_email,
+                t.table_type
+         FROM buyin_requests br
+         JOIN players p ON p.id = br.player_id
+         LEFT JOIN tables t ON t.id = br.table_id
+         WHERE br.id = $1 AND br.club_id = $2
+         FOR UPDATE OF br`,
+        [requestId, clubId]
+      );
+
+      if (!locked || locked.length === 0) {
+        throw new NotFoundException('Buy-in request not found');
+      }
+
+      const row = locked[0];
+
+      if (row.status !== 'pending') {
+        throw new BadRequestException('This request has already been processed');
+      }
+
+      const amount = dto.amount || Number(row.requested_amount);
+
+      if (amount <= 0) {
+        throw new BadRequestException('Invalid buy-in amount');
+      }
+
       // Update request status
-      request.status = BuyInRequestStatus.APPROVED;
-      request.processedBy = { id: userId } as any;
-      request.processedAt = new Date();
-      await queryRunner.manager.save(request);
+      await queryRunner.query(
+        `UPDATE buyin_requests SET status = 'approved', processed_by = $1, processed_at = NOW(), updated_at = NOW() WHERE id = $2`,
+        [userId, requestId]
+      );
 
-      // Club Buy-In: Player pays cash to club, money goes directly to table.
-      // Step 1: Club Buy In → wallet +amount (cash entering the system)
-      // Step 2: Table Buy In → wallet -amount (money moves to table)
-      // Net: wallet unchanged, table balance increases.
-
-      const tableTypeResult = request.table?.tableType || null;
-      const gameType = tableTypeResult === 'RUMMY' ? 'rummy' : 'poker';
+      const gameType = row.table_type === 'RUMMY' ? 'rummy' : 'poker';
+      const playerId = row.player_id;
+      const playerName = row.player_name;
+      const tableNumber = row.table_number;
+      const seatNumber = row.seat_number;
 
       await queryRunner.query(
         `INSERT INTO financial_transactions
@@ -155,11 +164,11 @@ export class BuyInRequestService {
          VALUES ($1, $2, $3, $4, 'Club Buy In', 'Completed', $5, $6, NOW(), NOW())`,
         [
           clubId,
-          request.player.id,
-          request.player.name,
+          playerId,
+          playerName,
           amount,
           gameType,
-          `Club buy-in - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''} (approved by staff)`,
+          `Club buy-in - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} (approved by staff)`,
         ],
       );
 
@@ -169,38 +178,41 @@ export class BuyInRequestService {
          VALUES ($1, $2, $3, $4, 'Table Buy In', 'Completed', $5, $6, NOW(), NOW())`,
         [
           clubId,
-          request.player.id,
-          request.player.name,
+          playerId,
+          playerName,
           amount,
           gameType,
-          `Table buy-in from club buy-in - Table ${request.tableNumber}${request.seatNumber ? `, Seat ${request.seatNumber}` : ''} (approved by staff)`,
+          `Table buy-in from club buy-in - Table ${tableNumber}${seatNumber ? `, Seat ${seatNumber}` : ''} (approved by staff)`,
         ],
       );
 
-      console.log(`💰 [BUYIN APPROVED] Player ${request.player.name}: ₹${amount} club buy-in to table (Table ${request.tableNumber})`);
+      console.log(`💰 [BUYIN APPROVED] Player ${playerName}: ₹${amount} club buy-in to table (Table ${tableNumber})`);
 
       await queryRunner.commitTransaction();
 
       if (this.eventsService) {
-        this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyin', {
-          id: request.id,
-          status: request.status,
-          processedAt: request.processedAt,
+        this.eventsService.emitBuyRequestStatusChange(playerId, clubId, 'buyin', {
+          id: requestId,
+          status: BuyInRequestStatus.APPROVED,
+          processedAt: new Date(),
           approvedAmount: amount,
         });
         this.eventsService.emitBuyInRequestChanged(clubId);
-        this.eventsService.emitTransactionCreated(clubId, request.player.id);
-        this.eventsService.emitBalanceUpdated(clubId, request.player.id);
+        this.eventsService.emitTransactionCreated(clubId, playerId);
+        this.eventsService.emitBalanceUpdated(clubId, playerId);
       }
 
       return {
         success: true,
         message: 'Buy-in approved - table balance updated',
-        requestId: request.id,
+        requestId: requestId,
         amount: amount,
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
       throw new BadRequestException(`Failed to approve buy-in request: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await queryRunner.release();
@@ -213,41 +225,46 @@ export class BuyInRequestService {
     dto: RejectBuyInDto,
     userId: string
   ) {
-    const request = await this.buyInRequestRepo.findOne({
-      where: { id: requestId, club: { id: clubId } },
-      relations: ['player', 'club'],
-    });
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const locked = await qr.query(
+        `SELECT id, player_id FROM buyin_requests WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+        [requestId, clubId]
+      );
+      if (!locked || locked.length === 0) throw new NotFoundException('Buy-in request not found');
 
-    if (!request) {
-      throw new NotFoundException('Buy-in request not found');
+      const currentStatus = await qr.query(
+        `SELECT status FROM buyin_requests WHERE id = $1`,
+        [requestId]
+      );
+      if (currentStatus[0]?.status !== 'pending') {
+        throw new BadRequestException('This request has already been processed');
+      }
+
+      await qr.query(
+        `UPDATE buyin_requests SET status='rejected', processed_by=$1, processed_at=NOW(), rejection_reason=$2, updated_at=NOW() WHERE id=$3`,
+        [userId, dto.reason || null, requestId]
+      );
+
+      const playerId = locked[0].player_id;
+      await qr.commitTransaction();
+
+      if (this.eventsService) {
+        this.eventsService.emitBuyRequestStatusChange(playerId, clubId, 'buyin', {
+          id: requestId, status: BuyInRequestStatus.REJECTED, processedAt: new Date(), rejectionReason: dto.reason,
+        });
+        this.eventsService.emitBuyInRequestChanged(clubId);
+      }
+      return { success: true, message: 'Buy-in request rejected', requestId };
+    } catch (error) {
+      await qr.rollbackTransaction();
+      if (error instanceof NotFoundException || error instanceof BadRequestException) throw error;
+      throw new BadRequestException(`Failed to reject buy-in request: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      await qr.release();
     }
-
-    if (request.status !== BuyInRequestStatus.PENDING) {
-      throw new BadRequestException('This request has already been processed');
-    }
-
-    request.status = BuyInRequestStatus.REJECTED;
-    request.processedBy = { id: userId } as any;
-    request.processedAt = new Date();
-    request.rejectionReason = dto.reason;
-
-    await this.buyInRequestRepo.save(request);
-
-    if (this.eventsService) {
-      this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyin', {
-        id: request.id,
-        status: request.status,
-        processedAt: request.processedAt,
-        rejectionReason: request.rejectionReason,
-      });
-      this.eventsService.emitBuyInRequestChanged(clubId);
-    }
-
-    return {
-      success: true,
-      message: 'Buy-in request rejected',
-      requestId: request.id,
-    };
   }
 }
 

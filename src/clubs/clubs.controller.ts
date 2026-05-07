@@ -17095,7 +17095,8 @@ export class ClubsController {
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
     @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string
+    @Query('endDate') endDate?: string,
+    @Query('tableType') tableType?: string
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -17107,7 +17108,7 @@ export class ClubsController {
           throw new ForbiddenException('You can only access rake collection stats for your assigned club');
         }
       }
-      const stats = await this.rakeCollectionService.getRakeCollectionStats(clubId, startDate, endDate);
+      const stats = await this.rakeCollectionService.getRakeCollectionStats(clubId, startDate, endDate, tableType);
       return stats;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {

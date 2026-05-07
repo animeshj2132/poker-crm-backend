@@ -1,5 +1,6 @@
-import { IsOptional, IsString, IsInt, Min, IsDateString, ValidateIf } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, IsDateString, ValidateIf, IsEnum } from 'class-validator';
 import { Type } from 'class-transformer';
+import { TableType } from '../entities/table.entity';
 
 export class QueryRakeCollectionsDto {
   @IsOptional()
@@ -15,6 +16,10 @@ export class QueryRakeCollectionsDto {
   @IsOptional()
   @IsString()
   tableId?: string;
+
+  @IsOptional()
+  @IsEnum(TableType)
+  tableType?: TableType;
 
   @IsOptional()
   @Type(() => Number)

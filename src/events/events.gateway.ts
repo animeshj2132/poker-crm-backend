@@ -83,7 +83,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   }
 
   @SubscribeMessage('subscribe:club')
-  handleSubscribeClub(
+  async handleSubscribeClub(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { clubId: string; playerId?: string }
   ) {
@@ -105,6 +105,17 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     this.logger.log(`Client ${client.id} subscribing to club ${data.clubId}`);
     this.eventsService.subscribeToClub(client.id, data.clubId, data.playerId);
     client.emit('subscribed', { clubId: data.clubId });
+
+    // If this is a player socket that provided their own playerId, flush any queued
+    // messages they may have missed while offline. This covers the case where
+    // subscribe:player failed or was emitted after subscribe:club.
+    if (
+      data.playerId &&
+      socketJwt.type === 'player' &&
+      socketJwt.sub === data.playerId
+    ) {
+      await this.eventsService.flushUndeliveredMessages('player', data.playerId, client);
+    }
   }
 
   @SubscribeMessage('subscribe:player')

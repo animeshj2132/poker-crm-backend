@@ -108,45 +108,44 @@ export class BuyOutRequestService {
     dto: ApproveBuyOutDto,
     userId: string
   ) {
-    // Get request using raw query first to ensure we have player_id
-    const rawRequest = await this.dataSource.query(
-      `SELECT * FROM buyout_requests WHERE id = $1 AND club_id = $2`,
-      [requestId, clubId]
-    );
-
-    if (!rawRequest || rawRequest.length === 0) {
-      throw new NotFoundException('Buy-out request not found');
-    }
-
-    const requestData = rawRequest[0];
-
-    if (requestData.status !== 'pending') {
-      throw new BadRequestException('This request has already been processed');
-    }
-
-    const playerId = requestData.player_id;
-    if (!playerId) {
-      throw new BadRequestException('Buy-out request is missing player information');
-    }
-
-    const amount = dto.amount !== undefined && dto.amount !== null
-      ? Number(dto.amount)
-      : (requestData.requested_amount ?? requestData.current_table_balance ?? 0);
-    const finalAmount = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
-
-    if (finalAmount < 0) {
-      throw new BadRequestException('Buy-out amount cannot be negative');
-    }
-
-    // Use transaction to ensure data consistency
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
+      // Lock the row inside the transaction — prevents double-approval race condition.
+      const rawRequest = await queryRunner.query(
+        `SELECT * FROM buyout_requests WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+        [requestId, clubId]
+      );
+
+      if (!rawRequest || rawRequest.length === 0) {
+        throw new NotFoundException('Buy-out request not found');
+      }
+
+      const requestData = rawRequest[0];
+
+      if (requestData.status !== 'pending') {
+        throw new BadRequestException('This request has already been processed');
+      }
+
+      const playerId = requestData.player_id;
+      if (!playerId) {
+        throw new BadRequestException('Buy-out request is missing player information');
+      }
+
+      const amount = dto.amount !== undefined && dto.amount !== null
+        ? Number(dto.amount)
+        : (requestData.requested_amount ?? requestData.current_table_balance ?? 0);
+      const finalAmount = typeof amount === 'number' && !isNaN(amount) ? amount : 0;
+
+      if (finalAmount < 0) {
+        throw new BadRequestException('Buy-out amount cannot be negative');
+      }
+
       // Update request status
       await queryRunner.query(
-        `UPDATE buyout_requests 
+        `UPDATE buyout_requests
          SET status = 'approved', processed_by = $1, processed_at = NOW(), updated_at = NOW()
          WHERE id = $2`,
         [userId, requestId]
@@ -254,6 +253,9 @@ export class BuyOutRequestService {
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
       console.error('Error approving buy-out request:', error);
       throw new BadRequestException(`Failed to approve buy-out request: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
@@ -267,41 +269,46 @@ export class BuyOutRequestService {
     dto: RejectBuyOutDto,
     userId: string
   ) {
-    const request = await this.buyOutRequestRepo.findOne({
-      where: { id: requestId, club: { id: clubId } },
-      relations: ['player', 'club'],
-    });
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const locked = await qr.query(
+        `SELECT id, player_id FROM buyout_requests WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+        [requestId, clubId]
+      );
+      if (!locked || locked.length === 0) throw new NotFoundException('Buy-out request not found');
 
-    if (!request) {
-      throw new NotFoundException('Buy-out request not found');
+      const currentStatus = await qr.query(
+        `SELECT status FROM buyout_requests WHERE id = $1`,
+        [requestId]
+      );
+      if (currentStatus[0]?.status !== 'pending') {
+        throw new BadRequestException('This request has already been processed');
+      }
+
+      await qr.query(
+        `UPDATE buyout_requests SET status='rejected', processed_by=$1, processed_at=NOW(), rejection_reason=$2, updated_at=NOW() WHERE id=$3`,
+        [userId, dto.reason || null, requestId]
+      );
+
+      const playerId = locked[0].player_id;
+      await qr.commitTransaction();
+
+      if (this.eventsService) {
+        this.eventsService.emitBuyRequestStatusChange(playerId, clubId, 'buyout', {
+          id: requestId, status: BuyOutRequestStatus.REJECTED, processedAt: new Date(), rejectionReason: dto.reason,
+        });
+        this.eventsService.emitBuyOutRequestChanged(clubId);
+      }
+      return { success: true, message: 'Buy-out request rejected', requestId };
+    } catch (error) {
+      await qr.rollbackTransaction();
+      if (error instanceof NotFoundException || error instanceof BadRequestException) throw error;
+      throw new BadRequestException(`Failed to reject buy-out request: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      await qr.release();
     }
-
-    if (request.status !== BuyOutRequestStatus.PENDING) {
-      throw new BadRequestException('This request has already been processed');
-    }
-
-    request.status = BuyOutRequestStatus.REJECTED;
-    request.processedBy = { id: userId } as any;
-    request.processedAt = new Date();
-    request.rejectionReason = dto.reason;
-
-    await this.buyOutRequestRepo.save(request);
-
-    if (this.eventsService) {
-      this.eventsService.emitBuyRequestStatusChange(request.player.id, clubId, 'buyout', {
-        id: request.id,
-        status: request.status,
-        processedAt: request.processedAt,
-        rejectionReason: request.rejectionReason,
-      });
-      this.eventsService.emitBuyOutRequestChanged(clubId);
-    }
-
-    return {
-      success: true,
-      message: 'Buy-out request rejected',
-      requestId: request.id,
-    };
   }
 
   async settleAllPlayersOnTable(

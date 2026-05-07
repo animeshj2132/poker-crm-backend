@@ -897,9 +897,23 @@ export class TournamentsService implements OnModuleInit {
     await queryRunner.startTransaction();
 
     try {
-      // Update tournament status
+      // Step 1: Acquire pessimistic row lock, then recheck status inside the transaction.
+      // The explicit FOR UPDATE lock ensures two concurrent calls serialize at the DB level.
+      // The status recheck after locking prevents double-ending the tournament.
+      const locked = await queryRunner.query(
+        `SELECT status FROM tournaments WHERE club_id = $1 AND id = $2 FOR UPDATE`,
+        [clubId, tournamentId]
+      );
+      if (!locked || locked.length === 0) {
+        throw new NotFoundException('Tournament not found');
+      }
+      if (locked[0].status !== 'active') {
+        throw new BadRequestException('Only active tournaments can be ended');
+      }
+
+      // Step 2: Update status (safe — row is locked from above)
       await queryRunner.query(
-        `UPDATE tournaments SET status = 'completed', updated_at = NOW() 
+        `UPDATE tournaments SET status = 'completed', updated_at = NOW()
          WHERE club_id = $1 AND id = $2`,
         [clubId, tournamentId]
       );
