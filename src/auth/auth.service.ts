@@ -1357,9 +1357,9 @@ export class AuthService {
           const seatMs = sessionStart ? sessionStart.getTime() : 0;
           const isCurrentSession = isSeated && sessionStart && Number.isFinite(txnMs) && txnMs >= seatMs;
           
-          if (['DEPOSIT', 'CLUB BUY IN'].includes(upperType)) {
+          if (['DEPOSIT', 'CLUB BUY IN', 'TOURNAMENT WIN'].includes(upperType)) {
             cashBalance += amount;
-          } else if (['CASHOUT', 'WITHDRAWAL', 'CLUB BUY OUT'].includes(upperType)) {
+          } else if (['CASHOUT', 'WITHDRAWAL', 'CLUB BUY OUT', 'REGISTER'].includes(upperType)) {
             cashBalance -= amount;
           } else if (['TABLE BUY IN', 'BUY IN'].includes(upperType)) {
             const walletOnlyCreditPair =

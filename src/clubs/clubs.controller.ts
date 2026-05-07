@@ -13734,9 +13734,12 @@ export class ClubsController {
    */
   @Get(':clubId/tournaments')
   @Roles(TenantRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.CASHIER, ClubRole.GRE)
-  async getTournaments(@Param('clubId', new ParseUUIDPipe()) clubId: string) {
+  async getTournaments(
+    @Param('clubId', new ParseUUIDPipe()) clubId: string,
+    @Query('gameType') gameType?: string,
+  ) {
     try {
-      const tournaments = await this.tournamentsService.getTournaments(clubId);
+      const tournaments = await this.tournamentsService.getTournaments(clubId, gameType);
       return { success: true, tournaments };
     } catch (error) {
       console.error('Error in getTournaments:', error);
@@ -17199,7 +17202,8 @@ export class ClubsController {
     @Headers('x-tenant-id') tenantId: string | undefined,
     @Headers('x-club-id') headerClubId: string | undefined,
     @Param('id', new ParseUUIDPipe()) clubId: string,
-    @Query('status') status?: string
+    @Query('status') status?: string,
+    @Query('gameType') gameType?: string,
   ) {
     try {
       const club = await this.clubsService.findById(clubId);
@@ -17211,7 +17215,7 @@ export class ClubsController {
           throw new ForbiddenException('You can only access buy-out requests for your assigned club');
         }
       }
-      const requests = await this.buyOutRequestService.getPendingBuyOutRequests(clubId);
+      const requests = await this.buyOutRequestService.getPendingBuyOutRequests(clubId, gameType);
       return requests;
     } catch (e) {
       if (e instanceof BadRequestException || e instanceof NotFoundException || e instanceof ForbiddenException) {

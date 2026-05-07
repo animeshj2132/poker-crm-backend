@@ -37,6 +37,10 @@ interface Tournament {
 
 @Injectable()
 export class PlayerTournamentsService {
+  private tournamentColumnSupportCache:
+    | { lateRegistration: boolean; allowReentry: boolean }
+    | null = null;
+
   constructor(
     @InjectRepository(Player)
     private readonly playersRepo: Repository<Player>,
@@ -47,6 +51,30 @@ export class PlayerTournamentsService {
     private readonly authService: AuthService,
     @Inject(forwardRef(() => EventsService)) @Optional() private readonly eventsService?: EventsService,
   ) {}
+
+  private async getTournamentColumnSupport(): Promise<{ lateRegistration: boolean; allowReentry: boolean }> {
+    if (this.tournamentColumnSupportCache) return this.tournamentColumnSupportCache;
+    try {
+      const rows = await this.dataSource.query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'tournaments'
+           AND column_name IN ('late_registration', 'allow_reentry')`,
+      );
+      const names = new Set((rows || []).map((r: any) => String(r.column_name || '').toLowerCase()));
+      this.tournamentColumnSupportCache = {
+        lateRegistration: names.has('late_registration'),
+        allowReentry: names.has('allow_reentry'),
+      };
+    } catch {
+      this.tournamentColumnSupportCache = {
+        lateRegistration: false,
+        allowReentry: false,
+      };
+    }
+    return this.tournamentColumnSupportCache;
+  }
 
   /**
    * Get upcoming tournaments from database
@@ -63,6 +91,8 @@ export class PlayerTournamentsService {
       if (!club) {
         throw new NotFoundException('Club not found');
       }
+
+      const colSupport = await this.getTournamentColumnSupport();
 
       // Query actual tournaments from database
       console.log('🏆 [TOURNAMENTS] Fetching tournaments for club:', clubId);
@@ -81,7 +111,14 @@ export class PlayerTournamentsService {
           session_started_at,
           paused_at,
           total_paused_seconds,
-          rummy_variant
+          ${colSupport.lateRegistration ? 'late_registration' : 'NULL::int as late_registration'},
+          ${colSupport.allowReentry ? 'allow_reentry' : 'NULL::boolean as allow_reentry'},
+          rummy_variant,
+          number_of_deals,
+          points_per_deal,
+          drop_points,
+          max_points,
+          deal_duration
         FROM tournaments 
         WHERE club_id = $1 
           AND status NOT IN ('completed', 'cancelled')
@@ -95,7 +132,8 @@ export class PlayerTournamentsService {
         if (typeof structure === 'string') {
           try { structure = JSON.parse(structure); } catch { structure = {}; }
         }
-        const lateRegistrationMinutes = structure.late_registration || 0;
+        const lateRegistrationMinutes =
+          Number(structure.late_registration ?? t.late_registration) || 0;
         const entryFee = parseFloat(structure.entry_fee) || 0;
 
         return {
@@ -115,6 +153,12 @@ export class PlayerTournamentsService {
           totalPausedSeconds: parseInt(t.total_paused_seconds) || 0,
           lateRegistrationMinutes,
           gameType: t.rummy_variant ? 'rummy' : 'poker',
+          rummyVariant: t.rummy_variant || null,
+          numberOfDeals: t.number_of_deals != null ? Number(t.number_of_deals) : null,
+          pointsPerDeal: t.points_per_deal != null ? Number(t.points_per_deal) : null,
+          dropPoints: t.drop_points != null ? Number(t.drop_points) : null,
+          maxPoints: t.max_points != null ? Number(t.max_points) : null,
+          dealDuration: t.deal_duration != null ? Number(t.deal_duration) : null,
           currentRound: structure.current_round ?? null,
           currentSb: structure.current_sb ?? null,
           currentBb: structure.current_bb ?? null,
@@ -263,6 +307,8 @@ export class PlayerTournamentsService {
         throw new BadRequestException('Invalid tournament ID format');
       }
 
+      const colSupport = await this.getTournamentColumnSupport();
+
       const player = await this.playersRepo.findOne({
         where: { id: playerId, club: { id: clubId } },
         relations: ['club'],
@@ -281,6 +327,8 @@ export class PlayerTournamentsService {
       // Check if tournament exists and is available
       const tournament = await this.playersRepo.query(`
         SELECT id, name, max_players, current_players, status, start_time, buy_in, rummy_variant,
+               ${colSupport.lateRegistration ? 'late_registration' : 'NULL::int as late_registration'},
+               ${colSupport.allowReentry ? 'allow_reentry' : 'NULL::boolean as allow_reentry'},
                session_started_at, structure
         FROM tournaments
         WHERE id = $1 AND club_id = $2
@@ -302,7 +350,9 @@ export class PlayerTournamentsService {
         if (typeof structure === 'string') {
           try { structure = JSON.parse(structure); } catch { structure = {}; }
         }
-        const lateRegistrationMinutes = structure.late_registration || 0;
+        const lateRegistrationMinutes = Number(
+          structure.late_registration ?? tourn.late_registration
+        ) || 0;
 
         if (lateRegistrationMinutes > 0) {
           const sessionStart = new Date(tourn.session_started_at).getTime();
@@ -325,12 +375,15 @@ export class PlayerTournamentsService {
         throw new BadRequestException('Tournament is full');
       }
 
-      // Registration fee (entry_fee) and buy-in are separate: both required to register
+      // Registration fee (entry_fee) and buy-in:
+      // - Poker: registration + buy-in
+      // - Rummy: registration only (no separate buy-in deduction)
       let tournStructure = tourn.structure || {};
       if (typeof tournStructure === 'string') {
         try { tournStructure = JSON.parse(tournStructure); } catch { tournStructure = {}; }
       }
-      const buyInRequired = parseFloat(tourn.buy_in) || 0;
+      const isRummyTournament = Boolean(tourn.rummy_variant);
+      const buyInRequired = isRummyTournament ? 0 : (parseFloat(tourn.buy_in) || 0);
       const entryFee = parseFloat(tournStructure.entry_fee) || 0;
       const totalRequired = buyInRequired + entryFee;
 
@@ -357,8 +410,11 @@ export class PlayerTournamentsService {
       if (totalRequired > 0) {
         const totalAvailable = availableBalance + availableCredit;
         if (totalAvailable < totalRequired) {
+          const feeBreakdown = isRummyTournament
+            ? `Registration fee: ₹${entryFee.toLocaleString()}`
+            : `Registration fee: ₹${entryFee.toLocaleString()}, Buy-in: ₹${buyInRequired.toLocaleString()}, Total: ₹${totalRequired.toLocaleString()}`;
           throw new BadRequestException(
-            `Insufficient balance. Registration fee: ₹${entryFee.toLocaleString()}, Buy-in: ₹${buyInRequired.toLocaleString()}, Total: ₹${totalRequired.toLocaleString()}. ` +
+            `Insufficient balance. ${feeBreakdown}. ` +
             `Your balance: Wallet ₹${availableBalance.toLocaleString()} + Credit ₹${availableCredit.toLocaleString()} = ₹${totalAvailable.toLocaleString()}. ` +
             `Please add funds before registering.`
           );
@@ -444,7 +500,9 @@ export class PlayerTournamentsService {
           walletUsed = walletForEntryFee + walletForBuyIn;
           const creditUsed = totalRequired - walletUsed;
 
-          console.log(`💰 [TOURNAMENT REG] Deducting Registration ₹${entryFee} + Buy-in ₹${buyInRequired} = ₹${totalRequired} from player ${playerId} (wallet: ₹${walletUsed}, credit: ₹${creditUsed})`);
+          console.log(
+            `💰 [TOURNAMENT REG] Deducting ${isRummyTournament ? `Registration ₹${entryFee}` : `Registration ₹${entryFee} + Buy-in ₹${buyInRequired}`} = ₹${totalRequired} from player ${playerId} (wallet: ₹${walletUsed}, credit: ₹${creditUsed})`
+          );
 
           if (walletForEntryFee > 0) {
             await queryRunner.query(`
@@ -507,9 +565,11 @@ export class PlayerTournamentsService {
         return {
           success: true,
           message: totalRequired > 0
-            ? (entryFee > 0 && buyInRequired > 0
+            ? (isRummyTournament
+                ? `Registered successfully! Registration fee ₹${entryFee.toLocaleString()} deducted from your balance.`
+                : (entryFee > 0 && buyInRequired > 0
                 ? `Registered successfully! Registration fee ₹${entryFee.toLocaleString()} + Buy-in ₹${buyInRequired.toLocaleString()} = ₹${totalRequired.toLocaleString()} deducted from your balance.`
-                : `Registered successfully! ₹${totalRequired.toLocaleString()} has been deducted from your balance.`)
+                : `Registered successfully! ₹${totalRequired.toLocaleString()} has been deducted from your balance.`))
             : 'Registered for tournament successfully',
           tournamentId,
           registrationId: registration[0].id,
@@ -707,6 +767,7 @@ export class PlayerTournamentsService {
    */
   async getPlayerTournamentStatus(playerId: string, clubId: string, tournamentId: string) {
     try {
+      const colSupport = await this.getTournamentColumnSupport();
       const result = await this.dataSource.query(`
         SELECT 
           tp.player_id,
@@ -726,7 +787,9 @@ export class PlayerTournamentsService {
           t.paused_at as tournament_paused_at,
           t.total_paused_seconds as tournament_total_paused_seconds,
           t.buy_in,
-          t.structure
+          t.structure,
+          ${colSupport.allowReentry ? 't.allow_reentry' : 'NULL::boolean'} as allow_reentry,
+          ${colSupport.lateRegistration ? 't.late_registration' : 'NULL::int'} as late_registration
         FROM tournament_players tp
         INNER JOIN tournaments t ON t.id = tp.tournament_id
         WHERE tp.tournament_id = $1 AND tp.player_id = $2 AND t.club_id = $3
@@ -761,9 +824,9 @@ export class PlayerTournamentsService {
         tournamentTotalPausedSeconds: parseInt(row.tournament_total_paused_seconds) || 0,
         buyIn: parseFloat(row.buy_in) || 0,
         allowRebuys: structure.allow_rebuys || false,
-        allowReentry: structure.allow_reentry || false,
+        allowReentry: Boolean(structure.allow_reentry ?? row.allow_reentry),
         allowAddon: structure.allow_addon || false,
-        lateRegistration: parseInt(structure.late_registration) || 0,
+        lateRegistration: Number(structure.late_registration ?? row.late_registration) || 0,
       };
     } catch (err) {
       console.error('Get player tournament status error:', err);

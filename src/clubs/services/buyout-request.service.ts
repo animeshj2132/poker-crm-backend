@@ -76,7 +76,7 @@ export class BuyOutRequestService {
     this.eventsService.emitPlayerUpdated(clubId, playerId);
   }
 
-  async getPendingBuyOutRequests(clubId: string) {
+  async getPendingBuyOutRequests(clubId: string, gameType?: string) {
     const requests = await this.buyOutRequestRepo.find({
       where: {
         club: { id: clubId },
@@ -86,7 +86,14 @@ export class BuyOutRequestService {
       order: { requestedAt: 'ASC' },
     });
 
-    return requests.map(req => ({
+    const normalizedGameType =
+      String(gameType || '').trim().toLowerCase() === 'rummy' ? 'rummy' :
+      String(gameType || '').trim().toLowerCase() === 'poker' ? 'poker' :
+      null;
+
+    const rows = requests.map(req => {
+      const rowGameType = String(req.table?.tableType || '').toUpperCase() === 'RUMMY' ? 'rummy' : 'poker';
+      return {
       id: req.id,
       playerId: req.player.id,
       playerName: req.player.name,
@@ -99,7 +106,13 @@ export class BuyOutRequestService {
       requestedAt: this.toUtcIso(req.requestedAt),
       status: req.status,
       callTimeStartedAt: this.toUtcIso(req.callTimeStartedAt),
-    }));
+      gameType: rowGameType,
+      tableType: req.table?.tableType || null,
+      };
+    });
+
+    if (!normalizedGameType) return rows;
+    return rows.filter((row) => row.gameType === normalizedGameType);
   }
 
   async approveBuyOutRequest(

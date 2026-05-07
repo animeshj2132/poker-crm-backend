@@ -226,7 +226,13 @@ export class TournamentsService implements OnModuleInit {
   }
 
   // Get all tournaments for a club
-  async getTournaments(clubId: string) {
+  async getTournaments(clubId: string, gameType?: string) {
+    const normalizedGameType = String(gameType || '').trim().toLowerCase();
+    const gameFilter =
+      normalizedGameType === 'rummy' ? 'rummy'
+      : normalizedGameType === 'poker' ? 'poker'
+      : null;
+
     const query = `
       SELECT 
         t.*,
@@ -236,11 +242,16 @@ export class TournamentsService implements OnModuleInit {
       LEFT JOIN tournament_players tp ON t.id = tp.tournament_id AND tp.is_active = true
       LEFT JOIN tournament_registrations tr ON t.id = tr.tournament_id AND tr.status = 'registered'
       WHERE t.club_id = $1
+        AND (
+          $2::text IS NULL
+          OR ($2::text = 'rummy' AND t.rummy_variant IS NOT NULL)
+          OR ($2::text = 'poker' AND t.rummy_variant IS NULL)
+        )
       GROUP BY t.id
       ORDER BY t.created_at DESC
     `;
     
-    const result = await this.dataSource.query(query, [clubId]);
+    const result = await this.dataSource.query(query, [clubId, gameFilter]);
     return result;
   }
 
@@ -269,6 +280,10 @@ export class TournamentsService implements OnModuleInit {
 
   // Create new tournament
   async createTournament(clubId: string, userId: string, dto: CreateTournamentDto) {
+    if (!Number.isFinite(Number(dto.prize_pool)) || Number(dto.prize_pool) <= 0) {
+      throw new BadRequestException('prize_pool is required and must be greater than 0');
+    }
+
     // Generate tournament_id
     const countResult = await this.dataSource.query(
       'SELECT COUNT(*) as count FROM tournaments WHERE club_id = $1',
@@ -302,10 +317,9 @@ export class TournamentsService implements OnModuleInit {
       ? dto.custom_clock_pause_rules
       : dto.clock_pause_rules;
 
-    // Store poker-specific fields in structure JSONB if they exist, otherwise use basic columns
-    // For rummy tournaments, use basic columns + rummy fields
-    const structureData = dto.rummy_variant ? null : {
-      tournament_type: tournamentType,
+    // Keep shared tournament behavior in structure for both poker and rummy (late-reg, re-entry, etc).
+    const structureData = {
+      tournament_type: tournamentType || (dto.rummy_variant ? `Rummy - ${dto.rummy_variant}` : 'Tournament'),
       entry_fee: dto.entry_fee || 0,
       starting_chips: dto.starting_chips,
       blind_structure: blindStructure,
@@ -323,7 +337,14 @@ export class TournamentsService implements OnModuleInit {
       allow_addon: dto.allow_addon || false,
       allow_reentry: dto.allow_reentry || false,
       bounty_amount: dto.bounty_amount || 0,
-      prize_pool_mode: dto.prize_pool_mode || ((dto.prize_pool || 0) > 0 ? 'manual' : 'accumulated'),
+      prize_pool_mode: dto.prize_pool_mode || 'manual',
+      // Rummy-specific mirrors (kept for player-app session cards).
+      rummy_variant: dto.rummy_variant || null,
+      number_of_deals: dto.number_of_deals || null,
+      points_per_deal: dto.points_per_deal || null,
+      drop_points: dto.drop_points || null,
+      max_points: dto.max_points || null,
+      deal_duration: dto.deal_duration || null,
     };
 
     const query = `
@@ -346,7 +367,7 @@ export class TournamentsService implements OnModuleInit {
       dto.max_players || 100,
       startTime,
       'scheduled',
-      structureData ? JSON.stringify(structureData) : null,
+      JSON.stringify(structureData),
       dto.rummy_variant || null,
       dto.number_of_deals || null,
       dto.points_per_deal || null,
@@ -362,6 +383,10 @@ export class TournamentsService implements OnModuleInit {
 
   // Update tournament
   async updateTournament(clubId: string, tournamentId: string, dto: UpdateTournamentDto) {
+    if (dto.prize_pool !== undefined && (!Number.isFinite(Number(dto.prize_pool)) || Number(dto.prize_pool) <= 0)) {
+      throw new BadRequestException('prize_pool must be greater than 0');
+    }
+
     // Check if tournament exists
     await this.getTournamentById(clubId, tournamentId);
 
@@ -452,7 +477,7 @@ export class TournamentsService implements OnModuleInit {
       updates.push(`min_players = $${paramIndex++}`);
       values.push(dto.min_players || null);
     }
-    // Handle poker-specific fields in structure JSONB column
+    // Handle shared tournament settings in structure JSONB column
     const hasPokerFields = tournamentType || dto.entry_fee !== undefined || dto.starting_chips !== undefined || 
                           blindStructure || dto.starting_sb !== undefined || dto.starting_bb !== undefined ||
                           dto.number_of_levels !== undefined || dto.minutes_per_level !== undefined ||
@@ -462,7 +487,7 @@ export class TournamentsService implements OnModuleInit {
                           dto.allow_reentry !== undefined || dto.bounty_amount !== undefined ||
                           dto.prize_pool_mode !== undefined;
 
-    if (hasPokerFields && !dto.rummy_variant) {
+    if (hasPokerFields) {
       // Get existing tournament to merge with existing structure
       const tournament = await this.getTournamentById(clubId, tournamentId);
       const existingStructure = tournament.structure || {};
@@ -488,7 +513,14 @@ export class TournamentsService implements OnModuleInit {
         allow_reentry: dto.allow_reentry !== undefined ? dto.allow_reentry : existingStructure.allow_reentry,
         bounty_amount: dto.bounty_amount !== undefined ? dto.bounty_amount : existingStructure.bounty_amount,
         prize_pool_mode:
-          dto.prize_pool_mode !== undefined ? dto.prize_pool_mode : existingStructure.prize_pool_mode,
+          dto.prize_pool_mode !== undefined ? dto.prize_pool_mode : (existingStructure.prize_pool_mode || 'manual'),
+        // Keep rummy fields in structure too for player-facing UI consistency.
+        rummy_variant: dto.rummy_variant !== undefined ? dto.rummy_variant : existingStructure.rummy_variant,
+        number_of_deals: dto.number_of_deals !== undefined ? dto.number_of_deals : existingStructure.number_of_deals,
+        points_per_deal: dto.points_per_deal !== undefined ? dto.points_per_deal : existingStructure.points_per_deal,
+        drop_points: dto.drop_points !== undefined ? dto.drop_points : existingStructure.drop_points,
+        max_points: dto.max_points !== undefined ? dto.max_points : existingStructure.max_points,
+        deal_duration: dto.deal_duration !== undefined ? dto.deal_duration : existingStructure.deal_duration,
       };
 
       updates.push(`structure = $${paramIndex++}`);
@@ -913,7 +945,10 @@ export class TournamentsService implements OnModuleInit {
 
       // Step 2: Update status (safe — row is locked from above)
       await queryRunner.query(
-        `UPDATE tournaments SET status = 'completed', updated_at = NOW()
+        `UPDATE tournaments
+         SET status = 'completed',
+             paused_at = NULL,
+             updated_at = NOW()
          WHERE club_id = $1 AND id = $2`,
         [clubId, tournamentId]
       );
@@ -939,7 +974,10 @@ export class TournamentsService implements OnModuleInit {
            DO UPDATE SET 
              finishing_position = $3,
              prize_amount = $4,
-             is_active = false`,
+             is_active = false,
+             session_started_at = NULL,
+             exited_at = COALESCE(tournament_players.exited_at, NOW()),
+             is_exited = true`,
           [tournamentId, winner.player_id, winner.finishing_position, winner.prize_amount]
         );
 
@@ -959,6 +997,17 @@ export class TournamentsService implements OnModuleInit {
           );
         }
       }
+
+      // Ensure tournament session is fully closed for all participants immediately.
+      await queryRunner.query(
+        `UPDATE tournament_players
+         SET is_active = false,
+             session_started_at = NULL,
+             is_exited = true,
+             exited_at = COALESCE(exited_at, NOW())
+         WHERE tournament_id = $1`,
+        [tournamentId],
+      );
 
       await queryRunner.commitTransaction();
 
@@ -1022,8 +1071,9 @@ export class TournamentsService implements OnModuleInit {
           WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED'
         ), 0) as wallet_balance,
         COALESCE((
-          SELECT SUM(ft.amount) FROM financial_transactions ft 
-          WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED' AND UPPER(ft.type) = 'CREDIT'
+          SELECT GREATEST(0, ${CREDIT_BALANCE_SQL})
+          FROM financial_transactions ft 
+          WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED'
         ), 0) as total_credits
       FROM tournament_players tp
       INNER JOIN players p ON p.id = tp.player_id
@@ -1062,8 +1112,9 @@ export class TournamentsService implements OnModuleInit {
             WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED'
           ), 0) as wallet_balance,
           COALESCE((
-            SELECT SUM(ft.amount) FROM financial_transactions ft 
-            WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED' AND UPPER(ft.type) = 'CREDIT'
+            SELECT GREATEST(0, ${CREDIT_BALANCE_SQL})
+            FROM financial_transactions ft 
+            WHERE ft.club_id = $2 AND ft.player_id = p.id::text AND UPPER(ft.status) = 'COMPLETED'
           ), 0) as total_credits
         FROM tournament_registrations tr
         INNER JOIN players p ON p.id = tr.player_id
@@ -1201,55 +1252,56 @@ export class TournamentsService implements OnModuleInit {
       const gameType = this.getGameType(tournament);
       const gameLabel = gameType.charAt(0).toUpperCase() + gameType.slice(1);
 
-      if (exitBalance > 0) {
-        // Get outstanding credit for this player
-        const creditResult = await queryRunner.query(
-          `SELECT ${CREDIT_BALANCE_SQL} as credit_owed FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
-          [clubId, resolvedPlayerId]
-        );
-        const creditOwed = Math.max(0, Number(creditResult[0]?.credit_owed || 0));
+      const desiredFinalWallet = Math.max(0, Number(exitBalance) || 0);
+      const walletResult = await queryRunner.query(
+        `SELECT ${WALLET_BALANCE_SQL} as wallet_balance
+         FROM financial_transactions
+         WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
+        [clubId, resolvedPlayerId],
+      );
+      const currentWallet = Number(walletResult?.[0]?.wallet_balance || 0);
+      const walletDelta = desiredFinalWallet - currentWallet;
 
-        // Refund exit balance to wallet
+      // Exit balance now means "final wallet the player should have after exit".
+      // Apply only the delta needed to reach that exact amount.
+      if (walletDelta > 0) {
         await queryRunner.query(
-          `INSERT INTO financial_transactions 
+          `INSERT INTO financial_transactions
            (club_id, player_id, player_name, amount, type, status, game_type, notes)
            VALUES ($1, $2, $3, $4, 'Refund', 'Completed', $6, $5)`,
-          [clubId, resolvedPlayerId, playerEntry.player_name, exitBalance, notes || `${gameLabel} Tournament exit - ${tournament.name}`, gameType]
+          [clubId, resolvedPlayerId, playerEntry.player_name, walletDelta, notes || `${gameLabel} Tournament exit - ${tournament.name}`, gameType],
         );
+      } else if (walletDelta < 0) {
+        await queryRunner.query(
+          `INSERT INTO financial_transactions
+           (club_id, player_id, player_name, amount, type, status, game_type, notes)
+           VALUES ($1, $2, $3, $4, 'Withdrawal', 'Completed', $6, $5)`,
+          [clubId, resolvedPlayerId, playerEntry.player_name, Math.abs(walletDelta), notes || `${gameLabel} Tournament exit adjustment - ${tournament.name}`, gameType],
+        );
+      }
 
-        // Settle credit if any outstanding
-        if (creditOwed > 0) {
-          const debitAmount = Math.min(creditOwed, exitBalance);
+      // Get outstanding credit for this player and settle from available final amount.
+      const creditResult = await queryRunner.query(
+        `SELECT ${CREDIT_BALANCE_SQL} as credit_owed FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
+        [clubId, resolvedPlayerId]
+      );
+      const creditOwed = Math.max(0, Number(creditResult[0]?.credit_owed || 0));
+      if (creditOwed > 0) {
+        const debitAmount = Math.min(creditOwed, desiredFinalWallet);
+        if (debitAmount > 0) {
           await queryRunner.query(
-            `INSERT INTO financial_transactions 
+            `INSERT INTO financial_transactions
              (club_id, player_id, player_name, amount, type, status, game_type, notes)
              VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $6, $5)`,
             [clubId, resolvedPlayerId, playerEntry.player_name, debitAmount, `Credit settlement from ${gameLabel} tournament - ${tournament.name}`, gameType]
           );
           console.log(`💰 [TOURNAMENT EXIT] Settled ₹${debitAmount} credit for ${playerEntry.player_name}`);
         }
-
-        console.log(`💰 [TOURNAMENT EXIT] Refunded ₹${exitBalance} to player ${playerEntry.player_name}`);
-      } else {
-        // Player went bust but still needs to settle credit
-        const creditResult = await queryRunner.query(
-          `SELECT ${CREDIT_BALANCE_SQL} as credit_owed FROM financial_transactions WHERE club_id = $1 AND player_id = $2::text AND UPPER(status) = 'COMPLETED'`,
-          [clubId, resolvedPlayerId]
-        );
-        const creditOwed = Math.max(0, Number(creditResult[0]?.credit_owed || 0));
-
-        if (creditOwed > 0) {
-          await queryRunner.query(
-            `INSERT INTO financial_transactions 
-             (club_id, player_id, player_name, amount, type, status, game_type, notes)
-             VALUES ($1, $2, $3, $4, 'Debit', 'Completed', $6, $5)`,
-            [clubId, resolvedPlayerId, playerEntry.player_name, creditOwed, `Credit settlement (bust) from ${gameLabel} tournament - ${tournament.name}`, gameType]
-          );
-          console.log(`💰 [TOURNAMENT EXIT] Settled ₹${creditOwed} credit for bust player ${playerEntry.player_name}`);
-        }
-
-        console.log(`🔴 [TOURNAMENT EXIT] Player ${playerEntry.player_name} exited with ₹0 (bust)`);
       }
+
+      console.log(
+        `💰 [TOURNAMENT EXIT] Wallet adjusted for ${playerEntry.player_name}: current ₹${currentWallet}, target ₹${desiredFinalWallet}, delta ₹${walletDelta}`,
+      );
 
       await queryRunner.commitTransaction();
 
@@ -1269,7 +1321,7 @@ export class TournamentsService implements OnModuleInit {
 
       return {
         success: true,
-        message: `Player ${playerEntry.player_name} exited tournament${exitBalance > 0 ? ` with ₹${exitBalance}` : ' (bust)'}`,
+        message: `Player ${playerEntry.player_name} exited tournament with final wallet set to ₹${desiredFinalWallet}`,
         exitBalance,
         exitedAt,
       };
