@@ -29,6 +29,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     const status = HttpStatus.INTERNAL_SERVER_ERROR;
+    console.error('[UNHANDLED EXCEPTION]', exception);
     return response.status(status).json({
       statusCode: status,
       message: 'Internal server error',

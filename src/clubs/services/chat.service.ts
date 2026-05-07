@@ -711,15 +711,17 @@ export class ChatService {
         session.assignedStaff = sender;
       }
       session.lastMessageAt = new Date();
+
       await this.sessionRepo.save(session);
 
       // Use raw SQL for reliable INSERT — bypasses TypeORM metadata issues for staff→player replies
-      const [rawRow] = await this.dataSource.query(
+      const rows = await this.dataSource.query(
         `INSERT INTO chat_messages (session_id, sender_type, sender_staff_id, sender_name, message, is_read)
          VALUES ($1, 'staff', $2, $3, $4, false)
          RETURNING id`,
         [session.id, sender.id, sender.name || 'Staff', dto.message]
       );
+      const rawRow = rows[0];
       const hydratedMessage = await this.messageRepo.findOne({
         where: { id: rawRow.id },
         relations: ['session', 'senderStaff', 'senderPlayer'],

@@ -11375,7 +11375,8 @@ export class ClubsController {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } }
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
       });
 
       if (!player) {
@@ -11687,7 +11688,8 @@ export class ClubsController {
       }
 
       const player = await this.playersRepo.findOne({
-        where: { id: playerId, club: { id: clubId } }
+        where: { id: playerId, club: { id: clubId } },
+        relations: ['club']
       });
 
       if (!player) {
