@@ -78,6 +78,8 @@ export class FinancialTransactionsService {
       TransactionType.TABLE_BUY_IN,
       TransactionType.TABLE_BUY_OUT,
       TransactionType.DEBIT,
+      TransactionType.BONUS,
+      TransactionType.REFUND,
     ].includes(data.type);
 
     const transaction = this.transactionsRepo.create({

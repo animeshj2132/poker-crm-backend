@@ -23,9 +23,9 @@ export class RakeCollection {
   @JoinColumn({ name: 'club_id' })
   club!: Club;
 
-  @ManyToOne(() => Table, { nullable: false })
+  @ManyToOne(() => Table, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'table_id' })
-  table!: Table;
+  table!: Table | null;
 
   @Column({ name: 'table_number', type: 'int' })
   tableNumber!: number;
