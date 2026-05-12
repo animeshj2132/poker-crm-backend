@@ -15,7 +15,9 @@ function getJwtSecret(): string {
 }
 
 export function signAppJwt(payload: AppJwtPayload): string {
-  const expiresIn = (process.env.JWT_EXPIRES_IN || '7d') as jwt.SignOptions['expiresIn'];
+  const expiresIn = payload.type === 'player'
+    ? ((process.env.JWT_PLAYER_EXPIRES_IN || '90d') as jwt.SignOptions['expiresIn'])
+    : ((process.env.JWT_EXPIRES_IN || '7d') as jwt.SignOptions['expiresIn']);
   return jwt.sign(payload, getJwtSecret(), {
     expiresIn,
   });
