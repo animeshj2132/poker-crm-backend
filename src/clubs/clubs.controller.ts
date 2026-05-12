@@ -3164,6 +3164,84 @@ export class ClubsController {
     }
   }
 
+  /**
+   * POST /api/clubs/:id/players/:playerId/reset-password
+   * Super admin resets a player's password — generates a temporary password,
+   * sets mustResetPassword=true so the player is forced to change it on next login.
+   */
+  @Post(':id/players/:playerId/reset-password')
+  @Roles(TenantRole.SUPER_ADMIN, ClubRole.SUPER_ADMIN, ClubRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  async resetPlayerPassword(
+    @Headers('x-user-id') userId: string | undefined,
+    @Param('id', new ParseUUIDPipe()) clubId: string,
+    @Param('playerId', new ParseUUIDPipe()) playerId: string,
+    @Req() req?: Request,
+  ) {
+    try {
+      const club = await this.clubsService.findById(clubId);
+      if (!club) throw new NotFoundException('Club not found');
+
+      const player = await this.dataSource.transaction(async (manager) => {
+        const p = await manager.findOne(Player, {
+          where: { id: playerId, club: { id: clubId } },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!p) throw new NotFoundException('Player not found');
+
+        // Generate temporary password
+        const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$';
+        let tempPassword = '';
+        for (let i = 0; i < 10; i++) {
+          tempPassword += charset.charAt(Math.floor(Math.random() * charset.length));
+        }
+
+        const bcrypt = require('bcrypt');
+        p.passwordHash = await bcrypt.hash(tempPassword, 10);
+        (p as any).mustResetPassword = true;
+        await manager.save(p);
+
+        return { player: p, tempPassword };
+      });
+
+      // Audit log
+      try {
+        if (userId) {
+          const user = await this.usersService.findById(userId);
+          const allStaff = await this.staffService.findAll(clubId);
+          const staff = allStaff.find((s) => s.userId === userId || s.email === user?.email);
+          await this.auditLogsService.logAction({
+            clubId,
+            staffId: staff?.id || userId,
+            staffName: staff?.name || user?.displayName || user?.email || 'Unknown',
+            staffRole: staff?.role || 'Super Admin',
+            actionType: 'player_password_reset',
+            actionCategory: ActionCategory.PLAYER_MANAGEMENT,
+            description: `Reset password for player ${player.player.name} (${player.player.email})`,
+            targetType: 'player',
+            targetId: player.player.id,
+            targetName: player.player.name,
+            ipAddress: (req as any)?.ip || (req as any)?.socket?.remoteAddress || undefined,
+            userAgent: (req as any)?.headers?.['user-agent'] || undefined,
+          });
+        }
+      } catch (auditError) {
+        console.error('Audit log error for player password reset:', auditError);
+      }
+
+      return {
+        success: true,
+        message: 'Password reset successfully. Share the temporary password with the player.',
+        tempPassword: player.tempPassword,
+        playerName: player.player.name,
+        playerEmail: player.player.email,
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException || e instanceof BadRequestException) throw e;
+      throw new BadRequestException(`Failed to reset player password: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }
+
   // ========== Financial Transactions ==========
   @Get(':id/transactions')
   @Roles(
@@ -16658,7 +16736,7 @@ export class ClubsController {
    * PATCH /api/clubs/:clubId/chat/sessions/:sessionId
    */
   @Patch(':clubId/chat/sessions/:sessionId')
-  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER)
+  @Roles(ClubRole.SUPER_ADMIN, ClubRole.ADMIN, ClubRole.MANAGER, ClubRole.GRE)
   @UseGuards(RolesGuard)
   async updateChatSession(
     @Param('clubId', ParseUUIDPipe) clubId: string,
