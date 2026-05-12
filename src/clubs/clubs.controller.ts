@@ -9711,7 +9711,7 @@ export class ClubsController {
           const offsetIdx = statusVal.length + 2;
           const rows = await this.dataSource.query(
             `SELECT id, name, email, phone_number, player_id, status, kyc_status, total_spent, total_commission,
-             created_at, updated_at, credit_enabled, credit_limit, notes
+             created_at, updated_at, credit_enabled, credit_limit, notes, nickname
              FROM players
              WHERE club_id = $1 AND (name ILIKE $2 OR email ILIKE $2 OR phone_number ILIKE $2 OR player_id ILIKE $2)${statusCond}
              ORDER BY created_at DESC
@@ -9740,7 +9740,8 @@ export class ClubsController {
             affiliate: null,
             notes: r.notes,
             creditEnabled: r.credit_enabled ?? false,
-            creditLimit: r.credit_limit ?? 0
+            creditLimit: r.credit_limit ?? 0,
+            nickname: r.nickname ?? null
           })) as Player[];
         } else {
           // No search - regular query
@@ -9851,6 +9852,7 @@ export class ClubsController {
               creditOnLine: facility.effectiveCreditOnLine,
               creditConsumedAgainstLimit: facility.consumedAgainstLimit,
               creditRemaining: facility.availableCredit,
+              nickname: (p as any).nickname || null,
               createdAt: p.createdAt,
               updatedAt: p.updatedAt
             };
