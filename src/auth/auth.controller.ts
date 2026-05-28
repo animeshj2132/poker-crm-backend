@@ -75,7 +75,23 @@ export class AuthController {
     if (!dto.newPassword || !dto.newPassword.trim()) {
       throw new UnauthorizedException('New password is required');
     }
-    return this.usersService.resetPassword(dto.email.trim(), dto.currentPassword, dto.newPassword);
+
+    // Reset the password (clears mustResetPassword flag in DB)
+    await this.usersService.resetPassword(dto.email.trim(), dto.currentPassword, dto.newPassword);
+
+    // Immediately sign a fresh JWT so the user stays logged in without needing to re-authenticate.
+    // Re-use the same login flow (now with newPassword) to get full role/club data.
+    const result = await this.authService.login(dto.email.trim(), dto.newPassword);
+    const primaryClubId = result.clubRoles?.[0]?.club?.id;
+    const token = signAppJwt({
+      sub: result.user.id,
+      type: 'staff',
+      clubId: primaryClubId,
+      tenantId: result.clubRoles?.[0]?.club?.tenantId || result.tenantRoles?.[0]?.tenant?.id,
+      email: result.user.email,
+    });
+
+    return { ...result, token, success: true, mustResetPassword: false };
   }
 
   /**
